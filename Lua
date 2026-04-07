@@ -1,0 +1,605 @@
+--[[
+    WEAPONRY TOOL v1.0
+    Game: Weaponry (PlaceId: 3297964905)
+    Features: Aimbot | Silent Aim | ESP | AC Bypass | Mobile Support
+    UI: VLib
+]]
+
+-- ════════════════════════════════════════
+-- GLOBAL (must be set before VLib loads)
+-- ════════════════════════════════════════
+MAINTTL = "WT"
+
+-- ════════════════════════════════════════
+-- GAME CHECK
+-- ════════════════════════════════════════
+if game.PlaceId ~= 3297964905 then
+    warn("[Weaponry Tool] Wrong game — cancelled")
+    return
+end
+
+-- ════════════════════════════════════════
+-- SERVICES
+-- ════════════════════════════════════════
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local UIS          = game:GetService("UserInputService")
+local RS           = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local LP       = Players.LocalPlayer
+local camera   = workspace.CurrentCamera
+local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+-- ════════════════════════════════════════
+-- VLIB LOAD
+-- Replace the URL below with your raw VLib URL
+-- ════════════════════════════════════════
+local VLib = loadstring(game:HttpGet("YOUR_VLIB_RAW_URL_HERE"))()
+
+-- ════════════════════════════════════════
+-- WINDOW + TABS
+-- ════════════════════════════════════════
+local Window    = VLib:Window("Weaponry")
+local AimTab    = Window:Tab("Aimbot")
+local SATab     = Window:Tab("Silent Aim")
+local ESPTab    = Window:Tab("ESP")
+local MiscTab   = Window:Tab("Misc")
+
+-- ════════════════════════════════════════
+-- CONFIGS
+-- ════════════════════════════════════════
+local AimCFG = {
+    On         = false,
+    FOV        = 120,
+    Smoothness = 8,
+    TargetPart = "Head",
+    TeamCheck  = false,
+    VisCheck   = false,
+    DrawFOV    = true,
+}
+local SACFG = {
+    On         = false,
+    FOV        = 400,
+    HitChance  = 100,
+    TeamCheck  = true,
+    VisCheck   = false,
+    IgnoreFOV  = false,
+    TargetPart = "Head",
+}
+local ESPCFG = {
+    On          = false,
+    Boxes       = true,
+    Names       = true,
+    Health      = true,
+    TeamCheck   = false,
+    BoxColor    = Color3.fromRGB(255, 50, 50),
+    NameColor   = Color3.fromRGB(255, 255, 255),
+}
+
+-- ════════════════════════════════════════
+-- UTILITY
+-- ════════════════════════════════════════
+local function getCenter()
+    return Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+end
+
+local function angleDiff(from, to)
+    local d = to - from
+    return ((d + math.pi) % (math.pi * 2)) - math.pi
+end
+
+local function isVisible(part)
+    local origin = camera.CFrame.Position
+    local dir    = part.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {LP.Character, part.Parent}
+    local hit = workspace:Raycast(origin, dir, params)
+    return hit == nil or hit.Instance:IsDescendantOf(part.Parent)
+end
+
+local function isSameTeam(p)
+    if LP.Team and p.Team then return LP.Team == p.Team end
+    local mt = LP:GetAttribute("TeamID"); local pt = p:GetAttribute("TeamID")
+    if mt and pt then return string.byte(mt or "\0") == string.byte(pt or "\0") end
+    return false
+end
+
+local PART_PRIORITY = {
+    ["Head"]       = {"Head"},
+    ["Torso"]      = {"UpperTorso", "LowerTorso", "HumanoidRootPart"},
+    ["Head+Torso"] = {"Head", "UpperTorso", "LowerTorso"},
+}
+
+local function getBestPart(char, setting)
+    local names = PART_PRIORITY[setting] or {"Head"}
+    for _, n in ipairs(names) do
+        local p = char:FindFirstChild(n)
+        if p then return p end
+    end
+    return nil
+end
+
+-- ════════════════════════════════════════
+-- FOV CIRCLE
+-- ════════════════════════════════════════
+local fovCircle = nil
+pcall(function()
+    fovCircle              = Drawing.new("Circle")
+    fovCircle.NumSides     = 64
+    fovCircle.Filled       = false
+    fovCircle.Thickness    = 1.5
+    fovCircle.Visible      = false
+    fovCircle.Color        = Color3.fromRGB(255, 255, 255)
+    fovCircle.Transparency = 0.75
+end)
+
+-- ════════════════════════════════════════
+-- AIMBOT
+-- ════════════════════════════════════════
+local lockedTarget = nil
+
+local function isTargetValid(part)
+    if not part or not part.Parent then return false end
+    local hum = part.Parent:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if AimCFG.VisCheck and not isVisible(part) then return false end
+    if AimCFG.TeamCheck then
+        local p = Players:GetPlayerFromCharacter(part.Parent)
+        if p and isSameTeam(p) then return false end
+    end
+    return true
+end
+
+local function findAimTarget()
+    local c = getCenter()
+    local best, bestDist = nil, AimCFG.FOV
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP then continue end
+        if AimCFG.TeamCheck and isSameTeam(p) then continue end
+        local ch = p.Character; if not ch then continue end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+        local part = getBestPart(ch, AimCFG.TargetPart)
+        if not part then continue end
+        if AimCFG.VisCheck and not isVisible(part) then continue end
+        local sp, on = camera:WorldToScreenPoint(part.Position)
+        if not on then continue end
+        local dist = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+        if dist < bestDist then
+            bestDist = dist; best = part
+        end
+    end
+    return best
+end
+
+-- Bind at Camera + 2 so we override the game's own camera bind at Camera + 1
+RunService:BindToRenderStep("wt_aimbot", Enum.RenderPriority.Camera.Value + 2, function(dt)
+    camera = workspace.CurrentCamera
+    if not AimCFG.On then return end
+
+    -- Revalidate lock
+    if lockedTarget and not isTargetValid(lockedTarget) then
+        lockedTarget = nil
+    end
+    if not lockedTarget then
+        lockedTarget = findAimTarget()
+    end
+    if not lockedTarget then return end
+
+    local smooth = math.clamp(1 / AimCFG.Smoothness, 0.01, 1)
+    local cp     = camera.CFrame.Position
+    local dir    = (lockedTarget.Position - cp).Unit
+    local tPitch = math.asin(math.clamp(dir.Y, -1, 1))
+    local tYaw   = math.atan2(-dir.X, -dir.Z)
+    local cPitch, cYaw = camera.CFrame:ToOrientation()
+    local nPitch = cPitch + angleDiff(cPitch, tPitch) * smooth
+    local nYaw   = cYaw   + angleDiff(cYaw,   tYaw)   * smooth
+
+    pcall(function()
+        camera.CFrame = CFrame.new(cp)
+            * CFrame.Angles(0, nYaw, 0)
+            * CFrame.Angles(nPitch, 0, 0)
+    end)
+end)
+
+-- ════════════════════════════════════════
+-- SILENT AIM
+-- ════════════════════════════════════════
+local saTarget  = nil
+local saConn    = nil
+local saHooked  = false
+local saOldIdx  = nil
+
+local function saGetTarget()
+    local c = getCenter()
+    local best, bd = nil, SACFG.IgnoreFOV and math.huge or SACFG.FOV
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP then continue end
+        if SACFG.TeamCheck and isSameTeam(p) then continue end
+        local ch = p.Character; if not ch then continue end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+        local part = getBestPart(ch, SACFG.TargetPart)
+        if not part then continue end
+        if SACFG.VisCheck and not isVisible(part) then continue end
+        local sp, on = camera:WorldToScreenPoint(part.Position)
+        if not on then continue end
+        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+        if d < bd then bd = d; best = part end
+    end
+    return best
+end
+
+local function startSA()
+    -- Apply hookmetamethod once
+    if not saHooked then
+        local ok = pcall(function()
+            saOldIdx = hookmetamethod(game, "__index", newcclosure(function(self, idx, ...)
+                if SACFG.On and not checkcaller()
+                and idx == "ViewportSize" and self == workspace.CurrentCamera then
+                    if saTarget and math.random(1, 100) <= SACFG.HitChance then
+                        local pos, on = workspace.CurrentCamera:WorldToViewportPoint(saTarget)
+                        if on then return Vector2.new(pos.X * 2, pos.Y * 2) end
+                    end
+                end
+                return saOldIdx(self, idx, ...)
+            end))
+        end)
+        if ok then saHooked = true end
+    end
+    if saConn then saConn:Disconnect() end
+    saConn = RunService.Heartbeat:Connect(function()
+        if not SACFG.On then saTarget = nil; return end
+        local tp = saGetTarget()
+        saTarget = tp and tp.Position or nil
+    end)
+end
+
+local function stopSA()
+    SACFG.On = false; saTarget = nil
+    if saConn then saConn:Disconnect(); saConn = nil end
+end
+
+-- ════════════════════════════════════════
+-- ESP
+-- ════════════════════════════════════════
+local espObjects = {}
+
+local function newLine(color)
+    local d = Drawing.new("Line")
+    d.Visible   = false
+    d.Thickness = 1.5
+    d.Color     = color
+    return d
+end
+
+local function newText(color, size)
+    local d = Drawing.new("Text")
+    d.Visible   = false
+    d.Size      = size or 13
+    d.Center    = true
+    d.Outline   = true
+    d.Color     = color
+    pcall(function() d.Font = Drawing.Fonts.Plex end)
+    return d
+end
+
+local function createESPFor(p)
+    if espObjects[p] then return end
+    espObjects[p] = {
+        boxTop    = newLine(ESPCFG.BoxColor),
+        boxBot    = newLine(ESPCFG.BoxColor),
+        boxLeft   = newLine(ESPCFG.BoxColor),
+        boxRight  = newLine(ESPCFG.BoxColor),
+        name      = newText(ESPCFG.NameColor, 13),
+        hpBg      = newLine(Color3.fromRGB(0, 0, 0)),
+        hpBar     = newLine(Color3.fromRGB(0, 255, 100)),
+    }
+    espObjects[p].hpBg.Thickness  = 4
+    espObjects[p].hpBar.Thickness = 3
+end
+
+local function hideESPFor(p)
+    if not espObjects[p] then return end
+    for _, d in pairs(espObjects[p]) do d.Visible = false end
+end
+
+local function removeESPFor(p)
+    if not espObjects[p] then return end
+    for _, d in pairs(espObjects[p]) do pcall(function() d:Remove() end) end
+    espObjects[p] = nil
+end
+
+local function updateESP()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP then continue end
+        if not espObjects[p] then createESPFor(p) end
+
+        local show = ESPCFG.On
+        if ESPCFG.TeamCheck and isSameTeam(p) then show = false end
+
+        local ch = p.Character
+        if not show or not ch then hideESPFor(p); continue end
+
+        local hrp = ch:FindFirstChild("HumanoidRootPart")
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        local head = ch:FindFirstChild("Head")
+        if not hrp or not hum then hideESPFor(p); continue end
+
+        local topPos = head and (head.Position + Vector3.new(0, 0.8, 0)) or (hrp.Position + Vector3.new(0, 3, 0))
+        local botPos = hrp.Position - Vector3.new(0, 2.5, 0)
+        local sp, onS = camera:WorldToScreenPoint(hrp.Position)
+        if not onS then hideESPFor(p); continue end
+
+        local topSP = camera:WorldToScreenPoint(topPos)
+        local botSP = camera:WorldToScreenPoint(botPos)
+        local height = math.abs(topSP.Y - botSP.Y)
+        local width  = height * 0.55
+        local cx     = sp.X
+        local topY   = math.min(topSP.Y, botSP.Y)
+        local botY   = topY + height
+        local lx     = cx - width / 2
+        local rx     = cx + width / 2
+
+        local obj = espObjects[p]
+
+        -- Box edges
+        local bVis = ESPCFG.Boxes
+        obj.boxTop.From   = Vector2.new(lx, topY); obj.boxTop.To   = Vector2.new(rx, topY)
+        obj.boxBot.From   = Vector2.new(lx, botY); obj.boxBot.To   = Vector2.new(rx, botY)
+        obj.boxLeft.From  = Vector2.new(lx, topY); obj.boxLeft.To  = Vector2.new(lx, botY)
+        obj.boxRight.From = Vector2.new(rx, topY); obj.boxRight.To = Vector2.new(rx, botY)
+        for _, side in ipairs({"boxTop","boxBot","boxLeft","boxRight"}) do
+            obj[side].Color   = ESPCFG.BoxColor
+            obj[side].Visible = bVis
+        end
+
+        -- Name
+        obj.name.Position = Vector2.new(cx, topY - 16)
+        obj.name.Text     = p.Name
+        obj.name.Color    = ESPCFG.NameColor
+        obj.name.Visible  = ESPCFG.Names
+
+        -- Health bar (left of box)
+        local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+        local barX    = lx - 5
+        local hpColor = Color3.fromRGB(
+            math.floor(255 * (1 - hpRatio)),
+            math.floor(255 * hpRatio),
+            40
+        )
+        obj.hpBg.From    = Vector2.new(barX, topY); obj.hpBg.To   = Vector2.new(barX, botY)
+        obj.hpBar.From   = Vector2.new(barX, botY); obj.hpBar.To  = Vector2.new(barX, botY - height * hpRatio)
+        obj.hpBar.Color  = hpColor
+        obj.hpBg.Visible  = ESPCFG.Health
+        obj.hpBar.Visible = ESPCFG.Health
+    end
+end
+
+Players.PlayerRemoving:Connect(removeESPFor)
+Players.PlayerAdded:Connect(function(p)
+    if ESPCFG.On then createESPFor(p) end
+end)
+
+-- ════════════════════════════════════════
+-- AC BYPASS
+-- ════════════════════════════════════════
+local bypassDone = false
+
+local function applyBypass()
+    if bypassDone then
+        print("[WT] Bypass already applied"); return
+    end
+
+    -- Step 1: Hook __namecall to block Kick + AntiExploit remote
+    local antiRemote = nil
+    pcall(function()
+        antiRemote = RS:FindFirstChild("Remotes")
+            and RS.Remotes:FindFirstChild("AntiExploit")
+    end)
+
+    local mt  = getrawmetatable(game)
+    local old = mt.__namecall
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        local m = getnamecallmethod()
+        -- Block all kick calls
+        if m == "Kick" or m == "kick" or m:lower():find("kick") then return end
+        -- Block AntiExploit remote fire
+        if antiRemote and self == antiRemote
+        and (m == "FireServer" or m == "InvokeServer") then
+            return
+        end
+        return old(self, ...)
+    end)
+    setreadonly(mt, true)
+
+    -- Step 2: Disable AC scripts by name keyword
+    local acKeywords = {
+        "anticheat", "antiexploit", "exploitcheck",
+        "cheatdetect", "kickscript", "banhandler",
+        "integritycheck", "clientintegrity",
+    }
+    local function killACScript(obj)
+        if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+            local n = obj.Name:lower()
+            for _, kw in ipairs(acKeywords) do
+                if n:find(kw) then
+                    pcall(function() obj.Disabled = true end)
+                    break
+                end
+            end
+        end
+    end
+    for _, obj in ipairs(game:GetDescendants()) do killACScript(obj) end
+    game.DescendantAdded:Connect(killACScript)
+
+    -- Step 3: Block hidden remotes via secondary hookmetamethod on __namecall
+    local blockedNames = {
+        "kickplayer", "banplayer", "reportplayer",
+        "anticheat", "flagplayer", "punish",
+    }
+    pcall(function()
+        local oldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local m = getnamecallmethod()
+            if m == "FireServer" or m == "InvokeServer" then
+                local name = (self and self.Name or ""):lower()
+                for _, blocked in ipairs(blockedNames) do
+                    if name:find(blocked) then return end
+                end
+            end
+            return oldNC(self, ...)
+        end))
+    end)
+
+    bypassDone = true
+    print("[Weaponry Tool] AC Bypass applied ✓")
+end
+
+-- ════════════════════════════════════════
+-- UI — AIMBOT
+-- ════════════════════════════════════════
+local AimSection = AimTab:Section("Aimbot")
+
+AimSection:Toggle("Enable", false, function(v)
+    AimCFG.On = v
+    if not v then lockedTarget = nil end
+    if fovCircle then fovCircle.Visible = v and AimCFG.DrawFOV end
+end)
+AimSection:Slider("FOV", 0, 400, 120, function(v)
+    AimCFG.FOV = v
+    if fovCircle then fovCircle.Radius = v end
+end)
+AimSection:Slider("Smoothness", 1, 50, 8, function(v)
+    AimCFG.Smoothness = v
+end)
+AimSection:Toggle("Draw FOV Circle", true, function(v)
+    AimCFG.DrawFOV = v
+    if fovCircle then fovCircle.Visible = AimCFG.On and v end
+end)
+AimSection:Toggle("Team Check", false, function(v)
+    AimCFG.TeamCheck = v
+end)
+AimSection:Toggle("Visible Check", false, function(v)
+    AimCFG.VisCheck = v
+end)
+
+-- ════════════════════════════════════════
+-- UI — SILENT AIM
+-- ════════════════════════════════════════
+local SASection = SATab:Section("Silent Aim")
+
+SASection:Label("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
+SASection:Toggle("Enable", false, function(v)
+    SACFG.On = v
+    if v then startSA() else stopSA() end
+end)
+SASection:Slider("Hit Chance (%)", 1, 100, 100, function(v)
+    SACFG.HitChance = v
+end)
+SASection:Slider("FOV Size (px)", 10, 600, 400, function(v)
+    SACFG.FOV = v
+end)
+SASection:Toggle("Ignore FOV", false, function(v)
+    SACFG.IgnoreFOV = v
+end)
+SASection:Toggle("Team Check", true, function(v)
+    SACFG.TeamCheck = v
+end)
+SASection:Toggle("Visible Check", false, function(v)
+    SACFG.VisCheck = v
+end)
+
+-- ════════════════════════════════════════
+-- UI — ESP
+-- ════════════════════════════════════════
+local ESPSection = ESPTab:Section("ESP")
+
+ESPSection:Toggle("Enable", false, function(v)
+    ESPCFG.On = v
+    if not v then
+        for _, p in ipairs(Players:GetPlayers()) do
+            hideESPFor(p)
+        end
+    end
+end)
+ESPSection:Toggle("Boxes", true, function(v)
+    ESPCFG.Boxes = v
+end)
+ESPSection:Toggle("Names", true, function(v)
+    ESPCFG.Names = v
+end)
+ESPSection:Toggle("Health Bars", true, function(v)
+    ESPCFG.Health = v
+end)
+ESPSection:Toggle("Team Check (hide team)", false, function(v)
+    ESPCFG.TeamCheck = v
+end)
+ESPSection:Colorpicker("Box Color", Color3.fromRGB(255, 50, 50), function(v)
+    ESPCFG.BoxColor = v
+    for _, obj in pairs(espObjects) do
+        for _, side in ipairs({"boxTop","boxBot","boxLeft","boxRight"}) do
+            if obj[side] then obj[side].Color = v end
+        end
+    end
+end)
+ESPSection:Colorpicker("Name Color", Color3.fromRGB(255, 255, 255), function(v)
+    ESPCFG.NameColor = v
+    for _, obj in pairs(espObjects) do
+        if obj.name then obj.name.Color = v end
+    end
+end)
+
+-- ════════════════════════════════════════
+-- UI — MISC
+-- ════════════════════════════════════════
+local ACSection   = MiscTab:Section("Anti-Cheat")
+local CtrlSection = MiscTab:Section("Controls")
+
+ACSection:Label("Auto-applied on load")
+ACSection:Button("Re-apply Bypass", function()
+    bypassDone = false; applyBypass()
+end)
+
+CtrlSection:Button("Stop All Features", function()
+    AimCFG.On = false; lockedTarget = nil
+    stopSA()
+    ESPCFG.On = false
+    for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
+    if fovCircle then fovCircle.Visible = false end
+    print("[Weaponry Tool] All features stopped")
+end)
+
+if IsMobile then
+    CtrlSection:Label("Mobile Mode: ON")
+end
+
+-- ════════════════════════════════════════
+-- AUTO APPLY BYPASS ON LOAD
+-- ════════════════════════════════════════
+task.spawn(applyBypass)
+
+-- ════════════════════════════════════════
+-- RENDER STEP — FOV + ESP
+-- ════════════════════════════════════════
+RunService.RenderStepped:Connect(function()
+    camera = workspace.CurrentCamera
+    local center = getCenter()
+
+    -- FOV circle update
+    if fovCircle then
+        fovCircle.Position = center
+        fovCircle.Radius   = AimCFG.FOV
+        fovCircle.Visible  = AimCFG.On and AimCFG.DrawFOV
+    end
+
+    -- ESP
+    updateESP()
+end)
+
+-- ════════════════════════════════════════
+-- DONE
+-- ════════════════════════════════════════
+print("[Weaponry Tool v1.0] Loaded — " .. (IsMobile and "MOBILE" or "PC"))
