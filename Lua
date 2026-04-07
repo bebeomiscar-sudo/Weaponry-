@@ -35,7 +35,7 @@ local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 -- VLIB LOAD
 -- Replace the URL below with your raw VLib URL
 -- ════════════════════════════════════════
-local VLib = loadstring(game:HttpGet("YOUR_VLIB_RAW_URL_HERE"))()
+local VLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/bebeomiscar-sudo/Solix-ui/refs/heads/main/Lua"))()
 
 -- ════════════════════════════════════════
 -- WINDOW + TABS
