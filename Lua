@@ -1,14 +1,8 @@
 --[[
     WEAPONRY TOOL v1.0
-    Game: Weaponry
-    Features: Aimbot | Silent Aim | ESP | Mobile Support
-    UI: VLib
+    Features: Aimbot | Silent Aim | Ragebot | ESP | Mobile Support
+    UI: LinoriaLib
 ]]
-
--- ════════════════════════════════════════
--- GLOBAL (must be set before VLib loads)
--- ════════════════════════════════════════
-MAINTTL = "WT"
 
 -- ════════════════════════════════════════
 -- SERVICES
@@ -24,19 +18,36 @@ local camera   = workspace.CurrentCamera
 local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 
 -- ════════════════════════════════════════
--- VLIB LOAD
--- Replace the URL below with your raw VLib URL
+-- LINORIA LIBRARY
 -- ════════════════════════════════════════
-local VLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/bebeomiscar-sudo/Weaponry-/refs/heads/main/Lua"))()
+local repo         = "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
+local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
--- ════════════════════════════════════════
--- WINDOW + TABS
--- ════════════════════════════════════════
-local Window    = VLib:Window("Weaponry")
-local AimTab    = Window:Tab("Aimbot")
-local SATab     = Window:Tab("Silent Aim")
-local ESPTab    = Window:Tab("ESP")
-local MiscTab   = Window:Tab("Misc")
+Library.ShowToggleFrameInKeybinds = true
+
+local Window = Library:CreateWindow({
+    Title                = "Weaponry Tool v1.0",
+    Center               = true,
+    AutoShow             = true,
+    Resizable            = true,
+    ShowCustomCursor     = false,
+    UnlockMouseWhileOpen = true,
+    NotifySide           = "Left",
+    TabPadding           = 8,
+    MenuFadeTime         = 0.2,
+    Size                 = UDim2.fromOffset(480, 520),
+})
+
+local Tabs = {
+    Aimbot    = Window:AddTab("Aimbot"),
+    SilentAim = Window:AddTab("Silent Aim"),
+    Ragebot   = Window:AddTab("Ragebot"),
+    ESP       = Window:AddTab("ESP"),
+    Misc      = Window:AddTab("Misc"),
+    Settings  = Window:AddTab("Settings"),
+}
 
 -- ════════════════════════════════════════
 -- CONFIGS
@@ -60,13 +71,19 @@ local SACFG = {
     TargetPart = "Head",
 }
 local ESPCFG = {
-    On          = false,
-    Boxes       = true,
-    Names       = true,
-    Health      = true,
-    TeamCheck   = false,
-    BoxColor    = Color3.fromRGB(255, 50, 50),
-    NameColor   = Color3.fromRGB(255, 255, 255),
+    On        = false,
+    Boxes     = true,
+    Names     = true,
+    Health    = true,
+    TeamCheck = false,
+    BoxColor  = Color3.fromRGB(255, 50, 50),
+    NameColor = Color3.fromRGB(255, 255, 255),
+}
+local RBState = {
+    active    = false,
+    visCheck  = false,
+    teamCheck = false,
+    maxDist   = 999,
 }
 
 -- ════════════════════════════════════════
@@ -166,12 +183,9 @@ local function findAimTarget()
     return best
 end
 
--- Bind at Camera + 2 so we override the game's own camera bind at Camera + 1
 RunService:BindToRenderStep("wt_aimbot", Enum.RenderPriority.Camera.Value + 2, function(dt)
     camera = workspace.CurrentCamera
     if not AimCFG.On then return end
-
-    -- Revalidate lock
     if lockedTarget and not isTargetValid(lockedTarget) then
         lockedTarget = nil
     end
@@ -251,6 +265,95 @@ end
 local function stopSA()
     SACFG.On = false; saTarget = nil
     if saConn then saConn:Disconnect(); saConn = nil end
+end
+
+-- ════════════════════════════════════════
+-- RAGEBOT
+-- ════════════════════════════════════════
+local rbHooked = false
+local rbOldNC  = nil
+local WeaponHandler = nil
+
+pcall(function()
+    WeaponHandler = RS:WaitForChild("Remotes", 5)
+        :WaitForChild("WeaponHandler", 5)
+end)
+
+local function rb_getClosest()
+    if not LP.Character or not LP.Character:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+    local target, bestDist = nil, RBState.maxDist
+    for _, v in ipairs(Players:GetPlayers()) do
+        if v == LP then continue end
+        if RBState.teamCheck and isSameTeam(v) then continue end
+        local ch = v.Character
+        if not ch then continue end
+        local head = ch:FindFirstChild("Head")
+        if not head then continue end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+        local dist = (LP.Character.HumanoidRootPart.Position - head.Position).Magnitude
+        if dist < bestDist then
+            if RBState.visCheck then
+                local origin = workspace.CurrentCamera.CFrame.Position
+                local dir    = head.Position - origin
+                local params = RaycastParams.new()
+                params.FilterType = Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances = {LP.Character, ch}
+                local hit = workspace:Raycast(origin, dir, params)
+                if hit and not hit.Instance:IsDescendantOf(ch) then continue end
+            end
+            bestDist = dist
+            target   = head
+        end
+    end
+    return target
+end
+
+local function startRagebot()
+    if rbHooked then return end
+    if not WeaponHandler then
+        Library:Notify("WeaponHandler remote not found", 3); return
+    end
+    local ok = pcall(function()
+        rbOldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer"
+            and self == WeaponHandler
+            and RBState.active
+            and not checkcaller() then
+                local args = {...}
+                if typeof(args[1]) == "number"
+                and typeof(args[2]) == "number"
+                and typeof(args[3]) == "table"
+                and args[3].RayDir then
+                    local target = rb_getClosest()
+                    if target then
+                        local origin = workspace.CurrentCamera.CFrame.Position
+                        local dir    = (target.Position - origin).Unit
+                        args[3].RayDir     = vector.create(dir.X, dir.Y, dir.Z)
+                        local now          = tick()
+                        args[2]            = now
+                        args[3].BulletTick = now
+                        return rbOldNC(self, args[1], args[2], args[3])
+                    end
+                end
+            end
+            return rbOldNC(self, ...)
+        end))
+    end)
+    if ok then
+        rbHooked = true
+        Library:Notify("Ragebot hook applied", 3)
+    else
+        Library:Notify("Ragebot hook FAILED", 3)
+    end
+end
+
+local function stopRagebot()
+    RBState.active = false
+    Library:Notify("Ragebot disabled", 2)
 end
 
 -- ════════════════════════════════════════
@@ -336,7 +439,6 @@ local function updateESP()
 
         local obj = espObjects[p]
 
-        -- Box edges
         local bVis = ESPCFG.Boxes
         obj.boxTop.From   = Vector2.new(lx, topY); obj.boxTop.To   = Vector2.new(rx, topY)
         obj.boxBot.From   = Vector2.new(lx, botY); obj.boxBot.To   = Vector2.new(rx, botY)
@@ -347,13 +449,11 @@ local function updateESP()
             obj[side].Visible = bVis
         end
 
-        -- Name
         obj.name.Position = Vector2.new(cx, topY - 16)
         obj.name.Text     = p.Name
         obj.name.Color    = ESPCFG.NameColor
         obj.name.Visible  = ESPCFG.Names
 
-        -- Health bar (left of box)
         local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
         local barX    = lx - 5
         local hpColor = Color3.fromRGB(
@@ -361,8 +461,8 @@ local function updateESP()
             math.floor(255 * hpRatio),
             40
         )
-        obj.hpBg.From     = Vector2.new(barX, topY); obj.hpBg.To   = Vector2.new(barX, botY)
-        obj.hpBar.From    = Vector2.new(barX, botY); obj.hpBar.To  = Vector2.new(barX, botY - height * hpRatio)
+        obj.hpBg.From     = Vector2.new(barX, topY); obj.hpBg.To  = Vector2.new(barX, botY)
+        obj.hpBar.From    = Vector2.new(barX, botY); obj.hpBar.To = Vector2.new(barX, botY - height * hpRatio)
         obj.hpBar.Color   = hpColor
         obj.hpBg.Visible  = ESPCFG.Health
         obj.hpBar.Visible = ESPCFG.Health
@@ -375,116 +475,180 @@ Players.PlayerAdded:Connect(function(p)
 end)
 
 -- ════════════════════════════════════════
--- UI — AIMBOT
+-- UI — AIMBOT TAB
 -- ════════════════════════════════════════
-local AimSection = AimTab:Section("Aimbot")
+local AimL = Tabs.Aimbot:AddLeftGroupbox("Main")
+local AimR = Tabs.Aimbot:AddRightGroupbox("FOV Settings")
 
-AimSection:Toggle("Enable", false, function(v)
+AimL:AddToggle("AimOn", {Text = "Enabled", Default = false, Callback = function(v)
     AimCFG.On = v
     if not v then lockedTarget = nil end
     if fovCircle then fovCircle.Visible = v and AimCFG.DrawFOV end
-end)
-AimSection:Slider("FOV", 0, 400, 120, function(v)
+end})
+AimL:AddSlider("AimSmooth", {Text = "Smoothness", Default = 8, Min = 1, Max = 50, Rounding = 1, Callback = function(v)
+    AimCFG.Smoothness = v
+end})
+AimL:AddDropdown("AimPart", {Text = "Target Part", Default = "Head", Values = {"Head", "Torso", "Head+Torso"}, Callback = function(v)
+    AimCFG.TargetPart = v
+end})
+AimL:AddToggle("AimTeam", {Text = "Team Check", Default = false, Callback = function(v)
+    AimCFG.TeamCheck = v
+end})
+AimL:AddToggle("AimVis", {Text = "Visible Check", Default = false, Callback = function(v)
+    AimCFG.VisCheck = v
+end})
+
+AimR:AddSlider("AimFOV", {Text = "Max FOV", Default = 120, Min = 0, Max = 400, Rounding = 0, Callback = function(v)
     AimCFG.FOV = v
     if fovCircle then fovCircle.Radius = v end
-end)
-AimSection:Slider("Smoothness", 1, 50, 8, function(v)
-    AimCFG.Smoothness = v
-end)
-AimSection:Toggle("Draw FOV Circle", true, function(v)
+end})
+AimR:AddToggle("AimDrawFOV", {Text = "Draw FOV Circle", Default = true, Callback = function(v)
     AimCFG.DrawFOV = v
     if fovCircle then fovCircle.Visible = AimCFG.On and v end
-end)
-AimSection:Toggle("Team Check", false, function(v)
-    AimCFG.TeamCheck = v
-end)
-AimSection:Toggle("Visible Check", false, function(v)
-    AimCFG.VisCheck = v
-end)
+end})
 
 -- ════════════════════════════════════════
--- UI — SILENT AIM
+-- UI — SILENT AIM TAB
 -- ════════════════════════════════════════
-local SASection = SATab:Section("Silent Aim")
+local SAL = Tabs.SilentAim:AddLeftGroupbox("Main")
+local SAR = Tabs.SilentAim:AddRightGroupbox("FOV & Targeting")
 
-SASection:Label("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
-SASection:Toggle("Enable", false, function(v)
+SAL:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
+SAL:AddToggle("SAOn", {Text = "Enabled", Default = false, Callback = function(v)
     SACFG.On = v
     if v then startSA() else stopSA() end
-end)
-SASection:Slider("Hit Chance (%)", 1, 100, 100, function(v)
+end})
+SAL:AddSlider("SAHit", {Text = "Hit Chance (%)", Default = 100, Min = 1, Max = 100, Rounding = 0, Callback = function(v)
     SACFG.HitChance = v
-end)
-SASection:Slider("FOV Size (px)", 10, 600, 400, function(v)
-    SACFG.FOV = v
-end)
-SASection:Toggle("Ignore FOV", false, function(v)
-    SACFG.IgnoreFOV = v
-end)
-SASection:Toggle("Team Check", true, function(v)
+end})
+SAL:AddToggle("SATeam", {Text = "Team Check", Default = true, Callback = function(v)
     SACFG.TeamCheck = v
-end)
-SASection:Toggle("Visible Check", false, function(v)
+end})
+SAL:AddToggle("SAVis", {Text = "Visible Check", Default = false, Callback = function(v)
     SACFG.VisCheck = v
-end)
+end})
+SAL:AddDropdown("SAPart", {Text = "Target Part", Default = "Head", Values = {"Head", "Torso", "Head+Torso"}, Callback = function(v)
+    SACFG.TargetPart = v
+end})
+
+SAR:AddSlider("SAFOV", {Text = "FOV Size (px)", Default = 400, Min = 10, Max = 600, Rounding = 0, Callback = function(v)
+    SACFG.FOV = v
+end})
+SAR:AddToggle("SAIgnFOV", {Text = "Ignore FOV", Default = false, Callback = function(v)
+    SACFG.IgnoreFOV = v
+end})
 
 -- ════════════════════════════════════════
--- UI — ESP
+-- UI — RAGEBOT TAB
 -- ════════════════════════════════════════
-local ESPSection = ESPTab:Section("ESP")
+local RBL = Tabs.Ragebot:AddLeftGroupbox("Ragebot")
+local RBR = Tabs.Ragebot:AddRightGroupbox("Filters")
 
-ESPSection:Toggle("Enable", false, function(v)
+RBL:AddLabel("Remote: " .. (WeaponHandler and "Found" or "NOT FOUND"))
+RBL:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
+RBL:AddToggle("RBOn", {Text = "Enabled", Default = false, Callback = function(v)
+    RBState.active = v
+    if v then startRagebot() else stopRagebot() end
+end})
+
+RBR:AddSlider("RBDist", {Text = "Max Distance", Default = 999, Min = 10, Max = 999, Rounding = 0, Callback = function(v)
+    RBState.maxDist = v
+end})
+RBR:AddToggle("RBTeam", {Text = "Team Check", Default = false, Callback = function(v)
+    RBState.teamCheck = v
+end})
+RBR:AddToggle("RBVis", {Text = "Visible Check", Default = false, Callback = function(v)
+    RBState.visCheck = v
+end})
+
+-- ════════════════════════════════════════
+-- UI — ESP TAB
+-- ════════════════════════════════════════
+local ESPL = Tabs.ESP:AddLeftGroupbox("Main")
+local ESPR = Tabs.ESP:AddRightGroupbox("Colors")
+
+ESPL:AddToggle("ESPOn", {Text = "Enabled", Default = false, Callback = function(v)
     ESPCFG.On = v
     if not v then
-        for _, p in ipairs(Players:GetPlayers()) do
-            hideESPFor(p)
-        end
+        for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
     end
-end)
-ESPSection:Toggle("Boxes", true, function(v)
+end})
+ESPL:AddToggle("ESPBoxes", {Text = "Boxes", Default = true, Callback = function(v)
     ESPCFG.Boxes = v
-end)
-ESPSection:Toggle("Names", true, function(v)
+end})
+ESPL:AddToggle("ESPNames", {Text = "Names", Default = true, Callback = function(v)
     ESPCFG.Names = v
-end)
-ESPSection:Toggle("Health Bars", true, function(v)
+end})
+ESPL:AddToggle("ESPHealth", {Text = "Health Bars", Default = true, Callback = function(v)
     ESPCFG.Health = v
-end)
-ESPSection:Toggle("Team Check (hide team)", false, function(v)
+end})
+ESPL:AddToggle("ESPTeam", {Text = "Team Check (hide team)", Default = false, Callback = function(v)
     ESPCFG.TeamCheck = v
-end)
-ESPSection:Colorpicker("Box Color", Color3.fromRGB(255, 50, 50), function(v)
+end})
+
+ESPR:AddLabel("Box Color"):AddColorPicker("ESPBoxColor", {Default = Color3.fromRGB(255, 50, 50), Callback = function(v)
     ESPCFG.BoxColor = v
     for _, obj in pairs(espObjects) do
         for _, side in ipairs({"boxTop","boxBot","boxLeft","boxRight"}) do
             if obj[side] then obj[side].Color = v end
         end
     end
-end)
-ESPSection:Colorpicker("Name Color", Color3.fromRGB(255, 255, 255), function(v)
+end})
+ESPR:AddLabel("Name Color"):AddColorPicker("ESPNameColor", {Default = Color3.fromRGB(255, 255, 255), Callback = function(v)
     ESPCFG.NameColor = v
     for _, obj in pairs(espObjects) do
         if obj.name then obj.name.Color = v end
     end
-end)
+end})
 
 -- ════════════════════════════════════════
--- UI — MISC
+-- UI — MISC TAB
 -- ════════════════════════════════════════
-local CtrlSection = MiscTab:Section("Controls")
+local MiscL = Tabs.Misc:AddLeftGroupbox("Controls")
 
-CtrlSection:Button("Stop All Features", function()
+MiscL:AddButton({Text = "Stop All Features", Func = function()
     AimCFG.On = false; lockedTarget = nil
     stopSA()
+    stopRagebot()
     ESPCFG.On = false
     for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
     if fovCircle then fovCircle.Visible = false end
-    print("[Weaponry Tool] All features stopped")
-end)
+
+    pcall(function() Options.AimOn:SetValue(false) end)
+    pcall(function() Options.SAOn:SetValue(false) end)
+    pcall(function() Options.RBOn:SetValue(false) end)
+    pcall(function() Options.ESPOn:SetValue(false) end)
+
+    Library:Notify("All features stopped", 3)
+end})
 
 if IsMobile then
-    CtrlSection:Label("Mobile Mode: ON")
+    MiscL:AddLabel("Mobile Mode: ON")
 end
+
+MiscL:AddButton({Text = "Unload UI", Func = function()
+    AimCFG.On = false; lockedTarget = nil
+    stopSA()
+    stopRagebot()
+    ESPCFG.On = false
+    for _, p in ipairs(Players:GetPlayers()) do removeESPFor(p) end
+    if fovCircle then pcall(function() fovCircle:Remove() end) end
+    pcall(function() RunService:UnbindFromRenderStep("wt_aimbot") end)
+    Library:Unload()
+end})
+
+-- ════════════════════════════════════════
+-- UI — SETTINGS TAB
+-- ════════════════════════════════════════
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+ThemeManager:SetFolder("WeaponryTool_v10")
+SaveManager:SetFolder("WeaponryTool_v10")
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
 
 -- ════════════════════════════════════════
 -- RENDER STEP — FOV + ESP
@@ -493,18 +657,17 @@ RunService.RenderStepped:Connect(function()
     camera = workspace.CurrentCamera
     local center = getCenter()
 
-    -- FOV circle update
     if fovCircle then
         fovCircle.Position = center
         fovCircle.Radius   = AimCFG.FOV
         fovCircle.Visible  = AimCFG.On and AimCFG.DrawFOV
     end
 
-    -- ESP
     updateESP()
 end)
 
 -- ════════════════════════════════════════
 -- DONE
 -- ════════════════════════════════════════
-print("[Weaponry Tool v1.0] Loaded — " .. (IsMobile and "MOBILE" or "PC"))
+Library:Notify("Weaponry Tool v1.0 loaded — " .. (IsMobile and "MOBILE" or "PC"), 6)
+print("[Weaponry Tool v1.0] " .. (IsMobile and "MOBILE" or "PC"))
