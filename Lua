@@ -1,17 +1,8 @@
 --[[
     WEAPONRY TOOL v1.0
-    Game: Weaponry (PlaceId: 3297964905)
     Features: Aimbot | Silent Aim | ESP | AC Bypass | Mobile Support
     UI: LinoriaLib
 ]]
-
--- ════════════════════════════════════════
--- GAME CHECK
--- ════════════════════════════════════════
-if game.PlaceId ~= 3297964905 then
-    warn("[Weaponry Tool] Wrong game — cancelled")
-    return
-end
 
 -- ════════════════════════════════════════
 -- SERVICES
@@ -598,7 +589,6 @@ MiscR:AddButton({Text = "Stop All Features", Func = function()
     for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
     if fovCircle then fovCircle.Visible = false end
 
-    -- Sync UI toggles back
     pcall(function() Options.AimOn:SetValue(false) end)
     pcall(function() Options.SAOn:SetValue(false) end)
     pcall(function() Options.ESPOn:SetValue(false) end)
