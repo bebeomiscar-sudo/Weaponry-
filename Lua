@@ -1,8 +1,14 @@
 --[[
     WEAPONRY TOOL v1.0
+    Game: Weaponry
     Features: Aimbot | Silent Aim | ESP | Mobile Support
-    UI: LinoriaLib
+    UI: VLib
 ]]
+
+-- ════════════════════════════════════════
+-- GLOBAL (must be set before VLib loads)
+-- ════════════════════════════════════════
+MAINTTL = "WT"
 
 -- ════════════════════════════════════════
 -- SERVICES
@@ -18,35 +24,19 @@ local camera   = workspace.CurrentCamera
 local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 
 -- ════════════════════════════════════════
--- LINORIA LIBRARY
+-- VLIB LOAD
+-- Replace the URL below with your raw VLib URL
 -- ════════════════════════════════════════
-local repo         = "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
-local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
-local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+local VLib = loadstring(game:HttpGet("YOUR_VLIB_RAW_URL_HERE"))()
 
-Library.ShowToggleFrameInKeybinds = true
-
-local Window = Library:CreateWindow({
-    Title                = "Weaponry Tool v1.0",
-    Center               = true,
-    AutoShow             = true,
-    Resizable            = true,
-    ShowCustomCursor     = false,
-    UnlockMouseWhileOpen = true,
-    NotifySide           = "Left",
-    TabPadding           = 8,
-    MenuFadeTime         = 0.2,
-    Size                 = UDim2.fromOffset(480, 520),
-})
-
-local Tabs = {
-    Aimbot    = Window:AddTab("Aimbot"),
-    SilentAim = Window:AddTab("Silent Aim"),
-    ESP       = Window:AddTab("ESP"),
-    Misc      = Window:AddTab("Misc"),
-    Settings  = Window:AddTab("Settings"),
-}
+-- ════════════════════════════════════════
+-- WINDOW + TABS
+-- ════════════════════════════════════════
+local Window    = VLib:Window("Weaponry")
+local AimTab    = Window:Tab("Aimbot")
+local SATab     = Window:Tab("Silent Aim")
+local ESPTab    = Window:Tab("ESP")
+local MiscTab   = Window:Tab("Misc")
 
 -- ════════════════════════════════════════
 -- CONFIGS
@@ -70,13 +60,13 @@ local SACFG = {
     TargetPart = "Head",
 }
 local ESPCFG = {
-    On        = false,
-    Boxes     = true,
-    Names     = true,
-    Health    = true,
-    TeamCheck = false,
-    BoxColor  = Color3.fromRGB(255, 50, 50),
-    NameColor = Color3.fromRGB(255, 255, 255),
+    On          = false,
+    Boxes       = true,
+    Names       = true,
+    Health      = true,
+    TeamCheck   = false,
+    BoxColor    = Color3.fromRGB(255, 50, 50),
+    NameColor   = Color3.fromRGB(255, 255, 255),
 }
 
 -- ════════════════════════════════════════
@@ -176,9 +166,12 @@ local function findAimTarget()
     return best
 end
 
+-- Bind at Camera + 2 so we override the game's own camera bind at Camera + 1
 RunService:BindToRenderStep("wt_aimbot", Enum.RenderPriority.Camera.Value + 2, function(dt)
     camera = workspace.CurrentCamera
     if not AimCFG.On then return end
+
+    -- Revalidate lock
     if lockedTarget and not isTargetValid(lockedTarget) then
         lockedTarget = nil
     end
@@ -343,6 +336,7 @@ local function updateESP()
 
         local obj = espObjects[p]
 
+        -- Box edges
         local bVis = ESPCFG.Boxes
         obj.boxTop.From   = Vector2.new(lx, topY); obj.boxTop.To   = Vector2.new(rx, topY)
         obj.boxBot.From   = Vector2.new(lx, botY); obj.boxBot.To   = Vector2.new(rx, botY)
@@ -353,11 +347,13 @@ local function updateESP()
             obj[side].Visible = bVis
         end
 
+        -- Name
         obj.name.Position = Vector2.new(cx, topY - 16)
         obj.name.Text     = p.Name
         obj.name.Color    = ESPCFG.NameColor
         obj.name.Visible  = ESPCFG.Names
 
+        -- Health bar (left of box)
         local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
         local barX    = lx - 5
         local hpColor = Color3.fromRGB(
@@ -365,8 +361,8 @@ local function updateESP()
             math.floor(255 * hpRatio),
             40
         )
-        obj.hpBg.From     = Vector2.new(barX, topY); obj.hpBg.To  = Vector2.new(barX, botY)
-        obj.hpBar.From    = Vector2.new(barX, botY); obj.hpBar.To = Vector2.new(barX, botY - height * hpRatio)
+        obj.hpBg.From     = Vector2.new(barX, topY); obj.hpBg.To   = Vector2.new(barX, botY)
+        obj.hpBar.From    = Vector2.new(barX, botY); obj.hpBar.To  = Vector2.new(barX, botY - height * hpRatio)
         obj.hpBar.Color   = hpColor
         obj.hpBg.Visible  = ESPCFG.Health
         obj.hpBar.Visible = ESPCFG.Health
@@ -379,170 +375,116 @@ Players.PlayerAdded:Connect(function(p)
 end)
 
 -- ════════════════════════════════════════
--- UI — AIMBOT TAB
+-- UI — AIMBOT
 -- ════════════════════════════════════════
-local AimL = Tabs.Aimbot:AddLeftGroupbox("Main")
-local AimR = Tabs.Aimbot:AddRightGroupbox("FOV Settings")
+local AimSection = AimTab:Section("Aimbot")
 
-AimL:AddToggle("AimOn", {Text = "Enabled", Default = false, Callback = function(v)
+AimSection:Toggle("Enable", false, function(v)
     AimCFG.On = v
     if not v then lockedTarget = nil end
     if fovCircle then fovCircle.Visible = v and AimCFG.DrawFOV end
-end})
-
-AimL:AddSlider("AimSmooth", {Text = "Smoothness", Default = 8, Min = 1, Max = 50, Rounding = 1, Callback = function(v)
-    AimCFG.Smoothness = v
-end})
-
-AimL:AddDropdown("AimPart", {Text = "Target Part", Default = "Head", Values = {"Head", "Torso", "Head+Torso"}, Callback = function(v)
-    AimCFG.TargetPart = v
-end})
-
-AimL:AddToggle("AimTeam", {Text = "Team Check", Default = false, Callback = function(v)
-    AimCFG.TeamCheck = v
-end})
-
-AimL:AddToggle("AimVis", {Text = "Visible Check", Default = false, Callback = function(v)
-    AimCFG.VisCheck = v
-end})
-
-AimR:AddSlider("AimFOV", {Text = "Max FOV", Default = 120, Min = 0, Max = 400, Rounding = 0, Callback = function(v)
+end)
+AimSection:Slider("FOV", 0, 400, 120, function(v)
     AimCFG.FOV = v
     if fovCircle then fovCircle.Radius = v end
-end})
-
-AimR:AddToggle("AimDrawFOV", {Text = "Draw FOV Circle", Default = true, Callback = function(v)
+end)
+AimSection:Slider("Smoothness", 1, 50, 8, function(v)
+    AimCFG.Smoothness = v
+end)
+AimSection:Toggle("Draw FOV Circle", true, function(v)
     AimCFG.DrawFOV = v
     if fovCircle then fovCircle.Visible = AimCFG.On and v end
-end})
+end)
+AimSection:Toggle("Team Check", false, function(v)
+    AimCFG.TeamCheck = v
+end)
+AimSection:Toggle("Visible Check", false, function(v)
+    AimCFG.VisCheck = v
+end)
 
 -- ════════════════════════════════════════
--- UI — SILENT AIM TAB
+-- UI — SILENT AIM
 -- ════════════════════════════════════════
-local SAL = Tabs.SilentAim:AddLeftGroupbox("Main")
-local SAR = Tabs.SilentAim:AddRightGroupbox("FOV & Targeting")
+local SASection = SATab:Section("Silent Aim")
 
-SAL:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
-
-SAL:AddToggle("SAOn", {Text = "Enabled", Default = false, Callback = function(v)
+SASection:Label("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
+SASection:Toggle("Enable", false, function(v)
     SACFG.On = v
     if v then startSA() else stopSA() end
-end})
-
-SAL:AddSlider("SAHit", {Text = "Hit Chance (%)", Default = 100, Min = 1, Max = 100, Rounding = 0, Callback = function(v)
+end)
+SASection:Slider("Hit Chance (%)", 1, 100, 100, function(v)
     SACFG.HitChance = v
-end})
-
-SAL:AddToggle("SATeam", {Text = "Team Check", Default = true, Callback = function(v)
-    SACFG.TeamCheck = v
-end})
-
-SAL:AddToggle("SAVis", {Text = "Visible Check", Default = false, Callback = function(v)
-    SACFG.VisCheck = v
-end})
-
-SAL:AddDropdown("SAPart", {Text = "Target Part", Default = "Head", Values = {"Head", "Torso", "Head+Torso"}, Callback = function(v)
-    SACFG.TargetPart = v
-end})
-
-SAR:AddSlider("SAFOV", {Text = "FOV Size (px)", Default = 400, Min = 10, Max = 600, Rounding = 0, Callback = function(v)
+end)
+SASection:Slider("FOV Size (px)", 10, 600, 400, function(v)
     SACFG.FOV = v
-end})
-
-SAR:AddToggle("SAIgnFOV", {Text = "Ignore FOV", Default = false, Callback = function(v)
+end)
+SASection:Toggle("Ignore FOV", false, function(v)
     SACFG.IgnoreFOV = v
-end})
+end)
+SASection:Toggle("Team Check", true, function(v)
+    SACFG.TeamCheck = v
+end)
+SASection:Toggle("Visible Check", false, function(v)
+    SACFG.VisCheck = v
+end)
 
 -- ════════════════════════════════════════
--- UI — ESP TAB
+-- UI — ESP
 -- ════════════════════════════════════════
-local ESPL = Tabs.ESP:AddLeftGroupbox("Main")
-local ESPR = Tabs.ESP:AddRightGroupbox("Colors")
+local ESPSection = ESPTab:Section("ESP")
 
-ESPL:AddToggle("ESPOn", {Text = "Enabled", Default = false, Callback = function(v)
+ESPSection:Toggle("Enable", false, function(v)
     ESPCFG.On = v
     if not v then
-        for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
+        for _, p in ipairs(Players:GetPlayers()) do
+            hideESPFor(p)
+        end
     end
-end})
-
-ESPL:AddToggle("ESPBoxes", {Text = "Boxes", Default = true, Callback = function(v)
+end)
+ESPSection:Toggle("Boxes", true, function(v)
     ESPCFG.Boxes = v
-end})
-
-ESPL:AddToggle("ESPNames", {Text = "Names", Default = true, Callback = function(v)
+end)
+ESPSection:Toggle("Names", true, function(v)
     ESPCFG.Names = v
-end})
-
-ESPL:AddToggle("ESPHealth", {Text = "Health Bars", Default = true, Callback = function(v)
+end)
+ESPSection:Toggle("Health Bars", true, function(v)
     ESPCFG.Health = v
-end})
-
-ESPL:AddToggle("ESPTeam", {Text = "Team Check (hide team)", Default = false, Callback = function(v)
+end)
+ESPSection:Toggle("Team Check (hide team)", false, function(v)
     ESPCFG.TeamCheck = v
-end})
-
-ESPR:AddLabel("Box Color"):AddColorPicker("ESPBoxColor", {Default = Color3.fromRGB(255, 50, 50), Callback = function(v)
+end)
+ESPSection:Colorpicker("Box Color", Color3.fromRGB(255, 50, 50), function(v)
     ESPCFG.BoxColor = v
     for _, obj in pairs(espObjects) do
         for _, side in ipairs({"boxTop","boxBot","boxLeft","boxRight"}) do
             if obj[side] then obj[side].Color = v end
         end
     end
-end})
-
-ESPR:AddLabel("Name Color"):AddColorPicker("ESPNameColor", {Default = Color3.fromRGB(255, 255, 255), Callback = function(v)
+end)
+ESPSection:Colorpicker("Name Color", Color3.fromRGB(255, 255, 255), function(v)
     ESPCFG.NameColor = v
     for _, obj in pairs(espObjects) do
         if obj.name then obj.name.Color = v end
     end
-end})
+end)
 
 -- ════════════════════════════════════════
--- UI — MISC TAB
+-- UI — MISC
 -- ════════════════════════════════════════
-local MiscL = Tabs.Misc:AddLeftGroupbox("Controls")
+local CtrlSection = MiscTab:Section("Controls")
 
-MiscL:AddButton({Text = "Stop All Features", Func = function()
+CtrlSection:Button("Stop All Features", function()
     AimCFG.On = false; lockedTarget = nil
     stopSA()
     ESPCFG.On = false
     for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
     if fovCircle then fovCircle.Visible = false end
-
-    pcall(function() Options.AimOn:SetValue(false) end)
-    pcall(function() Options.SAOn:SetValue(false) end)
-    pcall(function() Options.ESPOn:SetValue(false) end)
-
-    Library:Notify("All features stopped", 3)
-end})
+    print("[Weaponry Tool] All features stopped")
+end)
 
 if IsMobile then
-    MiscL:AddLabel("Mobile Mode: ON")
+    CtrlSection:Label("Mobile Mode: ON")
 end
-
-MiscL:AddButton({Text = "Unload UI", Func = function()
-    AimCFG.On = false; lockedTarget = nil
-    stopSA()
-    ESPCFG.On = false
-    for _, p in ipairs(Players:GetPlayers()) do removeESPFor(p) end
-    if fovCircle then pcall(function() fovCircle:Remove() end) end
-    pcall(function() RunService:UnbindFromRenderStep("wt_aimbot") end)
-    Library:Unload()
-end})
-
--- ════════════════════════════════════════
--- UI — SETTINGS TAB
--- ════════════════════════════════════════
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({})
-ThemeManager:SetFolder("WeaponryTool_v10")
-SaveManager:SetFolder("WeaponryTool_v10")
-SaveManager:BuildConfigSection(Tabs.Settings)
-ThemeManager:ApplyToTab(Tabs.Settings)
-SaveManager:LoadAutoloadConfig()
 
 -- ════════════════════════════════════════
 -- RENDER STEP — FOV + ESP
@@ -551,17 +493,18 @@ RunService.RenderStepped:Connect(function()
     camera = workspace.CurrentCamera
     local center = getCenter()
 
+    -- FOV circle update
     if fovCircle then
         fovCircle.Position = center
         fovCircle.Radius   = AimCFG.FOV
         fovCircle.Visible  = AimCFG.On and AimCFG.DrawFOV
     end
 
+    -- ESP
     updateESP()
 end)
 
 -- ════════════════════════════════════════
 -- DONE
 -- ════════════════════════════════════════
-Library:Notify("Weaponry Tool v1.0 loaded — " .. (IsMobile and "MOBILE" or "PC"), 6)
-print("[Weaponry Tool v1.0] " .. (IsMobile and "MOBILE" or "PC"))
+print("[Weaponry Tool v1.0] Loaded — " .. (IsMobile and "MOBILE" or "PC"))
