@@ -1,6 +1,6 @@
 --[[
     WEAPONRY TOOL v1.0
-    Features: Aimbot | Silent Aim | ESP | AC Bypass | Mobile Support
+    Features: Aimbot | Silent Aim | ESP | Mobile Support
     UI: LinoriaLib
 ]]
 
@@ -379,78 +379,6 @@ Players.PlayerAdded:Connect(function(p)
 end)
 
 -- ════════════════════════════════════════
--- AC BYPASS
--- ════════════════════════════════════════
-local bypassDone = false
-
-local function applyBypass()
-    if bypassDone then
-        Library:Notify("AC Bypass already applied", 3); return
-    end
-
-    Library:Notify("Applying AC Bypass...", 3)
-
-    local antiRemote = nil
-    pcall(function()
-        antiRemote = RS:FindFirstChild("Remotes")
-            and RS.Remotes:FindFirstChild("AntiExploit")
-    end)
-
-    local mt  = getrawmetatable(game)
-    local old = mt.__namecall
-    setreadonly(mt, false)
-    mt.__namecall = newcclosure(function(self, ...)
-        local m = getnamecallmethod()
-        if m == "Kick" or m == "kick" or m:lower():find("kick") then return end
-        if antiRemote and self == antiRemote
-        and (m == "FireServer" or m == "InvokeServer") then
-            return
-        end
-        return old(self, ...)
-    end)
-    setreadonly(mt, true)
-
-    local acKeywords = {
-        "anticheat", "antiexploit", "exploitcheck",
-        "cheatdetect", "kickscript", "banhandler",
-        "integritycheck", "clientintegrity",
-    }
-    local function killACScript(obj)
-        if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-            local n = obj.Name:lower()
-            for _, kw in ipairs(acKeywords) do
-                if n:find(kw) then
-                    pcall(function() obj.Disabled = true end)
-                    break
-                end
-            end
-        end
-    end
-    for _, obj in ipairs(game:GetDescendants()) do killACScript(obj) end
-    game.DescendantAdded:Connect(killACScript)
-
-    local blockedNames = {
-        "kickplayer", "banplayer", "reportplayer",
-        "anticheat", "flagplayer", "punish",
-    }
-    pcall(function()
-        local oldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local m = getnamecallmethod()
-            if m == "FireServer" or m == "InvokeServer" then
-                local name = (self and self.Name or ""):lower()
-                for _, blocked in ipairs(blockedNames) do
-                    if name:find(blocked) then return end
-                end
-            end
-            return oldNC(self, ...)
-        end))
-    end)
-
-    bypassDone = true
-    Library:Notify("AC Bypass applied ✓", 4)
-end
-
--- ════════════════════════════════════════
 -- UI — AIMBOT TAB
 -- ════════════════════════════════════════
 local AimL = Tabs.Aimbot:AddLeftGroupbox("Main")
@@ -573,16 +501,9 @@ end})
 -- ════════════════════════════════════════
 -- UI — MISC TAB
 -- ════════════════════════════════════════
-local MiscL = Tabs.Misc:AddLeftGroupbox("Anti-Cheat")
-local MiscR = Tabs.Misc:AddRightGroupbox("Controls")
+local MiscL = Tabs.Misc:AddLeftGroupbox("Controls")
 
-MiscL:AddLabel("Auto-applied on load")
-MiscL:AddButton({Text = "Re-apply Bypass", Func = function()
-    bypassDone = false
-    applyBypass()
-end})
-
-MiscR:AddButton({Text = "Stop All Features", Func = function()
+MiscL:AddButton({Text = "Stop All Features", Func = function()
     AimCFG.On = false; lockedTarget = nil
     stopSA()
     ESPCFG.On = false
@@ -597,10 +518,10 @@ MiscR:AddButton({Text = "Stop All Features", Func = function()
 end})
 
 if IsMobile then
-    MiscR:AddLabel("Mobile Mode: ON")
+    MiscL:AddLabel("Mobile Mode: ON")
 end
 
-MiscR:AddButton({Text = "Unload UI", Func = function()
+MiscL:AddButton({Text = "Unload UI", Func = function()
     AimCFG.On = false; lockedTarget = nil
     stopSA()
     ESPCFG.On = false
@@ -622,11 +543,6 @@ SaveManager:SetFolder("WeaponryTool_v10")
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
-
--- ════════════════════════════════════════
--- AUTO APPLY BYPASS ON LOAD
--- ════════════════════════════════════════
-task.spawn(applyBypass)
 
 -- ════════════════════════════════════════
 -- RENDER STEP — FOV + ESP
