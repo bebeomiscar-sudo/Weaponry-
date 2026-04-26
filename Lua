@@ -1,755 +1,840 @@
 --[[
-    WEAPONRY TOOL v1.0 — LinoriaLib Edition
-    Game: Weaponry
-    Features: Aimbot | Silent Aim | ESP | No Recoil | No Spread | Rapid Fire | Auto Reload | Triggerbot
+    ╔══════════════════════════════════════════════════════════╗
+    ║  WEAPONRY - Complete Weapon Modifier                    ║
+    ║  All Features | Wallbang | Damage Mods | No Recoil     ║
+    ╚══════════════════════════════════════════════════════════╝
 ]]
 
--- ═══════════════════════════════════════════
--- SERVICES
--- ═══════════════════════════════════════════
-local Players      = game:GetService("Players")
-local RunService   = game:GetService("RunService")
-local UIS          = game:GetService("UserInputService")
-local RS           = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
+game:IsLoaded()
+task.wait()
 
-local LP       = Players.LocalPlayer
-local camera   = workspace.CurrentCamera
-local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+--Services--
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
 
--- ═══════════════════════════════════════════
--- LINORIA LIBRARY
--- ═══════════════════════════════════════════
-local repo         = "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
-local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
-local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+--Weapon References--
+local autoshotgun = ReplicatedStorage.Weapons.autoshotgun
+local WeaponModel = autoshotgun.WeaponModel
+local Model = WeaponModel["Auto Shotgun"]
+local Folder = autoshotgun.WeaponTool
+local Tool = Folder["Auto Shotgun"]
 
-Library.ShowToggleFrameInKeybinds = true
+--Load Rayfield UI--
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
-local Window = Library:CreateWindow({
-    Title                = "Weaponry Tool v1.0",
-    Center               = true,
-    AutoShow             = true,
-    Resizable            = true,
-    ShowCustomCursor     = false,
-    UnlockMouseWhileOpen = true,
-    NotifySide           = "Left",
-    TabPadding           = 8,
-    MenuFadeTime         = 0.2,
-    Size                 = UDim2.fromOffset(480, 540),
-})
+--[[
+    ═══════════════════════════════════════════════════════
+                    CONFIGURATION
+    ═══════════════════════════════════════════════════════
+]]
 
-local Tabs = {
-    Aimbot    = Window:AddTab("Aimbot"),
-    SilentAim = Window:AddTab("Silent Aim"),
-    ESP       = Window:AddTab("ESP"),
-    GunMods   = Window:AddTab("Gun Mods"),
-    Misc      = Window:AddTab("Misc"),
-    Settings  = Window:AddTab("Settings"),
-}
-
--- ═══════════════════════════════════════════
--- GAME MODULE CACHE
--- The game loads these async via InstancesLibrary.
--- We wait a few seconds then require them.
--- ═══════════════════════════════════════════
-local GM = {
-    UIModule         = nil,
-    CameraHandler    = nil,
-    CharInstances    = nil,
-    CharStateConfigs = nil,
-    InputConfigs     = nil,
-    Remotes          = nil,
-}
-local modulesLoaded = false
-
-task.spawn(function()
-    task.wait(3)
-    local ok, lib = pcall(function()
-        return require(RS:WaitForChild("Libraries", 10):WaitForChild("InstancesLibrary", 10))
-    end)
-    if not ok or not lib then
-        Library:Notify("[WT] Module load failed — some features limited", 5)
-        return
-    end
-    local CM = lib.ClientModules
-    GM.Remotes = lib.Remotes
-    pcall(function() GM.UIModule         = require(CM.UIModule) end)
-    pcall(function() GM.CameraHandler    = require(CM.CameraHandler) end)
-    pcall(function() GM.CharInstances    = require(CM.CharacterInstances) end)
-    pcall(function() GM.CharStateConfigs = require(CM.CharacterStateConfigs) end)
-    pcall(function() GM.InputConfigs     = require(CM.InputConfigs) end)
-    modulesLoaded = true
-    Library:Notify("[WT] Modules loaded ✓", 3)
-end)
-
--- ═══════════════════════════════════════════
--- CONFIGS
--- ═══════════════════════════════════════════
-local AimCFG = {
-    On         = false,
-    FOV        = 120,
-    Smoothness = 8,
-    TargetPart = "Head",
-    TeamCheck  = false,
-    VisCheck   = false,
-    DrawFOV    = true,
-}
-local SACFG = {
-    On        = false,
-    FOV       = 400,
-    HitChance = 100,
-    TeamCheck = true,
-    VisCheck  = false,
-    IgnoreFOV = false,
-    TargetPart= "Head",
-    Hooked    = false,
-}
-local ESPCFG = {
-    On        = false,
-    Boxes     = true,
-    Names     = true,
-    Health    = true,
-    Distance  = true,
-    TeamCheck = false,
-    BoxColor  = Color3.fromRGB(255, 50, 50),
-    NameColor = Color3.fromRGB(255, 255, 255),
-    DistColor = Color3.fromRGB(180, 180, 180),
-}
-local GunCFG = {
-    NoRecoil   = false,
-    NoSpread   = false,
-    RapidFire  = false,
-    AutoReload = false,
-}
-local TrigCFG = {
-    On        = false,
-    Delay     = 80,
-    TeamCheck = false,
-}
-local TrigState = { waiting=false, timer=0 }
-
--- ═══════════════════════════════════════════
--- UTILITY
--- ═══════════════════════════════════════════
-local function getCenter()
-    return Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
-end
-
-local function angleDiff(from, to)
-    local d = to - from
-    return ((d + math.pi) % (math.pi * 2)) - math.pi
-end
-
-local function isVisible(part)
-    local origin = camera.CFrame.Position
-    local dir    = part.Position - origin
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {LP.Character, part.Parent}
-    local hit = workspace:Raycast(origin, dir, params)
-    return hit == nil or hit.Instance:IsDescendantOf(part.Parent)
-end
-
-local function isSameTeam(p)
-    if LP.Team and p.Team then return LP.Team == p.Team end
-    local mt = LP:GetAttribute("TeamID")
-    local pt = p:GetAttribute("TeamID")
-    if mt and pt then return string.byte(mt or "\0") == string.byte(pt or "\0") end
-    return false
-end
-
-local PART_PRIORITY = {
-    ["Head"]       = {"Head"},
-    ["Torso"]      = {"UpperTorso", "LowerTorso", "HumanoidRootPart"},
-    ["Head+Torso"] = {"Head", "UpperTorso", "LowerTorso"},
-}
-
-local function getBestPart(char, setting)
-    local names = PART_PRIORITY[setting] or {"Head"}
-    for _, n in ipairs(names) do
-        local p = char:FindFirstChild(n)
-        if p then return p end
-    end
-    return nil
-end
-
-local function getEquippedTool()
-    local char = (GM.CharInstances and GM.CharInstances.Character) or LP.Character
-    if not char then return nil end
-    for _, v in ipairs(char:GetChildren()) do
-        if v:IsA("Tool") then return v end
-    end
-    return nil
-end
-
--- ═══════════════════════════════════════════
--- FOV CIRCLES
--- ═══════════════════════════════════════════
-local fovCircle, saFovCircle
-pcall(function()
-    fovCircle              = Drawing.new("Circle")
-    fovCircle.NumSides     = 64
-    fovCircle.Filled       = false
-    fovCircle.Thickness    = 1.5
-    fovCircle.Visible      = false
-    fovCircle.Color        = Color3.fromRGB(255, 255, 255)
-    fovCircle.Transparency = 0.75
-
-    saFovCircle              = Drawing.new("Circle")
-    saFovCircle.NumSides     = 64
-    saFovCircle.Filled       = false
-    saFovCircle.Thickness    = 1.5
-    saFovCircle.Visible      = false
-    saFovCircle.Color        = Color3.fromRGB(100, 255, 100)
-    saFovCircle.Transparency = 0.75
-end)
-
--- ═══════════════════════════════════════════
--- AIMBOT
--- ═══════════════════════════════════════════
-local lockedTarget = nil
-
-local function isTargetValid(part)
-    if not part or not part.Parent then return false end
-    local hum = part.Parent:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    if AimCFG.VisCheck and not isVisible(part) then return false end
-    if AimCFG.TeamCheck then
-        local p = Players:GetPlayerFromCharacter(part.Parent)
-        if p and isSameTeam(p) then return false end
-    end
-    return true
-end
-
-local function findAimTarget()
-    local c = getCenter()
-    local best, bd = nil, AimCFG.FOV
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == LP then continue end
-        if AimCFG.TeamCheck and isSameTeam(p) then continue end
-        local ch = p.Character; if not ch then continue end
-        local hum = ch:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
-        local part = getBestPart(ch, AimCFG.TargetPart)
-        if not part then continue end
-        if AimCFG.VisCheck and not isVisible(part) then continue end
-        local sp, on = camera:WorldToScreenPoint(part.Position)
-        if not on then continue end
-        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
-        if d < bd then bd = d; best = part end
-    end
-    return best
-end
-
-RunService:BindToRenderStep("wt_aimbot", Enum.RenderPriority.Camera.Value + 2, function(dt)
-    camera = workspace.CurrentCamera
-    if not AimCFG.On then return end
-
-    if lockedTarget and not isTargetValid(lockedTarget) then lockedTarget = nil end
-    if not lockedTarget then lockedTarget = findAimTarget() end
-    if not lockedTarget then return end
-
-    local smooth = math.clamp(1 / AimCFG.Smoothness, 0.01, 1)
-    local cp     = camera.CFrame.Position
-    local dir    = (lockedTarget.Position - cp).Unit
-    local tPitch = math.asin(math.clamp(dir.Y, -1, 1))
-    local tYaw   = math.atan2(-dir.X, -dir.Z)
-    local cPitch, cYaw = camera.CFrame:ToOrientation()
-
-    pcall(function()
-        camera.CFrame = CFrame.new(cp)
-            * CFrame.Angles(0, cYaw + angleDiff(cYaw, tYaw) * smooth, 0)
-            * CFrame.Angles(cPitch + angleDiff(cPitch, tPitch) * smooth, 0, 0)
-    end)
-end)
-
--- ═══════════════════════════════════════════
--- SILENT AIM
--- ═══════════════════════════════════════════
-local saTarget      = nil
-local saOldMousePos = nil
-local saConn        = nil
-
-local function saGetTarget()
-    local c = getCenter()
-    local best, bd = nil, SACFG.IgnoreFOV and math.huge or SACFG.FOV
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == LP then continue end
-        if SACFG.TeamCheck and isSameTeam(p) then continue end
-        local ch = p.Character; if not ch then continue end
-        local hum = ch:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
-        local part = getBestPart(ch, SACFG.TargetPart)
-        if not part then continue end
-        if SACFG.VisCheck and not isVisible(part) then continue end
-        local sp, on = camera:WorldToScreenPoint(part.Position)
-        if not on then continue end
-        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
-        if d < bd then bd = d; best = part end
-    end
-    return best
-end
-
-local function applySAHook()
-    if SACFG.Hooked then return end
-    if not GM.UIModule or not GM.UIModule.getMousePos then
-        Library:Notify("[SA] UIModule not ready yet", 3); return
-    end
-    saOldMousePos = GM.UIModule.getMousePos
-    GM.UIModule.getMousePos = function(...)
-        if SACFG.On and saTarget and math.random(1, 100) <= SACFG.HitChance then
-            local sp, on = camera:WorldToViewportPoint(saTarget)
-            if on then return Vector2.new(sp.X, sp.Y) end
-        end
-        return saOldMousePos(...)
-    end
-    SACFG.Hooked = true
-    Library:Notify("[SA] Hook applied ✓", 3)
-end
-
-local function removeSAHook()
-    if not SACFG.Hooked or not GM.UIModule or not saOldMousePos then return end
-    GM.UIModule.getMousePos = saOldMousePos
-    SACFG.Hooked = false
-end
-
-local function startSA()
-    applySAHook()
-    if saConn then saConn:Disconnect() end
-    saConn = RunService.Heartbeat:Connect(function()
-        if not SACFG.On then saTarget = nil; return end
-        local tp = saGetTarget()
-        saTarget = tp and tp.Position or nil
-    end)
-end
-
-local function stopSA()
-    SACFG.On = false; saTarget = nil
-    if saConn then saConn:Disconnect(); saConn = nil end
-end
-
--- ═══════════════════════════════════════════
--- NO RECOIL
--- ═══════════════════════════════════════════
-local oldAccelerate = nil
-local recoilHooked  = false
-
-local function hookRecoil()
-    if recoilHooked or not GM.CameraHandler then return end
-    oldAccelerate = GM.CameraHandler.accelerate
-    GM.CameraHandler.accelerate = function(data, ...)
-        if GunCFG.NoRecoil then return end
-        return oldAccelerate(data, ...)
-    end
-    recoilHooked = true
-end
-
-local function unhookRecoil()
-    if not recoilHooked or not GM.CameraHandler then return end
-    GM.CameraHandler.accelerate = oldAccelerate
-    recoilHooked = false
-end
-
--- ═══════════════════════════════════════════
--- AUTO RELOAD
--- ═══════════════════════════════════════════
-local arConn = nil
-
-local function startAutoReload()
-    if arConn then arConn:Disconnect() end
-    arConn = RunService.Heartbeat:Connect(function()
-        if not GunCFG.AutoReload or not GM.Remotes then return end
-        local tool = getEquippedTool(); if not tool then return end
-        local ammo = tool:GetAttribute("CurrentAmmo")
-        if ammo and ammo <= 0 then
-            pcall(function()
-                GM.Remotes.WeaponHandler:FireServer(3, tool)
-            end)
-        end
-    end)
-end
-
--- ═══════════════════════════════════════════
--- TRIGGERBOT
--- ═══════════════════════════════════════════
-local function getTriggerbotTarget()
-    local origin = camera.CFrame.Position
-    local dir    = camera.CFrame.LookVector * 2000
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {LP.Character}
-    local hit = workspace:Raycast(origin, dir, params)
-    if not hit then return nil end
-    local inst = hit.Instance
-    while inst do
-        local hum = inst:FindFirstChildOfClass("Humanoid")
-        if hum then
-            if hum.Health <= 0 then return nil end
-            local plr = Players:GetPlayerFromCharacter(inst)
-            if not plr or plr == LP then return nil end
-            if TrigCFG.TeamCheck and isSameTeam(plr) then return nil end
-            return inst
-        end
-        inst = inst.Parent
-    end
-    return nil
-end
-
-local function simClick()
-    pcall(function()
-        local vim = game:GetService("VirtualInputManager")
-        local cx, cy = camera.ViewportSize.X/2, camera.ViewportSize.Y/2
-        vim:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
-        task.defer(function()
-            pcall(function() vim:SendMouseButtonEvent(cx, cy, 0, false, game, 1) end)
-        end)
-    end)
-end
-
--- ═══════════════════════════════════════════
--- ESP
--- ═══════════════════════════════════════════
-local espObjects = {}
-
-local function newDraw(class, color, thickness)
-    local d = Drawing.new(class)
-    d.Visible = false
-    d.Color   = color
-    if class == "Line" then d.Thickness = thickness or 1.5 end
-    if class == "Text" then
-        d.Size    = 13
-        d.Center  = true
-        d.Outline = true
-        pcall(function() d.Font = Drawing.Fonts.Plex end)
-    end
-    return d
-end
-
-local function createESPFor(p)
-    if espObjects[p] then return end
-    espObjects[p] = {
-        boxTop   = newDraw("Line", ESPCFG.BoxColor),
-        boxBot   = newDraw("Line", ESPCFG.BoxColor),
-        boxLeft  = newDraw("Line", ESPCFG.BoxColor),
-        boxRight = newDraw("Line", ESPCFG.BoxColor),
-        name     = newDraw("Text", ESPCFG.NameColor),
-        dist     = newDraw("Text", ESPCFG.DistColor),
-        hpBg     = newDraw("Line", Color3.fromRGB(0,0,0), 4),
-        hpBar    = newDraw("Line", Color3.fromRGB(0,255,100), 3),
+local Config = {
+    -- Damage Settings
+    Damage = {
+        Enabled = false,
+        Base = 25,
+        Headshot = 50,
+        Multiplier = 1.0,
+        OneShotKill = false,
+    },
+    
+    -- Fire Rate Settings
+    FireRate = {
+        Enabled = false,
+        RPM = 300,
+        RapidFire = false,
+    },
+    
+    -- Ammo Settings
+    Ammo = {
+        InfiniteAmmo = false,
+        MagSize = 8,
+        InstantReload = false,
+    },
+    
+    -- Accuracy Settings
+    Accuracy = {
+        NoRecoil = false,
+        NoSpread = false,
+        PerfectAccuracy = false,
+    },
+    
+    -- Wallbang Settings
+    Wallbang = {
+        Enabled = false,
+        Penetration = 5,
+        IgnoreMap = true,
+    },
+    
+    -- Pellet Settings (Shotgun)
+    Pellets = {
+        Enabled = false,
+        Count = 8,
+        Spread = 5,
+    },
+    
+    -- Range Settings
+    Range = {
+        Enabled = false,
+        MaxDistance = 200,
+        NoFalloff = false,
+    },
+    
+    -- Special Effects
+    Special = {
+        Explosive = false,
+        ExplosionRadius = 10,
+        ExplosionDamage = 50,
+        IgniteTarget = false,
+    },
+    
+    -- Aimbot
+    Aimbot = {
+        Enabled = false,
+        FOV = 100,
+        Smoothness = 5,
+        TargetPart = "Head",
     }
-end
+}
 
-local function hideESPFor(p)
-    if not espObjects[p] then return end
-    for _, d in pairs(espObjects[p]) do d.Visible = false end
-end
+--[[
+    ═══════════════════════════════════════════════════════
+                    VARIABLES
+    ═══════════════════════════════════════════════════════
+]]
 
-local function removeESPFor(p)
-    if not espObjects[p] then return end
-    for _, d in pairs(espObjects[p]) do pcall(function() d:Remove() end) end
-    espObjects[p] = nil
-end
+local Connections = {}
+local originalRaycast = workspace.Raycast
+local currentWeapon = nil
 
-local function updateESP()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == LP then continue end
-        if not espObjects[p] then createESPFor(p) end
+--[[
+    ═══════════════════════════════════════════════════════
+                    UTILITY FUNCTIONS
+    ═══════════════════════════════════════════════════════
+]]
 
-        local show = ESPCFG.On
-        if ESPCFG.TeamCheck and isSameTeam(p) then show = false end
-        local ch = p.Character
-        if not show or not ch then hideESPFor(p); continue end
-
-        local hrp  = ch:FindFirstChild("HumanoidRootPart")
-        local hum  = ch:FindFirstChildOfClass("Humanoid")
-        local head = ch:FindFirstChild("Head")
-        if not hrp or not hum then hideESPFor(p); continue end
-
-        local sp, onS = camera:WorldToScreenPoint(hrp.Position)
-        if not onS then hideESPFor(p); continue end
-
-        local topPos = head and head.Position + Vector3.new(0,0.8,0) or hrp.Position + Vector3.new(0,3,0)
-        local botPos = hrp.Position - Vector3.new(0,2.5,0)
-        local topSP  = camera:WorldToScreenPoint(topPos)
-        local botSP  = camera:WorldToScreenPoint(botPos)
-        local height = math.abs(topSP.Y - botSP.Y)
-        local width  = height * 0.55
-        local cx     = sp.X
-        local topY   = math.min(topSP.Y, botSP.Y)
-        local botY   = topY + height
-        local lx, rx = cx - width/2, cx + width/2
-
-        local obj = espObjects[p]
-
-        -- Box
-        obj.boxTop.From  = Vector2.new(lx,topY); obj.boxTop.To  = Vector2.new(rx,topY)
-        obj.boxBot.From  = Vector2.new(lx,botY); obj.boxBot.To  = Vector2.new(rx,botY)
-        obj.boxLeft.From = Vector2.new(lx,topY); obj.boxLeft.To = Vector2.new(lx,botY)
-        obj.boxRight.From= Vector2.new(rx,topY); obj.boxRight.To= Vector2.new(rx,botY)
-        for _, s in ipairs({"boxTop","boxBot","boxLeft","boxRight"}) do
-            obj[s].Color   = ESPCFG.BoxColor
-            obj[s].Visible = ESPCFG.Boxes
-        end
-
-        -- Name
-        obj.name.Position = Vector2.new(cx, topY - 16)
-        obj.name.Text     = p.Name
-        obj.name.Color    = ESPCFG.NameColor
-        obj.name.Visible  = ESPCFG.Names
-
-        -- Distance
-        local d = math.floor((camera.CFrame.Position - hrp.Position).Magnitude + 0.5)
-        obj.dist.Position = Vector2.new(cx, botY + 2)
-        obj.dist.Text     = d .. "m"
-        obj.dist.Color    = ESPCFG.DistColor
-        obj.dist.Visible  = ESPCFG.Distance
-
-        -- Health bar
-        local ratio  = math.clamp(hum.Health / math.max(hum.MaxHealth,1), 0, 1)
-        local barX   = lx - 5
-        obj.hpBg.From  = Vector2.new(barX, topY); obj.hpBg.To  = Vector2.new(barX, botY)
-        obj.hpBar.From = Vector2.new(barX, botY); obj.hpBar.To = Vector2.new(barX, botY - height*ratio)
-        obj.hpBar.Color = Color3.fromRGB(math.floor(255*(1-ratio)), math.floor(255*ratio), 40)
-        obj.hpBg.Visible  = ESPCFG.Health
-        obj.hpBar.Visible = ESPCFG.Health
-    end
-end
-
-Players.PlayerRemoving:Connect(removeESPFor)
-Players.PlayerAdded:Connect(function(p)
-    if ESPCFG.On then task.wait(1); createESPFor(p) end
-end)
-
--- ═══════════════════════════════════════════
--- UI — AIMBOT
--- ═══════════════════════════════════════════
-local AB_L = Tabs.Aimbot:AddLeftGroupbox("Main")
-local AB_R = Tabs.Aimbot:AddRightGroupbox("FOV")
-
-AB_L:AddToggle("AimOn", {Text="Enabled", Default=false, Callback=function(v)
-    AimCFG.On = v
-    if not v then lockedTarget = nil end
-end})
-AB_L:AddSlider("AimSmooth", {Text="Smoothness", Default=8, Min=1, Max=50, Rounding=1, Callback=function(v)
-    AimCFG.Smoothness = v
-end})
-AB_L:AddToggle("AimTeam", {Text="Team Check", Default=false, Callback=function(v)
-    AimCFG.TeamCheck = v
-end})
-AB_L:AddToggle("AimVis", {Text="Visible Check", Default=false, Callback=function(v)
-    AimCFG.VisCheck = v
-end})
-AB_L:AddDropdown("AimPart", {Text="Target Part", Default="Head", Values={"Head","Torso","Head+Torso"}, Callback=function(v)
-    AimCFG.TargetPart = v
-end})
-
-AB_R:AddSlider("AimFOV", {Text="Max FOV (px)", Default=120, Min=10, Max=600, Rounding=0, Callback=function(v)
-    AimCFG.FOV = v
-    if fovCircle then fovCircle.Radius = v end
-end})
-AB_R:AddToggle("AimDrawFOV", {Text="Draw FOV", Default=true, Callback=function(v)
-    AimCFG.DrawFOV = v
-    if fovCircle then fovCircle.Visible = AimCFG.On and v end
-end})
-
--- ═══════════════════════════════════════════
--- UI — SILENT AIM
--- ═══════════════════════════════════════════
-local SA_L = Tabs.SilentAim:AddLeftGroupbox("Main")
-local SA_R = Tabs.SilentAim:AddRightGroupbox("FOV & Target")
-
-SA_L:AddLabel("Hooks UIModule.getMousePos — game-native")
-SA_L:AddToggle("SAOn", {Text="Enabled", Default=false, Callback=function(v)
-    SACFG.On = v
-    if v then startSA() else stopSA() end
-end})
-SA_L:AddSlider("SAHit", {Text="Hit Chance (%)", Default=100, Min=1, Max=100, Rounding=0, Callback=function(v)
-    SACFG.HitChance = v
-end})
-SA_L:AddToggle("SATeam", {Text="Team Check", Default=true, Callback=function(v)
-    SACFG.TeamCheck = v
-end})
-SA_L:AddToggle("SAVis", {Text="Visible Check", Default=false, Callback=function(v)
-    SACFG.VisCheck = v
-end})
-SA_L:AddButton({Text="Re-apply Hook", Func=function()
-    SACFG.Hooked = false; applySAHook()
-end})
-
-SA_R:AddToggle("SAIgnFOV", {Text="Ignore FOV", Default=false, Callback=function(v)
-    SACFG.IgnoreFOV = v
-    if saFovCircle then saFovCircle.Visible = not v and SACFG.On end
-end})
-SA_R:AddSlider("SAFOVSize", {Text="FOV Size (px)", Default=400, Min=10, Max=600, Rounding=0, Callback=function(v)
-    SACFG.FOV = v
-    if saFovCircle then saFovCircle.Radius = v end
-end})
-SA_R:AddToggle("SADrawFOV", {Text="Draw FOV", Default=true, Callback=function(v)
-    if saFovCircle then saFovCircle.Visible = v and SACFG.On and not SACFG.IgnoreFOV end
-end})
-SA_R:AddDropdown("SAPart", {Text="Target Part", Default="Head", Values={"Head","Torso","Head+Torso"}, Callback=function(v)
-    SACFG.TargetPart = v
-end})
-
--- ═══════════════════════════════════════════
--- UI — ESP
--- ═══════════════════════════════════════════
-local ESP_L = Tabs.ESP:AddLeftGroupbox("Main")
-local ESP_R = Tabs.ESP:AddRightGroupbox("Colors")
-
-ESP_L:AddToggle("ESPOn", {Text="Enabled", Default=false, Callback=function(v)
-    ESPCFG.On = v
-    if not v then for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end end
-end})
-ESP_L:AddToggle("ESPBoxes",  {Text="Boxes",       Default=true,  Callback=function(v) ESPCFG.Boxes    = v end})
-ESP_L:AddToggle("ESPNames",  {Text="Names",       Default=true,  Callback=function(v) ESPCFG.Names    = v end})
-ESP_L:AddToggle("ESPHealth", {Text="Health Bars", Default=true,  Callback=function(v) ESPCFG.Health   = v end})
-ESP_L:AddToggle("ESPDist",   {Text="Distance",    Default=true,  Callback=function(v) ESPCFG.Distance = v end})
-ESP_L:AddToggle("ESPTeam",   {Text="Team Check",  Default=false, Callback=function(v) ESPCFG.TeamCheck= v end})
-
-ESP_R:AddLabel("Box Color"):AddColorPicker("ESPBoxColor", {Default=Color3.fromRGB(255,50,50), Callback=function(v)
-    ESPCFG.BoxColor = v
-    for _, obj in pairs(espObjects) do
-        for _, s in ipairs({"boxTop","boxBot","boxLeft","boxRight"}) do
-            if obj[s] then obj[s].Color = v end
-        end
-    end
-end})
-ESP_R:AddLabel("Name Color"):AddColorPicker("ESPNameColor", {Default=Color3.fromRGB(255,255,255), Callback=function(v)
-    ESPCFG.NameColor = v
-    for _, obj in pairs(espObjects) do if obj.name then obj.name.Color = v end end
-end})
-
--- ═══════════════════════════════════════════
--- UI — GUN MODS
--- ═══════════════════════════════════════════
-local GN_L = Tabs.GunMods:AddLeftGroupbox("Gun Modifiers")
-local GN_R = Tabs.GunMods:AddRightGroupbox("Triggerbot")
-
-GN_L:AddLabel("No Recoil hooks CameraHandler.accelerate")
-GN_L:AddToggle("GunRecoil", {Text="No Recoil", Default=false, Callback=function(v)
-    GunCFG.NoRecoil = v
-    if v then hookRecoil() end
-end})
-GN_L:AddToggle("GunSpread", {Text="No Spread (zero CurrentAccuracy)", Default=false, Callback=function(v)
-    GunCFG.NoSpread = v
-end})
-GN_L:AddToggle("GunAutoReload", {Text="Auto Reload", Default=false, Callback=function(v)
-    GunCFG.AutoReload = v
-    if v then startAutoReload() end
-end})
-
-if not IsMobile then
-    GN_R:AddToggle("TrigOn", {Text="Enabled", Default=false, Callback=function(v)
-        TrigCFG.On = v
-        TrigState.waiting = false; TrigState.timer = 0
-    end})
-    GN_R:AddSlider("TrigDelay", {Text="Delay (ms)", Default=80, Min=0, Max=500, Rounding=0, Callback=function(v)
-        TrigCFG.Delay = v
-    end})
-    GN_R:AddToggle("TrigTeam", {Text="Team Check", Default=false, Callback=function(v)
-        TrigCFG.TeamCheck = v
-    end})
-else
-    GN_R:AddLabel("Mobile: use Silent Aim instead of triggerbot")
-end
-
--- ═══════════════════════════════════════════
--- UI — MISC
--- ═══════════════════════════════════════════
-local MS_L = Tabs.Misc:AddLeftGroupbox("Info")
-local MS_R = Tabs.Misc:AddRightGroupbox("Controls")
-
-MS_L:AddLabel("Platform: " .. (IsMobile and "MOBILE" or "PC"))
-MS_L:AddLabel("Modules: loading after 3s...")
-
-MS_R:AddButton({Text="Stop All Features", Func=function()
-    AimCFG.On = false; lockedTarget = nil
-    stopSA()
-    ESPCFG.On = false
-    GunCFG.NoRecoil = false; unhookRecoil()
-    GunCFG.NoSpread = false
-    GunCFG.AutoReload = false
-    TrigCFG.On = false
-    for _, p in ipairs(Players:GetPlayers()) do hideESPFor(p) end
-    if fovCircle   then fovCircle.Visible   = false end
-    if saFovCircle then saFovCircle.Visible = false end
-    Library:Notify("All features stopped", 3)
-end})
-MS_R:AddButton({Text="Unload UI", Func=function() Library:Unload() end})
-
--- ═══════════════════════════════════════════
--- UI — SETTINGS
--- ═══════════════════════════════════════════
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({})
-ThemeManager:SetFolder("WeaponryTool")
-SaveManager:SetFolder("WeaponryTool")
-SaveManager:BuildConfigSection(Tabs.Settings)
-ThemeManager:ApplyToTab(Tabs.Settings)
-SaveManager:LoadAutoloadConfig()
-
--- ═══════════════════════════════════════════
--- CORE LOOP
--- ═══════════════════════════════════════════
-RunService.RenderStepped:Connect(function(dt)
-    camera = workspace.CurrentCamera
-    local center = getCenter()
-
-    -- FOV circles
-    if fovCircle then
-        fovCircle.Position = center
-        fovCircle.Radius   = AimCFG.FOV
-        fovCircle.Visible  = AimCFG.On and AimCFG.DrawFOV
-    end
-    if saFovCircle then
-        saFovCircle.Position = center
-        saFovCircle.Radius   = SACFG.IgnoreFOV and 0 or SACFG.FOV
-        saFovCircle.Visible  = SACFG.On and not SACFG.IgnoreFOV
-    end
-
-    -- ESP
-    updateESP()
-
-    -- No Spread
-    if GunCFG.NoSpread and modulesLoaded and GM.CharInstances then
-        pcall(function()
-            local char = GM.CharInstances.Character or LP.Character
-            if not char then return end
-            for _, tool in ipairs(char:GetChildren()) do
-                if tool:IsA("Tool") then
-                    tool:SetAttribute("CurrentAccuracy", 0)
+local function GetClosestPlayer()
+    local closest, closestDist = nil, math.huge
+    local camera = workspace.CurrentCamera
+    local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+            
+            if humanoid and humanoid.Health > 0 and rootPart then
+                local screenPos, onScreen = camera:WorldToViewportPoint(rootPart.Position)
+                
+                if onScreen then
+                    local screenPos2D = Vector2.new(screenPos.X, screenPos.Y)
+                    local distance = (screenCenter - screenPos2D).Magnitude
+                    
+                    if distance <= Config.Aimbot.FOV and distance < closestDist then
+                        closest = player
+                        closestDist = distance
+                    end
                 end
             end
-        end)
-    end
-
-    -- Triggerbot (PC only)
-    if not IsMobile and TrigCFG.On then
-        local tgt = getTriggerbotTarget()
-        if tgt then
-            if not TrigState.waiting then
-                TrigState.waiting = true
-                TrigState.timer   = TrigCFG.Delay / 1000
-            end
-            TrigState.timer = TrigState.timer - dt
-            if TrigState.timer <= 0 then
-                simClick()
-                TrigState.waiting = false
-                TrigState.timer   = 0
-            end
-        else
-            TrigState.waiting = false; TrigState.timer = 0
         end
     end
+    
+    return closest
+end
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    WALLBANG SYSTEM
+    ═══════════════════════════════════════════════════════
+]]
+
+workspace.Raycast = newcclosure(function(self, origin, direction, params)
+    if not Config.Wallbang.Enabled then
+        return originalRaycast(self, origin, direction, params)
+    end
+    
+    params = params or RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local ignoreList = params.FilterDescendantsInstances or {}
+    
+    if Config.Wallbang.IgnoreMap then
+        local map = Workspace:FindFirstChild("Map")
+        if map then
+            table.insert(ignoreList, map)
+        end
+        
+        for _, obj in pairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and obj.CanCollide then
+                local name = obj.Name:lower()
+                if name:find("wall") or name:find("barrier") or 
+                   name:find("fence") or name:find("door") or 
+                   name:find("block") then
+                    table.insert(ignoreList, obj)
+                end
+            end
+        end
+    end
+    
+    params.FilterDescendantsInstances = ignoreList
+    
+    return originalRaycast(self, origin, direction, params)
 end)
 
--- ═══════════════════════════════════════════
--- DONE
--- ═══════════════════════════════════════════
-Library:Notify("Weaponry Tool v1.0 — " .. (IsMobile and "MOBILE" or "PC"), 6)
-print("[WEAPONRY TOOL v1.0] " .. (IsMobile and "MOBILE" or "PC"))
+--[[
+    ═══════════════════════════════════════════════════════
+                    WEAPON MODIFICATION
+    ═══════════════════════════════════════════════════════
+]]
+
+local function ModifyWeapon(tool)
+    if not tool or not tool:IsA("Tool") then return end
+    
+    pcall(function()
+        -- Damage
+        if Config.Damage.Enabled then
+            if tool:FindFirstChild("Damage") then
+                tool.Damage.Value = Config.Damage.OneShotKill and 999 or Config.Damage.Base
+            end
+            if tool:FindFirstChild("HeadshotMultiplier") then
+                tool.HeadshotMultiplier.Value = Config.Damage.Headshot / Config.Damage.Base
+            end
+        end
+        
+        -- Fire Rate
+        if Config.FireRate.Enabled then
+            if tool:FindFirstChild("FireRate") then
+                tool.FireRate.Value = Config.FireRate.RapidFire and 0.001 or (60 / Config.FireRate.RPM)
+            end
+        end
+        
+        -- Ammo
+        if Config.Ammo.InfiniteAmmo then
+            if tool:FindFirstChild("Ammo") then
+                tool.Ammo.Value = 999
+            end
+            if tool:FindFirstChild("StoredAmmo") then
+                tool.StoredAmmo.Value = 9999
+            end
+        end
+        
+        if Config.Ammo.Enabled then
+            if tool:FindFirstChild("MagSize") then
+                tool.MagSize.Value = Config.Ammo.MagSize
+            end
+            if tool:FindFirstChild("ReloadTime") then
+                tool.ReloadTime.Value = Config.Ammo.InstantReload and 0.001 or tool.ReloadTime.Value
+            end
+        end
+        
+        -- Accuracy
+        if Config.Accuracy.NoRecoil then
+            if tool:FindFirstChild("Recoil") then
+                tool.Recoil.Value = 0
+            end
+            if tool:FindFirstChild("RecoilVertical") then
+                tool.RecoilVertical.Value = 0
+            end
+            if tool:FindFirstChild("RecoilHorizontal") then
+                tool.RecoilHorizontal.Value = 0
+            end
+        end
+        
+        if Config.Accuracy.NoSpread then
+            if tool:FindFirstChild("Spread") then
+                tool.Spread.Value = 0
+            end
+            if tool:FindFirstChild("Accuracy") then
+                tool.Accuracy.Value = 100
+            end
+        end
+        
+        -- Pellets
+        if Config.Pellets.Enabled then
+            if tool:FindFirstChild("Pellets") then
+                tool.Pellets.Value = Config.Pellets.Count
+            end
+            if tool:FindFirstChild("PelletSpread") then
+                tool.PelletSpread.Value = Config.Pellets.Spread
+            end
+        end
+        
+        -- Range
+        if Config.Range.Enabled then
+            if tool:FindFirstChild("Range") then
+                tool.Range.Value = Config.Range.MaxDistance
+            end
+            if tool:FindFirstChild("MaxDistance") then
+                tool.MaxDistance.Value = Config.Range.MaxDistance
+            end
+        end
+    end)
+end
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    AIMBOT SYSTEM
+    ═══════════════════════════════════════════════════════
+]]
+
+Connections.Aimbot = RunService.RenderStepped:Connect(function()
+    if not Config.Aimbot.Enabled then return end
+    
+    local target = GetClosestPlayer()
+    if not target or not target.Character then return end
+    
+    local targetPart = target.Character:FindFirstChild(Config.Aimbot.TargetPart)
+    if not targetPart then return end
+    
+    local camera = workspace.CurrentCamera
+    local targetPos = targetPart.Position
+    
+    local currentCF = camera.CFrame
+    local targetCF = CFrame.new(currentCF.Position, targetPos)
+    
+    local smoothness = Config.Aimbot.Smoothness / 100
+    camera.CFrame = currentCF:Lerp(targetCF, smoothness)
+end)
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    WEAPON MONITORING
+    ═══════════════════════════════════════════════════════
+]]
+
+Connections.WeaponMonitor = RunService.Heartbeat:Connect(function()
+    pcall(function()
+        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+        
+        if tool and tool ~= currentWeapon then
+            currentWeapon = tool
+            ModifyWeapon(tool)
+        end
+    end)
+end)
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    INFINITE AMMO SYSTEM
+    ═══════════════════════════════════════════════════════
+]]
+
+Connections.InfiniteAmmo = RunService.Heartbeat:Connect(function()
+    if not Config.Ammo.InfiniteAmmo then return end
+    
+    pcall(function()
+        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+        
+        if tool then
+            if tool:FindFirstChild("Ammo") then
+                tool.Ammo.Value = 999
+            end
+            if tool:FindFirstChild("StoredAmmo") then
+                tool.StoredAmmo.Value = 9999
+            end
+        end
+    end)
+end)
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    EXPLOSIVE BULLETS
+    ═══════════════════════════════════════════════════════
+]]
+
+Connections.Explosive = RunService.Heartbeat:Connect(function()
+    if not Config.Special.Explosive then return end
+    
+    pcall(function()
+        for _, obj in pairs(Workspace:GetChildren()) do
+            if obj.Name == "Bullet" or obj.Name == "Projectile" then
+                obj.Touched:Connect(function(hit)
+                    if hit.Parent:FindFirstChild("Humanoid") then
+                        local explosion = Instance.new("Explosion")
+                        explosion.Position = hit.Position
+                        explosion.BlastRadius = Config.Special.ExplosionRadius
+                        explosion.BlastPressure = Config.Special.ExplosionDamage * 1000
+                        explosion.Parent = Workspace
+                    end
+                end)
+            end
+        end
+    end)
+end)
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    PRESET CONFIGS
+    ═══════════════════════════════════════════════════════
+]]
+
+local Presets = {
+    Legit = function()
+        Config.Damage.Enabled = true
+        Config.Damage.Base = 30
+        Config.Damage.Multiplier = 1.2
+        Config.Accuracy.NoRecoil = true
+        Config.FireRate.Enabled = true
+        Config.FireRate.RPM = 350
+    end,
+    
+    Rage = function()
+        Config.Damage.Enabled = true
+        Config.Damage.Base = 50
+        Config.Damage.OneShotKill = false
+        Config.FireRate.Enabled = true
+        Config.FireRate.RPM = 600
+        Config.FireRate.RapidFire = true
+        Config.Ammo.InfiniteAmmo = true
+        Config.Accuracy.NoRecoil = true
+        Config.Accuracy.NoSpread = true
+        Config.Wallbang.Enabled = true
+        Config.Pellets.Enabled = true
+        Config.Pellets.Count = 15
+    end,
+    
+    HvH = function()
+        Config.Damage.OneShotKill = true
+        Config.FireRate.RapidFire = true
+        Config.Ammo.InfiniteAmmo = true
+        Config.Ammo.InstantReload = true
+        Config.Accuracy.NoRecoil = true
+        Config.Accuracy.NoSpread = true
+        Config.Accuracy.PerfectAccuracy = true
+        Config.Wallbang.Enabled = true
+        Config.Wallbang.Penetration = 999
+        Config.Pellets.Enabled = true
+        Config.Pellets.Count = 20
+        Config.Pellets.Spread = 0
+        Config.Range.Enabled = true
+        Config.Range.MaxDistance = 9999
+        Config.Aimbot.Enabled = true
+    end,
+    
+    Explosive = function()
+        Config.Special.Explosive = true
+        Config.Special.ExplosionRadius = 15
+        Config.Special.ExplosionDamage = 75
+        Config.Pellets.Enabled = true
+        Config.Pellets.Count = 10
+        Config.Ammo.InfiniteAmmo = true
+    end,
+}
+
+--[[
+    ═══════════════════════════════════════════════════════
+                    UI CREATION
+    ═══════════════════════════════════════════════════════
+]]
+
+local Window = Rayfield:CreateWindow({
+    Name = "Weaponry - Auto Shotgun Mod",
+    LoadingTitle = "Weaponry Script",
+    LoadingSubtitle = "Loading weapon mods...",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "WeaponryMods",
+        FileName = "AutoShotgunConfig"
+    },
+})
+
+--Tabs--
+local DamageTab = Window:CreateTab("Damage", "skull")
+local FireRateTab = Window:CreateTab("Fire Rate", "zap")
+local AmmoTab = Window:CreateTab("Ammo", "package")
+local AccuracyTab = Window:CreateTab("Accuracy", "target")
+local WallbangTab = Window:CreateTab("Wallbang", "shield")
+local PelletsTab = Window:CreateTab("Pellets", "circle")
+local SpecialTab = Window:CreateTab("Special", "sparkles")
+local AimbotTab = Window:CreateTab("Aimbot", "crosshair")
+local PresetsTab = Window:CreateTab("Presets", "star")
+
+--Damage Tab--
+local DamageSection = DamageTab:CreateSection("Damage Settings")
+
+DamageTab:CreateToggle({
+    Name = "Enable Damage Mods",
+    CurrentValue = false,
+    Flag = "DamageEnabled",
+    Callback = function(v)
+        Config.Damage.Enabled = v
+    end,
+})
+
+DamageTab:CreateSlider({
+    Name = "Base Damage",
+    Range = {1, 200},
+    Increment = 1,
+    CurrentValue = 25,
+    Flag = "BaseDamage",
+    Callback = function(v)
+        Config.Damage.Base = v
+    end,
+})
+
+DamageTab:CreateSlider({
+    Name = "Headshot Damage",
+    Range = {1, 300},
+    Increment = 1,
+    CurrentValue = 50,
+    Flag = "HeadshotDamage",
+    Callback = function(v)
+        Config.Damage.Headshot = v
+    end,
+})
+
+DamageTab:CreateSlider({
+    Name = "Damage Multiplier",
+    Range = {0.1, 10},
+    Increment = 0.1,
+    CurrentValue = 1.0,
+    Flag = "DamageMultiplier",
+    Callback = function(v)
+        Config.Damage.Multiplier = v
+    end,
+})
+
+DamageTab:CreateToggle({
+    Name = "One Shot Kill",
+    CurrentValue = false,
+    Flag = "OneShotKill",
+    Callback = function(v)
+        Config.Damage.OneShotKill = v
+    end,
+})
+
+--Fire Rate Tab--
+local FireRateSection = FireRateTab:CreateSection("Fire Rate Settings")
+
+FireRateTab:CreateToggle({
+    Name = "Enable Fire Rate Mods",
+    CurrentValue = false,
+    Flag = "FireRateEnabled",
+    Callback = function(v)
+        Config.FireRate.Enabled = v
+    end,
+})
+
+FireRateTab:CreateSlider({
+    Name = "Rounds Per Minute",
+    Range = {60, 3000},
+    Increment = 10,
+    CurrentValue = 300,
+    Flag = "RPM",
+    Callback = function(v)
+        Config.FireRate.RPM = v
+    end,
+})
+
+FireRateTab:CreateToggle({
+    Name = "Rapid Fire",
+    CurrentValue = false,
+    Flag = "RapidFire",
+    Callback = function(v)
+        Config.FireRate.RapidFire = v
+    end,
+})
+
+--Ammo Tab--
+local AmmoSection = AmmoTab:CreateSection("Ammo Settings")
+
+AmmoTab:CreateToggle({
+    Name = "Infinite Ammo",
+    CurrentValue = false,
+    Flag = "InfiniteAmmo",
+    Callback = function(v)
+        Config.Ammo.InfiniteAmmo = v
+    end,
+})
+
+AmmoTab:CreateSlider({
+    Name = "Magazine Size",
+    Range = {1, 100},
+    Increment = 1,
+    CurrentValue = 8,
+    Flag = "MagSize",
+    Callback = function(v)
+        Config.Ammo.MagSize = v
+    end,
+})
+
+AmmoTab:CreateToggle({
+    Name = "Instant Reload",
+    CurrentValue = false,
+    Flag = "InstantReload",
+    Callback = function(v)
+        Config.Ammo.InstantReload = v
+    end,
+})
+
+--Accuracy Tab--
+local AccuracySection = AccuracyTab:CreateSection("Accuracy Settings")
+
+AccuracyTab:CreateToggle({
+    Name = "No Recoil",
+    CurrentValue = false,
+    Flag = "NoRecoil",
+    Callback = function(v)
+        Config.Accuracy.NoRecoil = v
+    end,
+})
+
+AccuracyTab:CreateToggle({
+    Name = "No Spread",
+    CurrentValue = false,
+    Flag = "NoSpread",
+    Callback = function(v)
+        Config.Accuracy.NoSpread = v
+    end,
+})
+
+AccuracyTab:CreateToggle({
+    Name = "Perfect Accuracy",
+    CurrentValue = false,
+    Flag = "PerfectAccuracy",
+    Callback = function(v)
+        Config.Accuracy.PerfectAccuracy = v
+        Config.Accuracy.NoRecoil = v
+        Config.Accuracy.NoSpread = v
+    end,
+})
+
+--Wallbang Tab--
+local WallbangSection = WallbangTab:CreateSection("Wallbang Settings")
+
+WallbangTab:CreateToggle({
+    Name = "Enable Wallbang",
+    CurrentValue = false,
+    Flag = "WallbangEnabled",
+    Callback = function(v)
+        Config.Wallbang.Enabled = v
+    end,
+})
+
+WallbangTab:CreateSlider({
+    Name = "Penetration",
+    Range = {1, 10},
+    Increment = 1,
+    CurrentValue = 5,
+    Flag = "Penetration",
+    Callback = function(v)
+        Config.Wallbang.Penetration = v
+    end,
+})
+
+WallbangTab:CreateToggle({
+    Name = "Ignore Map",
+    CurrentValue = true,
+    Flag = "IgnoreMap",
+    Callback = function(v)
+        Config.Wallbang.IgnoreMap = v
+    end,
+})
+
+--Pellets Tab--
+local PelletsSection = PelletsTab:CreateSection("Pellet Settings")
+
+PelletsTab:CreateToggle({
+    Name = "Enable Pellet Mods",
+    CurrentValue = false,
+    Flag = "PelletsEnabled",
+    Callback = function(v)
+        Config.Pellets.Enabled = v
+    end,
+})
+
+PelletsTab:CreateSlider({
+    Name = "Pellet Count",
+    Range = {1, 50},
+    Increment = 1,
+    CurrentValue = 8,
+    Flag = "PelletCount",
+    Callback = function(v)
+        Config.Pellets.Count = v
+    end,
+})
+
+PelletsTab:CreateSlider({
+    Name = "Pellet Spread",
+    Range = {0, 30},
+    Increment = 1,
+    CurrentValue = 5,
+    Flag = "PelletSpread",
+    Callback = function(v)
+        Config.Pellets.Spread = v
+    end,
+})
+
+--Special Tab--
+local SpecialSection = SpecialTab:CreateSection("Special Effects")
+
+SpecialTab:CreateToggle({
+    Name = "Explosive Bullets",
+    CurrentValue = false,
+    Flag = "Explosive",
+    Callback = function(v)
+        Config.Special.Explosive = v
+    end,
+})
+
+SpecialTab:CreateSlider({
+    Name = "Explosion Radius",
+    Range = {1, 50},
+    Increment = 1,
+    CurrentValue = 10,
+    Flag = "ExplosionRadius",
+    Callback = function(v)
+        Config.Special.ExplosionRadius = v
+    end,
+})
+
+SpecialTab:CreateSlider({
+    Name = "Explosion Damage",
+    Range = {1, 200},
+    Increment = 1,
+    CurrentValue = 50,
+    Flag = "ExplosionDamage",
+    Callback = function(v)
+        Config.Special.ExplosionDamage = v
+    end,
+})
+
+--Aimbot Tab--
+local AimbotSection = AimbotTab:CreateSection("Aimbot Settings")
+
+AimbotTab:CreateToggle({
+    Name = "Enable Aimbot",
+    CurrentValue = false,
+    Flag = "AimbotEnabled",
+    Callback = function(v)
+        Config.Aimbot.Enabled = v
+    end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "FOV",
+    Range = {10, 500},
+    Increment = 10,
+    CurrentValue = 100,
+    Flag = "AimbotFOV",
+    Callback = function(v)
+        Config.Aimbot.FOV = v
+    end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "Smoothness",
+    Range = {1, 100},
+    Increment = 1,
+    CurrentValue = 5,
+    Flag = "AimbotSmoothness",
+    Callback = function(v)
+        Config.Aimbot.Smoothness = v
+    end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "Smoothness",
+    Range = {1, 100},
+    Increment = 1,
+    CurrentValue = 5,
+    Flag = "AimbotSmoothness",
+    Callback = function(v)
+        Config.Aimbot.Smoothness = v
+    end,
+})
+
+AimbotTab:CreateDropdown({
+    Name = "Target Part",
+    Options = {"Head", "Torso", "HumanoidRootPart"},
+    CurrentOption = "Head",
+    Flag = "TargetPart",
+    Callback = function(v)
+        Config.Aimbot.TargetPart = v
+    end,
+})
+
+--Presets Tab--
+local PresetsSection = PresetsTab:CreateSection("Quick Presets")
+
+PresetsTab:CreateButton({
+    Name = "Legit Mode",
+    Callback = function()
+        Presets.Legit()
+        Rayfield:Notify({
+            Title = "Preset Applied",
+            Content = "Legit mode activated",
+            Duration = 3,
+        })
+    end,
+})
+
+PresetsTab:CreateButton({
+    Name = "Rage Mode",
+    Callback = function()
+        Presets.Rage()
+        Rayfield:Notify({
+            Title = "Preset Applied",
+            Content = "Rage mode activated",
+            Duration = 3,
+        })
+    end,
+})
+
+PresetsTab:CreateButton({
+    Name = "HvH Mode",
+    Callback = function()
+        Presets.HvH()
+        Rayfield:Notify({
+            Title = "Preset Applied",
+            Content = "HvH mode activated",
+            Duration = 3,
+        })
+    end,
+})
+
+PresetsTab:CreateButton({
+    Name = "Explosive Mode",
+    Callback = function()
+        Presets.Explosive()
+        Rayfield:Notify({
+            Title = "Preset Applied",
+            Content = "Explosive mode activated",
+            Duration = 3,
+        })
+    end,
+})
+
+PresetsTab:CreateButton({
+    Name = "Reset All",
+    Callback = function()
+        for _, connection in pairs(Connections) do
+            if typeof(connection) == "RBXScriptConnection" then
+                connection:Disconnect()
+            end
+        end
+        
+        workspace.Raycast = originalRaycast
+        
+        Rayfield:Notify({
+            Title = "Reset",
+            Content = "All settings reset",
+            Duration = 3,
+        })
+    end,
+})
+
+--Load Config--
+Rayfield:LoadConfiguration()
+
+Rayfield:Notify({
+    Title = "Weaponry Script",
+    Content = "Auto Shotgun mods loaded!",
+    Duration = 5,
+})
+
+print("weaponry script loaded")
