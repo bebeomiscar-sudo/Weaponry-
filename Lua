@@ -1,840 +1,748 @@
---[[
-    ╔══════════════════════════════════════════════════════════╗
-    ║  WEAPONRY - Complete Weapon Modifier                    ║
-    ║  All Features | Wallbang | Damage Mods | No Recoil     ║
-    ╚══════════════════════════════════════════════════════════╝
-]]
+-- ═══════════════════════════════════════════
+-- BASKETBALL SIMULATOR — Auto Dunk Script
+-- With full UI (PC + Mobile support)
+-- Mobile = always auto dunk
+-- PC = toggle button + keybind (F)
+-- ═══════════════════════════════════════════
 
-game:IsLoaded()
-task.wait()
+-- ═══════════════════════════════════════════
+-- SERVICES
+-- ═══════════════════════════════════════════
+local Workspace          = game:GetService("Workspace")
+local Players            = game:GetService("Players")
+local Lighting           = game:GetService("Lighting")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local RunService         = game:GetService("RunService")
+local UserInputService   = game:GetService("UserInputService")
+local TweenService       = game:GetService("TweenService")
 
---Services--
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
+-- ═══════════════════════════════════════════
+-- PLAYER
+-- ═══════════════════════════════════════════
 local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
---Weapon References--
-local autoshotgun = ReplicatedStorage.Weapons.autoshotgun
-local WeaponModel = autoshotgun.WeaponModel
-local Model = WeaponModel["Auto Shotgun"]
-local Folder = autoshotgun.WeaponTool
-local Tool = Folder["Auto Shotgun"]
+-- ═══════════════════════════════════════════
+-- PLATFORM DETECT
+-- ═══════════════════════════════════════════
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
---Load Rayfield UI--
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+-- ═══════════════════════════════════════════
+-- MODULES
+-- ═══════════════════════════════════════════
+local Network       = nil
+local Player_Client = nil
+local Controls      = nil
 
---[[
-    ═══════════════════════════════════════════════════════
-                    CONFIGURATION
-    ═══════════════════════════════════════════════════════
-]]
+pcall(function() Network       = require(ReplicatedStorage.Modules.Network)       end)
+pcall(function() Player_Client = require(ReplicatedStorage.Modules.Player_Client) end)
+pcall(function() Controls      = require(ReplicatedStorage.Modules.Controls)      end)
 
-local Config = {
-    -- Damage Settings
-    Damage = {
-        Enabled = false,
-        Base = 25,
-        Headshot = 50,
-        Multiplier = 1.0,
-        OneShotKill = false,
-    },
-    
-    -- Fire Rate Settings
-    FireRate = {
-        Enabled = false,
-        RPM = 300,
-        RapidFire = false,
-    },
-    
-    -- Ammo Settings
-    Ammo = {
-        InfiniteAmmo = false,
-        MagSize = 8,
-        InstantReload = false,
-    },
-    
-    -- Accuracy Settings
-    Accuracy = {
-        NoRecoil = false,
-        NoSpread = false,
-        PerfectAccuracy = false,
-    },
-    
-    -- Wallbang Settings
-    Wallbang = {
-        Enabled = false,
-        Penetration = 5,
-        IgnoreMap = true,
-    },
-    
-    -- Pellet Settings (Shotgun)
-    Pellets = {
-        Enabled = false,
-        Count = 8,
-        Spread = 5,
-    },
-    
-    -- Range Settings
-    Range = {
-        Enabled = false,
-        MaxDistance = 200,
-        NoFalloff = false,
-    },
-    
-    -- Special Effects
-    Special = {
-        Explosive = false,
-        ExplosionRadius = 10,
-        ExplosionDamage = 50,
-        IgniteTarget = false,
-    },
-    
-    -- Aimbot
-    Aimbot = {
-        Enabled = false,
-        FOV = 100,
-        Smoothness = 5,
-        TargetPart = "Head",
-    }
+-- ═══════════════════════════════════════════
+-- STATE
+-- ═══════════════════════════════════════════
+local autoDunkEnabled   = false
+local humanoidStateConn = nil
+local isDragging        = false
+local dragStart         = nil
+local frameStart        = nil
+
+-- ═══════════════════════════════════════════
+-- THEME
+-- ═══════════════════════════════════════════
+local THEME = {
+    BG          = Color3.fromRGB(15,  15,  20),
+    Panel       = Color3.fromRGB(22,  22,  30),
+    PanelAlt    = Color3.fromRGB(28,  28,  38),
+    Accent      = Color3.fromRGB(80,  180, 255),
+    AccentDark  = Color3.fromRGB(40,  120, 200),
+    ON          = Color3.fromRGB(50,  220, 110),
+    OFF         = Color3.fromRGB(200, 60,  60),
+    Text        = Color3.fromRGB(240, 240, 240),
+    TextDim     = Color3.fromRGB(140, 140, 160),
+    Border      = Color3.fromRGB(50,  50,  70),
+    White       = Color3.fromRGB(255, 255, 255),
 }
 
---[[
-    ═══════════════════════════════════════════════════════
-                    VARIABLES
-    ═══════════════════════════════════════════════════════
-]]
-
-local Connections = {}
-local originalRaycast = workspace.Raycast
-local currentWeapon = nil
-
---[[
-    ═══════════════════════════════════════════════════════
-                    UTILITY FUNCTIONS
-    ═══════════════════════════════════════════════════════
-]]
-
-local function GetClosestPlayer()
-    local closest, closestDist = nil, math.huge
-    local camera = workspace.CurrentCamera
-    local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-            local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-            
-            if humanoid and humanoid.Health > 0 and rootPart then
-                local screenPos, onScreen = camera:WorldToViewportPoint(rootPart.Position)
-                
-                if onScreen then
-                    local screenPos2D = Vector2.new(screenPos.X, screenPos.Y)
-                    local distance = (screenCenter - screenPos2D).Magnitude
-                    
-                    if distance <= Config.Aimbot.FOV and distance < closestDist then
-                        closest = player
-                        closestDist = distance
-                    end
-                end
-            end
-        end
+-- ═══════════════════════════════════════════
+-- UI BUILD HELPERS
+-- ═══════════════════════════════════════════
+local function makeInstance(class, props, parent)
+    local inst = Instance.new(class)
+    for k, v in pairs(props) do
+        inst[k] = v
     end
-    
-    return closest
+    if parent then inst.Parent = parent end
+    return inst
 end
 
---[[
-    ═══════════════════════════════════════════════════════
-                    WALLBANG SYSTEM
-    ═══════════════════════════════════════════════════════
-]]
+local function addCorner(parent, radius)
+    return makeInstance("UICorner", {CornerRadius = UDim.new(0, radius or 8)}, parent)
+end
 
-workspace.Raycast = newcclosure(function(self, origin, direction, params)
-    if not Config.Wallbang.Enabled then
-        return originalRaycast(self, origin, direction, params)
+local function addStroke(parent, color, thickness)
+    return makeInstance("UIStroke", {
+        Color     = color     or THEME.Border,
+        Thickness = thickness or 1.5,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, parent)
+end
+
+local function addPadding(parent, all)
+    return makeInstance("UIPadding", {
+        PaddingTop    = UDim.new(0, all),
+        PaddingBottom = UDim.new(0, all),
+        PaddingLeft   = UDim.new(0, all),
+        PaddingRight  = UDim.new(0, all),
+    }, parent)
+end
+
+local function addListLayout(parent, dir, spacing, halign)
+    return makeInstance("UIListLayout", {
+        FillDirection       = dir or Enum.FillDirection.Vertical,
+        SortOrder           = Enum.SortOrder.LayoutOrder,
+        Padding             = UDim.new(0, spacing or 6),
+        HorizontalAlignment = halign or Enum.HorizontalAlignment.Center,
+    }, parent)
+end
+
+local function tween(obj, props, t, style, dir)
+    TweenService:Create(obj,
+        TweenInfo.new(t or 0.2, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out),
+        props
+    ):Play()
+end
+
+-- ═══════════════════════════════════════════
+-- CREATE MAIN SCREENGUI
+-- ═══════════════════════════════════════════
+local ScreenGui = makeInstance("ScreenGui", {
+    Name              = "AutoDunkUI",
+    ResetOnSpawn      = false,
+    IgnoreGuiInset    = true,
+    ZIndexBehavior    = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+-- ═══════════════════════════════════════════
+-- MAIN FRAME
+-- ═══════════════════════════════════════════
+local MainFrame = makeInstance("Frame", {
+    Name              = "MainFrame",
+    Size              = UDim2.fromOffset(260, isMobile and 180 or 220),
+    Position          = UDim2.new(0.5, -130, 0.5, -110),
+    BackgroundColor3  = THEME.BG,
+    BorderSizePixel   = 0,
+    Active            = true,
+    ZIndex            = 10,
+}, ScreenGui)
+addCorner(MainFrame, 12)
+addStroke(MainFrame, THEME.Border, 1.5)
+
+-- Shadow (fake drop shadow)
+local Shadow = makeInstance("ImageLabel", {
+    Name              = "Shadow",
+    Size              = UDim2.new(1, 30, 1, 30),
+    Position          = UDim2.new(0, -15, 0, -15),
+    BackgroundTransparency = 1,
+    Image             = "rbxassetid://5554236805",
+    ImageColor3       = Color3.fromRGB(0, 0, 0),
+    ImageTransparency = 0.6,
+    ScaleType         = Enum.ScaleType.Slice,
+    SliceCenter       = Rect.new(23, 23, 277, 277),
+    ZIndex            = 9,
+}, MainFrame)
+
+-- ═══════════════════════════════════════════
+-- TITLE BAR (also drag handle)
+-- ═══════════════════════════════════════════
+local TitleBar = makeInstance("Frame", {
+    Name             = "TitleBar",
+    Size             = UDim2.new(1, 0, 0, 38),
+    BackgroundColor3 = THEME.Panel,
+    BorderSizePixel  = 0,
+    ZIndex           = 11,
+}, MainFrame)
+addCorner(TitleBar, 12)
+
+-- Bottom fill so corners only show on top
+makeInstance("Frame", {
+    Size             = UDim2.new(1, 0, 0, 12),
+    Position         = UDim2.new(0, 0, 1, -12),
+    BackgroundColor3 = THEME.Panel,
+    BorderSizePixel  = 0,
+    ZIndex           = 11,
+}, TitleBar)
+
+-- Title icon (basketball emoji via TextLabel)
+local TitleIcon = makeInstance("TextLabel", {
+    Name             = "Icon",
+    Size             = UDim2.fromOffset(30, 30),
+    Position         = UDim2.new(0, 8, 0.5, -15),
+    BackgroundTransparency = 1,
+    Text             = "🏀",
+    TextSize         = 22,
+    ZIndex           = 12,
+}, TitleBar)
+
+local TitleLabel = makeInstance("TextLabel", {
+    Name             = "Title",
+    Size             = UDim2.new(1, -90, 1, 0),
+    Position         = UDim2.new(0, 40, 0, 0),
+    BackgroundTransparency = 1,
+    Text             = "Auto Dunk",
+    TextColor3       = THEME.Text,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 16,
+    TextXAlignment   = Enum.TextXAlignment.Left,
+    ZIndex           = 12,
+}, TitleBar)
+
+-- Platform badge
+local PlatformBadge = makeInstance("TextLabel", {
+    Name             = "PlatformBadge",
+    Size             = UDim2.fromOffset(60, 20),
+    Position         = UDim2.new(1, -68, 0.5, -10),
+    BackgroundColor3 = isMobile and THEME.AccentDark or THEME.PanelAlt,
+    Text             = isMobile and "MOBILE" or "PC",
+    TextColor3       = THEME.Accent,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 10,
+    ZIndex           = 12,
+}, TitleBar)
+addCorner(PlatformBadge, 4)
+
+-- ── Drag logic ──
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        isDragging = true
+        dragStart  = input.Position
+        frameStart = MainFrame.Position
     end
-    
-    params = params or RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Blacklist
-    
-    local ignoreList = params.FilterDescendantsInstances or {}
-    
-    if Config.Wallbang.IgnoreMap then
-        local map = Workspace:FindFirstChild("Map")
-        if map then
-            table.insert(ignoreList, map)
-        end
-        
-        for _, obj in pairs(Workspace:GetDescendants()) do
-            if obj:IsA("BasePart") and obj.CanCollide then
-                local name = obj.Name:lower()
-                if name:find("wall") or name:find("barrier") or 
-                   name:find("fence") or name:find("door") or 
-                   name:find("block") then
-                    table.insert(ignoreList, obj)
-                end
-            end
-        end
+end)
+TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        isDragging = false
     end
-    
-    params.FilterDescendantsInstances = ignoreList
-    
-    return originalRaycast(self, origin, direction, params)
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if isDragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement or
+        input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(
+            frameStart.X.Scale, frameStart.X.Offset + delta.X,
+            frameStart.Y.Scale, frameStart.Y.Offset + delta.Y
+        )
+    end
 end)
 
---[[
-    ═══════════════════════════════════════════════════════
-                    WEAPON MODIFICATION
-    ═══════════════════════════════════════════════════════
-]]
+-- ═══════════════════════════════════════════
+-- CONTENT AREA
+-- ═══════════════════════════════════════════
+local Content = makeInstance("Frame", {
+    Name             = "Content",
+    Size             = UDim2.new(1, -16, 1, -48),
+    Position         = UDim2.new(0, 8, 0, 42),
+    BackgroundTransparency = 1,
+    ZIndex           = 11,
+}, MainFrame)
+addListLayout(Content, Enum.FillDirection.Vertical, 8, Enum.HorizontalAlignment.Center)
 
-local function ModifyWeapon(tool)
-    if not tool or not tool:IsA("Tool") then return end
-    
-    pcall(function()
-        -- Damage
-        if Config.Damage.Enabled then
-            if tool:FindFirstChild("Damage") then
-                tool.Damage.Value = Config.Damage.OneShotKill and 999 or Config.Damage.Base
-            end
-            if tool:FindFirstChild("HeadshotMultiplier") then
-                tool.HeadshotMultiplier.Value = Config.Damage.Headshot / Config.Damage.Base
-            end
+-- ═══════════════════════════════════════════
+-- STATUS INDICATOR BOX
+-- ═══════════════════════════════════════════
+local StatusBox = makeInstance("Frame", {
+    Name             = "StatusBox",
+    Size             = UDim2.new(1, 0, 0, 50),
+    BackgroundColor3 = THEME.PanelAlt,
+    BorderSizePixel  = 0,
+    ZIndex           = 11,
+    LayoutOrder      = 1,
+}, Content)
+addCorner(StatusBox, 8)
+addStroke(StatusBox, THEME.Border, 1)
+
+local StatusDot = makeInstance("Frame", {
+    Name             = "Dot",
+    Size             = UDim2.fromOffset(10, 10),
+    Position         = UDim2.new(0, 14, 0.5, -5),
+    BackgroundColor3 = THEME.OFF,
+    BorderSizePixel  = 0,
+    ZIndex           = 12,
+}, StatusBox)
+addCorner(StatusDot, 999)
+
+local StatusLabel = makeInstance("TextLabel", {
+    Name             = "Label",
+    Size             = UDim2.new(1, -36, 1, 0),
+    Position         = UDim2.new(0, 30, 0, 0),
+    BackgroundTransparency = 1,
+    Text             = "Auto Dunk: OFF",
+    TextColor3       = THEME.OFF,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 15,
+    TextXAlignment   = Enum.TextXAlignment.Left,
+    ZIndex           = 12,
+}, StatusBox)
+
+local StatusSub = makeInstance("TextLabel", {
+    Name             = "Sub",
+    Size             = UDim2.new(1, -36, 0, 14),
+    Position         = UDim2.new(0, 30, 1, -16),
+    BackgroundTransparency = 1,
+    Text             = isMobile and "Always active on mobile" or "Press F or click toggle",
+    TextColor3       = THEME.TextDim,
+    Font             = Enum.Font.Gotham,
+    TextSize         = 10,
+    TextXAlignment   = Enum.TextXAlignment.Left,
+    ZIndex           = 12,
+}, StatusBox)
+
+-- ═══════════════════════════════════════════
+-- TOGGLE BUTTON (PC only)
+-- ═══════════════════════════════════════════
+local ToggleButton = nil
+local ToggleLabel  = nil
+
+if not isMobile then
+    ToggleButton = makeInstance("TextButton", {
+        Name             = "ToggleButton",
+        Size             = UDim2.new(1, 0, 0, 44),
+        BackgroundColor3 = THEME.Panel,
+        Text             = "",
+        BorderSizePixel  = 0,
+        ZIndex           = 11,
+        LayoutOrder      = 2,
+    }, Content)
+    addCorner(ToggleButton, 8)
+    addStroke(ToggleButton, THEME.Border, 1)
+
+    -- Left icon
+    makeInstance("TextLabel", {
+        Size             = UDim2.fromOffset(28, 28),
+        Position         = UDim2.new(0, 10, 0.5, -14),
+        BackgroundTransparency = 1,
+        Text             = "⚡",
+        TextSize         = 20,
+        ZIndex           = 12,
+        Parent           = ToggleButton,
+    })
+
+    ToggleLabel = makeInstance("TextLabel", {
+        Name             = "Label",
+        Size             = UDim2.new(1, -90, 1, 0),
+        Position         = UDim2.new(0, 42, 0, 0),
+        BackgroundTransparency = 1,
+        Text             = "Enable Auto Dunk",
+        TextColor3       = THEME.Text,
+        Font             = Enum.Font.GothamSemibold,
+        TextSize         = 14,
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        ZIndex           = 12,
+        Parent           = ToggleButton,
+    })
+
+    -- Toggle pill (on/off visual)
+    local Pill = makeInstance("Frame", {
+        Name             = "Pill",
+        Size             = UDim2.fromOffset(42, 22),
+        Position         = UDim2.new(1, -52, 0.5, -11),
+        BackgroundColor3 = THEME.OFF,
+        BorderSizePixel  = 0,
+        ZIndex           = 12,
+        Parent           = ToggleButton,
+    })
+    addCorner(Pill, 999)
+
+    local PillKnob = makeInstance("Frame", {
+        Name             = "Knob",
+        Size             = UDim2.fromOffset(16, 16),
+        Position         = UDim2.new(0, 3, 0.5, -8),
+        BackgroundColor3 = THEME.White,
+        BorderSizePixel  = 0,
+        ZIndex           = 13,
+        Parent           = Pill,
+    })
+    addCorner(PillKnob, 999)
+
+    -- Hover effect
+    ToggleButton.MouseEnter:Connect(function()
+        tween(ToggleButton, {BackgroundColor3 = THEME.PanelAlt}, 0.15)
+    end)
+    ToggleButton.MouseLeave:Connect(function()
+        tween(ToggleButton, {BackgroundColor3 = THEME.Panel}, 0.15)
+    end)
+
+    -- Store pill refs for update
+    ToggleButton:SetAttribute("PillRef",     true)
+    ToggleButton.Pill      = Pill
+    ToggleButton.PillKnob  = PillKnob
+end
+
+-- ═══════════════════════════════════════════
+-- STATS ROW
+-- ═══════════════════════════════════════════
+local StatsRow = makeInstance("Frame", {
+    Name             = "StatsRow",
+    Size             = UDim2.new(1, 0, 0, 38),
+    BackgroundTransparency = 1,
+    ZIndex           = 11,
+    LayoutOrder      = 3,
+}, Content)
+addListLayout(StatsRow, Enum.FillDirection.Horizontal, 6, Enum.HorizontalAlignment.Center)
+
+local function makeStatBox(label, value, order)
+    local box = makeInstance("Frame", {
+        Size             = UDim2.new(0.5, -3, 1, 0),
+        BackgroundColor3 = THEME.PanelAlt,
+        BorderSizePixel  = 0,
+        ZIndex           = 11,
+        LayoutOrder      = order,
+        Parent           = StatsRow,
+    })
+    addCorner(box, 6)
+    addStroke(box, THEME.Border, 1)
+
+    local valLabel = makeInstance("TextLabel", {
+        Name             = "Value",
+        Size             = UDim2.new(1, 0, 0.6, 0),
+        Position         = UDim2.new(0, 0, 0, 2),
+        BackgroundTransparency = 1,
+        Text             = value,
+        TextColor3       = THEME.Accent,
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 14,
+        ZIndex           = 12,
+        Parent           = box,
+    })
+    makeInstance("TextLabel", {
+        Name             = "Label",
+        Size             = UDim2.new(1, 0, 0.4, 0),
+        Position         = UDim2.new(0, 0, 0.6, 0),
+        BackgroundTransparency = 1,
+        Text             = label,
+        TextColor3       = THEME.TextDim,
+        Font             = Enum.Font.Gotham,
+        TextSize         = 9,
+        ZIndex           = 12,
+        Parent           = box,
+    })
+    return box, valLabel
+end
+
+local _, DunksValueLabel  = makeStatBox("DUNKS",    "0",  1)
+local _, AttemptsValLabel = makeStatBox("ATTEMPTS", "0",  2)
+
+-- ═══════════════════════════════════════════
+-- KEYBIND LABEL (PC only)
+-- ═══════════════════════════════════════════
+if not isMobile then
+    local KeyLabel = makeInstance("TextLabel", {
+        Name             = "KeyLabel",
+        Size             = UDim2.new(1, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text             = "Keybind: [F]",
+        TextColor3       = THEME.TextDim,
+        Font             = Enum.Font.Gotham,
+        TextSize         = 11,
+        ZIndex           = 11,
+        LayoutOrder      = 4,
+        Parent           = Content,
+    })
+end
+
+-- ═══════════════════════════════════════════
+-- MOBILE — always on label
+-- ═══════════════════════════════════════════
+if isMobile then
+    local MobileInfo = makeInstance("Frame", {
+        Name             = "MobileInfo",
+        Size             = UDim2.new(1, 0, 0, 44),
+        BackgroundColor3 = THEME.PanelAlt,
+        BorderSizePixel  = 0,
+        ZIndex           = 11,
+        LayoutOrder      = 2,
+        Parent           = Content,
+    })
+    addCorner(MobileInfo, 8)
+    addStroke(MobileInfo, Color3.fromRGB(80, 180, 255), 1)
+
+    makeInstance("TextLabel", {
+        Size             = UDim2.new(1, -8, 1, 0),
+        Position         = UDim2.new(0, 8, 0, 0),
+        BackgroundTransparency = 1,
+        Text             = "📱  Mobile detected\nAuto Dunk is always active",
+        TextColor3       = THEME.Accent,
+        Font             = Enum.Font.GothamSemibold,
+        TextSize         = 12,
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        RichText         = true,
+        ZIndex           = 12,
+        Parent           = MobileInfo,
+    })
+end
+
+-- ═══════════════════════════════════════════
+-- MINIMIZE BUTTON
+-- ═══════════════════════════════════════════
+local MinimizeBtn = makeInstance("TextButton", {
+    Name             = "MinimizeBtn",
+    Size             = UDim2.fromOffset(24, 24),
+    Position         = UDim2.new(1, -34, 0, 7),
+    BackgroundColor3 = THEME.PanelAlt,
+    Text             = "−",
+    TextColor3       = THEME.TextDim,
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 16,
+    BorderSizePixel  = 0,
+    ZIndex           = 13,
+    Parent           = TitleBar,
+})
+addCorner(MinimizeBtn, 6)
+
+local isMinimized = false
+MinimizeBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    local targetSize = isMinimized
+        and UDim2.fromOffset(260, 38)
+        or  UDim2.fromOffset(260, isMobile and 180 or 220)
+    tween(MainFrame, {Size = targetSize}, 0.25, Enum.EasingStyle.Back)
+    Content.Visible    = not isMinimized
+    MinimizeBtn.Text   = isMinimized and "+" or "−"
+end)
+
+-- ═══════════════════════════════════════════
+-- STATS TRACKING
+-- ═══════════════════════════════════════════
+local totalDunks    = 0
+local totalAttempts = 0
+
+local function updateStats()
+    DunksValueLabel.Text  = tostring(totalDunks)
+    AttemptsValLabel.Text = tostring(totalAttempts)
+end
+
+-- ═══════════════════════════════════════════
+-- UPDATE UI STATE
+-- ═══════════════════════════════════════════
+local function updateUI()
+    local isOn = autoDunkEnabled
+
+    -- Status box
+    tween(StatusDot,   {BackgroundColor3 = isOn and THEME.ON or THEME.OFF},    0.2)
+    tween(StatusLabel, {TextColor3       = isOn and THEME.ON or THEME.OFF},    0.2)
+    StatusLabel.Text = "Auto Dunk: " .. (isOn and "ON" or "OFF")
+
+    -- Toggle button pill (PC only)
+    if not isMobile and ToggleButton then
+        local pill  = ToggleButton:FindFirstChild("Pill")
+        local knob  = pill and pill:FindFirstChild("Knob")
+        if pill then
+            tween(pill, {BackgroundColor3 = isOn and THEME.ON or THEME.OFF}, 0.2)
         end
-        
-        -- Fire Rate
-        if Config.FireRate.Enabled then
-            if tool:FindFirstChild("FireRate") then
-                tool.FireRate.Value = Config.FireRate.RapidFire and 0.001 or (60 / Config.FireRate.RPM)
-            end
+        if knob then
+            tween(knob, {Position = isOn
+                and UDim2.new(1, -19, 0.5, -8)
+                or  UDim2.new(0, 3,   0.5, -8)
+            }, 0.2)
         end
-        
-        -- Ammo
-        if Config.Ammo.InfiniteAmmo then
-            if tool:FindFirstChild("Ammo") then
-                tool.Ammo.Value = 999
-            end
-            if tool:FindFirstChild("StoredAmmo") then
-                tool.StoredAmmo.Value = 9999
-            end
+        if ToggleLabel then
+            ToggleLabel.Text = isOn and "Disable Auto Dunk" or "Enable Auto Dunk"
         end
-        
-        if Config.Ammo.Enabled then
-            if tool:FindFirstChild("MagSize") then
-                tool.MagSize.Value = Config.Ammo.MagSize
-            end
-            if tool:FindFirstChild("ReloadTime") then
-                tool.ReloadTime.Value = Config.Ammo.InstantReload and 0.001 or tool.ReloadTime.Value
-            end
+    end
+end
+
+-- ═══════════════════════════════════════════
+-- GAME LOGIC HELPERS
+-- ═══════════════════════════════════════════
+local function getCharacter()
+    if Player_Client and Player_Client.GetLocalPlayerCharacter then
+        return Player_Client.GetLocalPlayerCharacter()
+    end
+    return LocalPlayer.Character
+end
+
+local function getHumanoid()
+    local char = getCharacter()
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getMoveVector()
+    if Controls and Controls.GetMoveVector then
+        return Controls:GetMoveVector()
+    end
+    return Vector3.new(0, 0, 0)
+end
+
+-- ═══════════════════════════════════════════
+-- CANCEL AUTO
+-- ═══════════════════════════════════════════
+local function CancelAuto()
+    local char = getCharacter()
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hum and hrp then
+        hum:MoveTo(hrp.Position + Vector3.new(0, 0, 0.5))
+    end
+end
+
+-- ═══════════════════════════════════════════
+-- AUTO DUNK
+-- ═══════════════════════════════════════════
+local function Auto()
+    if not autoDunkEnabled then return end
+    totalAttempts = totalAttempts + 1
+    updateStats()
+
+    local ok, zone = pcall(function()
+        return Network:InvokeServer("Jump.FindClosestZone")
+    end)
+    if not ok or not zone then return end
+
+    local hum = getHumanoid()
+    if not hum then return end
+
+    if Player_Client and Player_Client.WalkLocalPlayerCharacterToPart then
+        pcall(function()
+            Player_Client.WalkLocalPlayerCharacterToPart(zone.PrimaryPart)
+        end)
+    else
+        if zone.PrimaryPart then
+            hum:MoveTo(zone.PrimaryPart.Position)
         end
-        
-        -- Accuracy
-        if Config.Accuracy.NoRecoil then
-            if tool:FindFirstChild("Recoil") then
-                tool.Recoil.Value = 0
-            end
-            if tool:FindFirstChild("RecoilVertical") then
-                tool.RecoilVertical.Value = 0
-            end
-            if tool:FindFirstChild("RecoilHorizontal") then
-                tool.RecoilHorizontal.Value = 0
-            end
-        end
-        
-        if Config.Accuracy.NoSpread then
-            if tool:FindFirstChild("Spread") then
-                tool.Spread.Value = 0
-            end
-            if tool:FindFirstChild("Accuracy") then
-                tool.Accuracy.Value = 100
-            end
-        end
-        
-        -- Pellets
-        if Config.Pellets.Enabled then
-            if tool:FindFirstChild("Pellets") then
-                tool.Pellets.Value = Config.Pellets.Count
-            end
-            if tool:FindFirstChild("PelletSpread") then
-                tool.PelletSpread.Value = Config.Pellets.Spread
-            end
-        end
-        
-        -- Range
-        if Config.Range.Enabled then
-            if tool:FindFirstChild("Range") then
-                tool.Range.Value = Config.Range.MaxDistance
-            end
-            if tool:FindFirstChild("MaxDistance") then
-                tool.MaxDistance.Value = Config.Range.MaxDistance
-            end
+    end
+
+    hum.MoveToFinished:Wait()
+    task.wait(0.5)
+
+    if autoDunkEnabled then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        totalDunks = totalDunks + 1
+        updateStats()
+
+        -- Flash status green briefly
+        tween(StatusBox, {BackgroundColor3 = Color3.fromRGB(30, 60, 40)}, 0.1)
+        task.delay(0.3, function()
+            tween(StatusBox, {BackgroundColor3 = THEME.PanelAlt}, 0.3)
+        end)
+    end
+end
+
+-- ═══════════════════════════════════════════
+-- SETUP HUMANOID STATE LISTENER
+-- ═══════════════════════════════════════════
+local function SetupHumanoid(char)
+    if humanoidStateConn then
+        humanoidStateConn:Disconnect()
+        humanoidStateConn = nil
+    end
+
+    local hum = char:WaitForChild("Humanoid", 10)
+    if not hum then return end
+
+    humanoidStateConn = hum.StateChanged:Connect(function(oldState, newState)
+        if oldState == Enum.HumanoidStateType.Freefall
+        and newState == Enum.HumanoidStateType.Landed
+        and autoDunkEnabled then
+            task.spawn(Auto)
         end
     end)
 end
 
---[[
-    ═══════════════════════════════════════════════════════
-                    AIMBOT SYSTEM
-    ═══════════════════════════════════════════════════════
-]]
+-- ═══════════════════════════════════════════
+-- TOGGLE (PC)
+-- ═══════════════════════════════════════════
+local function Toggle()
+    if isMobile then return end  -- mobile is always on, no toggle
+    autoDunkEnabled = not autoDunkEnabled
 
-Connections.Aimbot = RunService.RenderStepped:Connect(function()
-    if not Config.Aimbot.Enabled then return end
-    
-    local target = GetClosestPlayer()
-    if not target or not target.Character then return end
-    
-    local targetPart = target.Character:FindFirstChild(Config.Aimbot.TargetPart)
-    if not targetPart then return end
-    
-    local camera = workspace.CurrentCamera
-    local targetPos = targetPart.Position
-    
-    local currentCF = camera.CFrame
-    local targetCF = CFrame.new(currentCF.Position, targetPos)
-    
-    local smoothness = Config.Aimbot.Smoothness / 100
-    camera.CFrame = currentCF:Lerp(targetCF, smoothness)
-end)
+    if autoDunkEnabled then
+        task.spawn(Auto)
+    else
+        task.spawn(CancelAuto)
+    end
 
---[[
-    ═══════════════════════════════════════════════════════
-                    WEAPON MONITORING
-    ═══════════════════════════════════════════════════════
-]]
+    updateUI()
 
-Connections.WeaponMonitor = RunService.Heartbeat:Connect(function()
     pcall(function()
-        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        
-        if tool and tool ~= currentWeapon then
-            currentWeapon = tool
-            ModifyWeapon(tool)
+        Network:FireServer("Player.ToggleAutoDunk", autoDunkEnabled)
+    end)
+end
+
+-- ═══════════════════════════════════════════
+-- WIRE TOGGLE BUTTON
+-- ═══════════════════════════════════════════
+if not isMobile and ToggleButton then
+    ToggleButton.MouseButton1Click:Connect(Toggle)
+end
+
+-- ═══════════════════════════════════════════
+-- PC KEYBIND — F to toggle
+-- ═══════════════════════════════════════════
+if not isMobile then
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.KeyCode == Enum.KeyCode.F then
+            Toggle()
         end
     end)
-end)
+end
 
---[[
-    ═══════════════════════════════════════════════════════
-                    INFINITE AMMO SYSTEM
-    ═══════════════════════════════════════════════════════
-]]
-
-Connections.InfiniteAmmo = RunService.Heartbeat:Connect(function()
-    if not Config.Ammo.InfiniteAmmo then return end
-    
-    pcall(function()
-        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        
-        if tool then
-            if tool:FindFirstChild("Ammo") then
-                tool.Ammo.Value = 999
-            end
-            if tool:FindFirstChild("StoredAmmo") then
-                tool.StoredAmmo.Value = 9999
-            end
+-- ═══════════════════════════════════════════
+-- MOVE WATCHER — cancel if player moves (PC)
+-- ═══════════════════════════════════════════
+if not isMobile then
+    RunService.Heartbeat:Connect(function()
+        if not autoDunkEnabled then return end
+        local mv = getMoveVector()
+        if math.abs(mv.X) > 0.1 or math.abs(mv.Z) > 0.1 then
+            Toggle()
         end
     end)
-end)
+end
 
---[[
-    ═══════════════════════════════════════════════════════
-                    EXPLOSIVE BULLETS
-    ═══════════════════════════════════════════════════════
-]]
+-- ═══════════════════════════════════════════
+-- INIT
+-- ═══════════════════════════════════════════
+local function Init()
+    local char = LocalPlayer.Character
+    if char then SetupHumanoid(char) end
 
-Connections.Explosive = RunService.Heartbeat:Connect(function()
-    if not Config.Special.Explosive then return end
-    
-    pcall(function()
-        for _, obj in pairs(Workspace:GetChildren()) do
-            if obj.Name == "Bullet" or obj.Name == "Projectile" then
-                obj.Touched:Connect(function(hit)
-                    if hit.Parent:FindFirstChild("Humanoid") then
-                        local explosion = Instance.new("Explosion")
-                        explosion.Position = hit.Position
-                        explosion.BlastRadius = Config.Special.ExplosionRadius
-                        explosion.BlastPressure = Config.Special.ExplosionDamage * 1000
-                        explosion.Parent = Workspace
-                    end
-                end)
-            end
-        end
+    LocalPlayer.CharacterAdded:Connect(function(newChar)
+        task.wait(0.1)
+        SetupHumanoid(newChar)
     end)
-end)
 
---[[
-    ═══════════════════════════════════════════════════════
-                    PRESET CONFIGS
-    ═══════════════════════════════════════════════════════
-]]
+    -- Mobile: always enable and keep enabled
+    if isMobile then
+        autoDunkEnabled = true
+        updateUI()
+        pcall(function()
+            Network:FireServer("Player.ToggleAutoDunk", true)
+        end)
+        task.spawn(Auto)
 
-local Presets = {
-    Legit = function()
-        Config.Damage.Enabled = true
-        Config.Damage.Base = 30
-        Config.Damage.Multiplier = 1.2
-        Config.Accuracy.NoRecoil = true
-        Config.FireRate.Enabled = true
-        Config.FireRate.RPM = 350
-    end,
-    
-    Rage = function()
-        Config.Damage.Enabled = true
-        Config.Damage.Base = 50
-        Config.Damage.OneShotKill = false
-        Config.FireRate.Enabled = true
-        Config.FireRate.RPM = 600
-        Config.FireRate.RapidFire = true
-        Config.Ammo.InfiniteAmmo = true
-        Config.Accuracy.NoRecoil = true
-        Config.Accuracy.NoSpread = true
-        Config.Wallbang.Enabled = true
-        Config.Pellets.Enabled = true
-        Config.Pellets.Count = 15
-    end,
-    
-    HvH = function()
-        Config.Damage.OneShotKill = true
-        Config.FireRate.RapidFire = true
-        Config.Ammo.InfiniteAmmo = true
-        Config.Ammo.InstantReload = true
-        Config.Accuracy.NoRecoil = true
-        Config.Accuracy.NoSpread = true
-        Config.Accuracy.PerfectAccuracy = true
-        Config.Wallbang.Enabled = true
-        Config.Wallbang.Penetration = 999
-        Config.Pellets.Enabled = true
-        Config.Pellets.Count = 20
-        Config.Pellets.Spread = 0
-        Config.Range.Enabled = true
-        Config.Range.MaxDistance = 9999
-        Config.Aimbot.Enabled = true
-    end,
-    
-    Explosive = function()
-        Config.Special.Explosive = true
-        Config.Special.ExplosionRadius = 15
-        Config.Special.ExplosionDamage = 75
-        Config.Pellets.Enabled = true
-        Config.Pellets.Count = 10
-        Config.Ammo.InfiniteAmmo = true
-    end,
-}
-
---[[
-    ═══════════════════════════════════════════════════════
-                    UI CREATION
-    ═══════════════════════════════════════════════════════
-]]
-
-local Window = Rayfield:CreateWindow({
-    Name = "Weaponry - Auto Shotgun Mod",
-    LoadingTitle = "Weaponry Script",
-    LoadingSubtitle = "Loading weapon mods...",
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "WeaponryMods",
-        FileName = "AutoShotgunConfig"
-    },
-})
-
---Tabs--
-local DamageTab = Window:CreateTab("Damage", "skull")
-local FireRateTab = Window:CreateTab("Fire Rate", "zap")
-local AmmoTab = Window:CreateTab("Ammo", "package")
-local AccuracyTab = Window:CreateTab("Accuracy", "target")
-local WallbangTab = Window:CreateTab("Wallbang", "shield")
-local PelletsTab = Window:CreateTab("Pellets", "circle")
-local SpecialTab = Window:CreateTab("Special", "sparkles")
-local AimbotTab = Window:CreateTab("Aimbot", "crosshair")
-local PresetsTab = Window:CreateTab("Presets", "star")
-
---Damage Tab--
-local DamageSection = DamageTab:CreateSection("Damage Settings")
-
-DamageTab:CreateToggle({
-    Name = "Enable Damage Mods",
-    CurrentValue = false,
-    Flag = "DamageEnabled",
-    Callback = function(v)
-        Config.Damage.Enabled = v
-    end,
-})
-
-DamageTab:CreateSlider({
-    Name = "Base Damage",
-    Range = {1, 200},
-    Increment = 1,
-    CurrentValue = 25,
-    Flag = "BaseDamage",
-    Callback = function(v)
-        Config.Damage.Base = v
-    end,
-})
-
-DamageTab:CreateSlider({
-    Name = "Headshot Damage",
-    Range = {1, 300},
-    Increment = 1,
-    CurrentValue = 50,
-    Flag = "HeadshotDamage",
-    Callback = function(v)
-        Config.Damage.Headshot = v
-    end,
-})
-
-DamageTab:CreateSlider({
-    Name = "Damage Multiplier",
-    Range = {0.1, 10},
-    Increment = 0.1,
-    CurrentValue = 1.0,
-    Flag = "DamageMultiplier",
-    Callback = function(v)
-        Config.Damage.Multiplier = v
-    end,
-})
-
-DamageTab:CreateToggle({
-    Name = "One Shot Kill",
-    CurrentValue = false,
-    Flag = "OneShotKill",
-    Callback = function(v)
-        Config.Damage.OneShotKill = v
-    end,
-})
-
---Fire Rate Tab--
-local FireRateSection = FireRateTab:CreateSection("Fire Rate Settings")
-
-FireRateTab:CreateToggle({
-    Name = "Enable Fire Rate Mods",
-    CurrentValue = false,
-    Flag = "FireRateEnabled",
-    Callback = function(v)
-        Config.FireRate.Enabled = v
-    end,
-})
-
-FireRateTab:CreateSlider({
-    Name = "Rounds Per Minute",
-    Range = {60, 3000},
-    Increment = 10,
-    CurrentValue = 300,
-    Flag = "RPM",
-    Callback = function(v)
-        Config.FireRate.RPM = v
-    end,
-})
-
-FireRateTab:CreateToggle({
-    Name = "Rapid Fire",
-    CurrentValue = false,
-    Flag = "RapidFire",
-    Callback = function(v)
-        Config.FireRate.RapidFire = v
-    end,
-})
-
---Ammo Tab--
-local AmmoSection = AmmoTab:CreateSection("Ammo Settings")
-
-AmmoTab:CreateToggle({
-    Name = "Infinite Ammo",
-    CurrentValue = false,
-    Flag = "InfiniteAmmo",
-    Callback = function(v)
-        Config.Ammo.InfiniteAmmo = v
-    end,
-})
-
-AmmoTab:CreateSlider({
-    Name = "Magazine Size",
-    Range = {1, 100},
-    Increment = 1,
-    CurrentValue = 8,
-    Flag = "MagSize",
-    Callback = function(v)
-        Config.Ammo.MagSize = v
-    end,
-})
-
-AmmoTab:CreateToggle({
-    Name = "Instant Reload",
-    CurrentValue = false,
-    Flag = "InstantReload",
-    Callback = function(v)
-        Config.Ammo.InstantReload = v
-    end,
-})
-
---Accuracy Tab--
-local AccuracySection = AccuracyTab:CreateSection("Accuracy Settings")
-
-AccuracyTab:CreateToggle({
-    Name = "No Recoil",
-    CurrentValue = false,
-    Flag = "NoRecoil",
-    Callback = function(v)
-        Config.Accuracy.NoRecoil = v
-    end,
-})
-
-AccuracyTab:CreateToggle({
-    Name = "No Spread",
-    CurrentValue = false,
-    Flag = "NoSpread",
-    Callback = function(v)
-        Config.Accuracy.NoSpread = v
-    end,
-})
-
-AccuracyTab:CreateToggle({
-    Name = "Perfect Accuracy",
-    CurrentValue = false,
-    Flag = "PerfectAccuracy",
-    Callback = function(v)
-        Config.Accuracy.PerfectAccuracy = v
-        Config.Accuracy.NoRecoil = v
-        Config.Accuracy.NoSpread = v
-    end,
-})
-
---Wallbang Tab--
-local WallbangSection = WallbangTab:CreateSection("Wallbang Settings")
-
-WallbangTab:CreateToggle({
-    Name = "Enable Wallbang",
-    CurrentValue = false,
-    Flag = "WallbangEnabled",
-    Callback = function(v)
-        Config.Wallbang.Enabled = v
-    end,
-})
-
-WallbangTab:CreateSlider({
-    Name = "Penetration",
-    Range = {1, 10},
-    Increment = 1,
-    CurrentValue = 5,
-    Flag = "Penetration",
-    Callback = function(v)
-        Config.Wallbang.Penetration = v
-    end,
-})
-
-WallbangTab:CreateToggle({
-    Name = "Ignore Map",
-    CurrentValue = true,
-    Flag = "IgnoreMap",
-    Callback = function(v)
-        Config.Wallbang.IgnoreMap = v
-    end,
-})
-
---Pellets Tab--
-local PelletsSection = PelletsTab:CreateSection("Pellet Settings")
-
-PelletsTab:CreateToggle({
-    Name = "Enable Pellet Mods",
-    CurrentValue = false,
-    Flag = "PelletsEnabled",
-    Callback = function(v)
-        Config.Pellets.Enabled = v
-    end,
-})
-
-PelletsTab:CreateSlider({
-    Name = "Pellet Count",
-    Range = {1, 50},
-    Increment = 1,
-    CurrentValue = 8,
-    Flag = "PelletCount",
-    Callback = function(v)
-        Config.Pellets.Count = v
-    end,
-})
-
-PelletsTab:CreateSlider({
-    Name = "Pellet Spread",
-    Range = {0, 30},
-    Increment = 1,
-    CurrentValue = 5,
-    Flag = "PelletSpread",
-    Callback = function(v)
-        Config.Pellets.Spread = v
-    end,
-})
-
---Special Tab--
-local SpecialSection = SpecialTab:CreateSection("Special Effects")
-
-SpecialTab:CreateToggle({
-    Name = "Explosive Bullets",
-    CurrentValue = false,
-    Flag = "Explosive",
-    Callback = function(v)
-        Config.Special.Explosive = v
-    end,
-})
-
-SpecialTab:CreateSlider({
-    Name = "Explosion Radius",
-    Range = {1, 50},
-    Increment = 1,
-    CurrentValue = 10,
-    Flag = "ExplosionRadius",
-    Callback = function(v)
-        Config.Special.ExplosionRadius = v
-    end,
-})
-
-SpecialTab:CreateSlider({
-    Name = "Explosion Damage",
-    Range = {1, 200},
-    Increment = 1,
-    CurrentValue = 50,
-    Flag = "ExplosionDamage",
-    Callback = function(v)
-        Config.Special.ExplosionDamage = v
-    end,
-})
-
---Aimbot Tab--
-local AimbotSection = AimbotTab:CreateSection("Aimbot Settings")
-
-AimbotTab:CreateToggle({
-    Name = "Enable Aimbot",
-    CurrentValue = false,
-    Flag = "AimbotEnabled",
-    Callback = function(v)
-        Config.Aimbot.Enabled = v
-    end,
-})
-
-AimbotTab:CreateSlider({
-    Name = "FOV",
-    Range = {10, 500},
-    Increment = 10,
-    CurrentValue = 100,
-    Flag = "AimbotFOV",
-    Callback = function(v)
-        Config.Aimbot.FOV = v
-    end,
-})
-
-AimbotTab:CreateSlider({
-    Name = "Smoothness",
-    Range = {1, 100},
-    Increment = 1,
-    CurrentValue = 5,
-    Flag = "AimbotSmoothness",
-    Callback = function(v)
-        Config.Aimbot.Smoothness = v
-    end,
-})
-
-AimbotTab:CreateSlider({
-    Name = "Smoothness",
-    Range = {1, 100},
-    Increment = 1,
-    CurrentValue = 5,
-    Flag = "AimbotSmoothness",
-    Callback = function(v)
-        Config.Aimbot.Smoothness = v
-    end,
-})
-
-AimbotTab:CreateDropdown({
-    Name = "Target Part",
-    Options = {"Head", "Torso", "HumanoidRootPart"},
-    CurrentOption = "Head",
-    Flag = "TargetPart",
-    Callback = function(v)
-        Config.Aimbot.TargetPart = v
-    end,
-})
-
---Presets Tab--
-local PresetsSection = PresetsTab:CreateSection("Quick Presets")
-
-PresetsTab:CreateButton({
-    Name = "Legit Mode",
-    Callback = function()
-        Presets.Legit()
-        Rayfield:Notify({
-            Title = "Preset Applied",
-            Content = "Legit mode activated",
-            Duration = 3,
-        })
-    end,
-})
-
-PresetsTab:CreateButton({
-    Name = "Rage Mode",
-    Callback = function()
-        Presets.Rage()
-        Rayfield:Notify({
-            Title = "Preset Applied",
-            Content = "Rage mode activated",
-            Duration = 3,
-        })
-    end,
-})
-
-PresetsTab:CreateButton({
-    Name = "HvH Mode",
-    Callback = function()
-        Presets.HvH()
-        Rayfield:Notify({
-            Title = "Preset Applied",
-            Content = "HvH mode activated",
-            Duration = 3,
-        })
-    end,
-})
-
-PresetsTab:CreateButton({
-    Name = "Explosive Mode",
-    Callback = function()
-        Presets.Explosive()
-        Rayfield:Notify({
-            Title = "Preset Applied",
-            Content = "Explosive mode activated",
-            Duration = 3,
-        })
-    end,
-})
-
-PresetsTab:CreateButton({
-    Name = "Reset All",
-    Callback = function()
-        for _, connection in pairs(Connections) do
-            if typeof(connection) == "RBXScriptConnection" then
-                connection:Disconnect()
+        -- Make sure it stays on after respawn
+        LocalPlayer.CharacterAdded:Connect(function()
+            task.wait(0.5)
+            if not autoDunkEnabled then
+                autoDunkEnabled = true
+                updateUI()
             end
-        end
-        
-        workspace.Raycast = originalRaycast
-        
-        Rayfield:Notify({
-            Title = "Reset",
-            Content = "All settings reset",
-            Duration = 3,
-        })
-    end,
-})
+            task.spawn(Auto)
+        end)
+    end
 
---Load Config--
-Rayfield:LoadConfiguration()
+    updateUI()
+    updateStats()
+    print("[AutoDunk] Initialized |", isMobile and "Mobile (always on)" or "PC (toggle with F)")
+end
 
-Rayfield:Notify({
-    Title = "Weaponry Script",
-    Content = "Auto Shotgun mods loaded!",
-    Duration = 5,
-})
+task.spawn(Init)
 
-print("weaponry script loaded")
+return {}
