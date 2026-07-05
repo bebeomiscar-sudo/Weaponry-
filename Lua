@@ -1,12 +1,14 @@
 -- =============================================
---   RIVALS VOIDSPAM STANDALONE v1.2
+--   RIVALS VOIDSPAM STANDALONE v1.4
 --   UI: nfpw XXSCRIPT Library
 --   Features:
---   → VoidSpam
---   → Adapt
---   → Teleport Desync
+--   → VoidSpam + Adapt + TeleDesync
 --   → FireTouchInterest
---   → Orbit System
+--   → Prioritize Void Players
+--   → HvH Standoff System
+--   → UE Unhittable Counter
+--   → Kicia Melee Counter
+--   → Minimize Model (HeadOnly/Invisible/TinyScale)
 -- =============================================
 
 -- =============================================
@@ -35,29 +37,32 @@ local config_manager = loadstring(game:HttpGet(
 -- =============================================
 
 gui_config = {
-    Color        = Color3.fromRGB(255, 255, 255),
-    Keybind      = Enum.KeyCode.Insert,
-    Assets       = false,
-    MinHeight    = 100,
-    MaxHeight    = 600,
-    InitialHeight = 450,
-    MinWidth     = 300,
-    MaxWidth     = 800,
-    InitialWidth = 520,
+    Color         = Color3.fromRGB(255, 255, 255),
+    Keybind       = Enum.KeyCode.Insert,
+    Assets        = false,
+    MinHeight     = 100,
+    MaxHeight     = 700,
+    InitialHeight = 500,
+    MinWidth      = 300,
+    MaxWidth      = 900,
+    InitialWidth  = 560,
 }
 
 local window      = library:CreateWindow(gui_config, gethui())
-local window_name = library:SetWindowName("VoidSpam v1.2")
+local window_name = library:SetWindowName("VoidSpam v1.4")
 
 -- =============================================
 --   TABS
 -- =============================================
 
 local tabs = {
-    voidspam   = window:CreateTab("VoidSpam"),
-    adapt      = window:CreateTab("Adapt"),
-    firetouch  = window:CreateTab("FireTouch"),
-    settings   = window:CreateTab("Settings"),
+    voidspam  = window:CreateTab("VoidSpam"),
+    priority  = window:CreateTab("Priority"),
+    hvh       = window:CreateTab("HvH"),
+    minimize  = window:CreateTab("Minimize"),
+    adapt     = window:CreateTab("Adapt"),
+    firetouch = window:CreateTab("FireTouch"),
+    settings  = window:CreateTab("Settings"),
 }
 
 -- =============================================
@@ -66,19 +71,35 @@ local tabs = {
 
 local sections = {
     -- VoidSpam Tab
-    vs_main    = tabs.voidspam:CreateSection("VoidSpam"),
-    vs_cfg     = tabs.voidspam:CreateSection("Configuration", "right"),
+    vs_main  = tabs.voidspam:CreateSection("VoidSpam"),
+    vs_cfg   = tabs.voidspam:CreateSection("Configuration", "right"),
+
+    -- Priority Tab
+    pv_main  = tabs.priority:CreateSection("Void Priority"),
+    pv_cfg   = tabs.priority:CreateSection("Priority Config", "right"),
+    pv_hist  = tabs.priority:CreateSection("History & Decay"),
+    pv_conf  = tabs.priority:CreateSection("Confidence", "right"),
+
+    -- HvH Tab
+    hvh_main  = tabs.hvh:CreateSection("HvH Standoff"),
+    hvh_cfg   = tabs.hvh:CreateSection("Standoff Config", "right"),
+    hvh_ue    = tabs.hvh:CreateSection("UE Unhittable"),
+    hvh_kicia = tabs.hvh:CreateSection("Kicia Counter", "right"),
+
+    -- Minimize Tab
+    min_main  = tabs.minimize:CreateSection("Minimize Model"),
+    min_cfg   = tabs.minimize:CreateSection("Config & Preview", "right"),
 
     -- Adapt Tab
-    ad_main    = tabs.adapt:CreateSection("Adapt System"),
-    ad_info    = tabs.adapt:CreateSection("Target Info", "right"),
+    ad_main  = tabs.adapt:CreateSection("Adapt System"),
+    ad_info  = tabs.adapt:CreateSection("Target Info", "right"),
 
     -- FireTouch Tab
-    ft_main    = tabs.firetouch:CreateSection("FireTouchInterest"),
-    ft_info    = tabs.firetouch:CreateSection("How It Works", "right"),
+    ft_main  = tabs.firetouch:CreateSection("FireTouchInterest"),
+    ft_info  = tabs.firetouch:CreateSection("How It Works", "right"),
 
     -- Settings Tab
-    st_main    = tabs.settings:CreateSection("Menu Settings"),
+    st_main  = tabs.settings:CreateSection("Settings"),
 }
 
 -- =============================================
@@ -101,7 +122,487 @@ local ORBIT_RADIUS =  3
 local ORBIT_SPEED  =  8
 
 -- =============================================
---   STATE
+--   PRIORITY CONFIG
+-- =============================================
+
+local PriorityCfg = {
+    enabled         = false,
+    voidWeight      = 500,
+    voidDistance    = 2000,
+    historyWindow   = 1.0,
+    timeDecay       = 0.5,
+    outlierZThresh  = 2.0,
+    confidenceScale = 10,
+}
+
+local playerHistory = {}
+
+local function getOrCreateHistory(p)
+    if not playerHistory[p] then
+        playerHistory[p] = {
+            score      = 0,
+            lastSeen   = tick(),
+            voidEvents = {},
+            inVoid     = false,
+            confidence = 0,
+            isOutlier  = false,
+        }
+    end
+    return playerHistory[p]
+end
+
+local function isInVoid(player)
+    local char = player.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local pos  = hrp.Position
+    local dist = math.sqrt(pos.X^2 + pos.Y^2 + pos.Z^2)
+    return dist > PriorityCfg.voidDistance
+end
+
+local function updatePriorityScores()
+    local now = tick()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        local hist = getOrCreateHistory(p)
+        local dt   = now - hist.lastSeen
+        hist.lastSeen = now
+
+        hist.score = hist.score * (1 - PriorityCfg.timeDecay * dt)
+        hist.score = math.max(hist.score, 0)
+
+        if isInVoid(p) then
+            if not hist.inVoid then
+                hist.inVoid = true
+                hist.score  = hist.score + PriorityCfg.voidWeight
+                table.insert(hist.voidEvents, now)
+            else
+                hist.score = hist.score + PriorityCfg.voidWeight * 0.01
+            end
+        else
+            hist.inVoid = false
+        end
+
+        local newEvents = {}
+        for _, t in ipairs(hist.voidEvents) do
+            if now - t <= PriorityCfg.historyWindow then
+                table.insert(newEvents, t)
+            end
+        end
+        hist.voidEvents = newEvents
+
+        local rawConf  = #hist.voidEvents * PriorityCfg.confidenceScale
+        hist.confidence = math.clamp(rawConf, 0, 100)
+
+        local scores = {}
+        for _, ph in pairs(playerHistory) do
+            table.insert(scores, ph.score)
+        end
+        local mean, variance = 0, 0
+        for _, s in ipairs(scores) do mean = mean + s end
+        mean = mean / math.max(#scores, 1)
+        for _, s in ipairs(scores) do
+            variance = variance + (s - mean)^2
+        end
+        variance = variance / math.max(#scores, 1)
+        local std = math.sqrt(variance)
+        local z   = std > 0 and (hist.score - mean) / std or 0
+        hist.isOutlier = z >= PriorityCfg.outlierZThresh
+    end
+end
+
+local function getVoidPriorityTarget()
+    local best, bestScore = nil, -1
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        local hist = playerHistory[p]
+        if not hist then continue end
+        if hist.score > bestScore then
+            bestScore = hist.score
+            best      = p
+        end
+    end
+    return best
+end
+
+-- =============================================
+--   HVH CONFIG
+-- =============================================
+
+local HvHCfg = {
+    standoffEnabled  = false,
+    standoffWeight   = 5000,
+    rejectDesyncJump = false,
+    desyncSpeed      = 800,
+    rejectJitter     = false,
+    jitterRadius     = 15,
+}
+
+local hvhOpponents = {}
+
+local function getOrCreateHvH(p)
+    if not hvhOpponents[p] then
+        hvhOpponents[p] = {
+            lastPos        = Vector3.zero,
+            posHistory     = {},
+            jitterDetected = false,
+            desyncJumps    = 0,
+            lastTick       = tick(),
+        }
+    end
+    return hvhOpponents[p]
+end
+
+local function detectDesyncJump(player)
+    local char = player.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local opp   = getOrCreateHvH(player)
+    local now   = tick()
+    local dt    = now - opp.lastTick
+    if dt <= 0 then return false end
+    local d     = (hrp.Position - opp.lastPos).Magnitude
+    local speed = d / dt
+    opp.lastPos  = hrp.Position
+    opp.lastTick = now
+    if speed > HvHCfg.desyncSpeed then
+        opp.desyncJumps += 1
+        return true
+    end
+    return false
+end
+
+local function detectJitter(player)
+    local char = player.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local opp = getOrCreateHvH(player)
+    local now = tick()
+
+    table.insert(opp.posHistory, {pos = hrp.Position, t = now})
+
+    local trimmed = {}
+    for _, entry in ipairs(opp.posHistory) do
+        if now - entry.t <= 0.3 then
+            table.insert(trimmed, entry)
+        end
+    end
+    opp.posHistory = trimmed
+
+    if #trimmed < 3 then return false end
+
+    local minX, maxX = math.huge, -math.huge
+    local minZ, maxZ = math.huge, -math.huge
+    for _, entry in ipairs(trimmed) do
+        minX = math.min(minX, entry.pos.X)
+        maxX = math.max(maxX, entry.pos.X)
+        minZ = math.min(minZ, entry.pos.Z)
+        maxZ = math.max(maxZ, entry.pos.Z)
+    end
+
+    local spreadX  = maxX - minX
+    local spreadZ  = maxZ - minZ
+    local isJitter = spreadX < HvHCfg.jitterRadius
+                 and spreadZ < HvHCfg.jitterRadius
+                 and #trimmed >= 4
+
+    opp.jitterDetected = isJitter
+    return isJitter
+end
+
+-- =============================================
+--   UE UNHITTABLE CONFIG
+-- =============================================
+
+local UECfg = {
+    enabled        = false,
+    counterEnabled = false,
+}
+
+local function detectUEPattern(player)
+    local char = player.Character
+    if not char then return false, nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, nil end
+
+    local hbHead = char:FindFirstChild("HitBoxHeadSmall")
+              or  char:FindFirstChild("HitBoxHead")
+    if not hbHead then return false, nil end
+
+    local hrpPos = hrp.Position
+    local hbPos  = hbHead.Position
+
+    local hrpDist = math.sqrt(hrpPos.X^2 + hrpPos.Y^2 + hrpPos.Z^2)
+    local hbDist  = math.sqrt(hbPos.X^2 + hbPos.Y^2 + hbPos.Z^2)
+
+    local isUE = hrpDist > 50000 and hbDist < 10000
+    if isUE then return true, hbPos end
+    return false, nil
+end
+
+-- =============================================
+--   KICIA MELEE COUNTER
+-- =============================================
+
+local KiciaCfg = {
+    enabled      = false,
+    meleeWeapons = {
+        "Katana","Scythe","Knife","Daggers","Maul",
+        "Battle Axe","Chainsaw","Spear","Trowel","Fist",
+    },
+    counterDist  = 20,
+    counterActive = false,
+    evadeDir     = Vector3.new(0, 50, 0),
+}
+
+local meleeWeaponSet = {}
+for _, w in ipairs(KiciaCfg.meleeWeapons) do
+    meleeWeaponSet[w:lower()] = true
+end
+
+local function isHoldingMelee(player)
+    local char = player.Character
+    if not char then return false, nil end
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") then
+            local name = item.Name:lower()
+            for mw, _ in pairs(meleeWeaponSet) do
+                if name:find(mw) then return true, item.Name end
+            end
+        end
+    end
+    return false, nil
+end
+
+local function distToPlayer(player)
+    local myHRP = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local tHRP  = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP or not tHRP then return math.huge end
+    return (myHRP.Position - tHRP.Position).Magnitude
+end
+
+-- =============================================
+--   MINIMIZE MODEL CONFIG
+-- =============================================
+
+local MinimizeCfg = {
+    enabled      = false,
+    mode         = "HeadOnly",
+    scale        = 0.1,
+    restoreOnDie = true,
+    savedSizes   = {},
+    connections  = {},
+}
+
+local BODY_PARTS = {
+    "UpperTorso","LowerTorso",
+    "LeftUpperArm","LeftLowerArm","LeftHand",
+    "RightUpperArm","RightLowerArm","RightHand",
+    "LeftUpperLeg","LeftLowerLeg","LeftFoot",
+    "RightUpperLeg","RightLowerLeg","RightFoot",
+    "Torso","Left Arm","Right Arm","Left Leg","Right Leg",
+}
+
+local function getCharParts(char)
+    if not char then return {} end
+    local parts = {}
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            table.insert(parts, part)
+        end
+    end
+    return parts
+end
+
+local function saveOriginalSizes(char)
+    MinimizeCfg.savedSizes = {}
+    for _, part in ipairs(getCharParts(char)) do
+        MinimizeCfg.savedSizes[part] = {
+            Size         = part.Size,
+            Transparency = part.Transparency,
+            CanCollide   = part.CanCollide,
+            CastShadow   = part.CastShadow,
+        }
+    end
+end
+
+local function restoreOriginalSizes(char)
+    if not char then return end
+    for _, part in ipairs(getCharParts(char)) do
+        local saved = MinimizeCfg.savedSizes[part]
+        if saved then
+            pcall(function()
+                part.Size         = saved.Size
+                part.Transparency = saved.Transparency
+                part.CanCollide   = saved.CanCollide
+                part.CastShadow   = saved.CastShadow
+            end)
+        end
+    end
+end
+
+local function applyHeadOnly(char)
+    if not char then return end
+    for _, part in ipairs(getCharParts(char)) do
+        pcall(function()
+            if part.Name == "Head" then
+                part.Transparency = 0
+                part.Size         = Vector3.new(2, 2, 2)
+                part.CastShadow   = true
+                return
+            end
+            if part.Name == "HumanoidRootPart" then
+                part.Transparency = 1
+                part.Size         = Vector3.new(0.1, 0.1, 0.1)
+                part.CanCollide   = false
+                return
+            end
+            part.Size         = Vector3.new(0.05, 0.05, 0.05)
+            part.Transparency = 1
+            part.CanCollide   = false
+            part.CastShadow   = false
+        end)
+    end
+    for _, acc in ipairs(char:GetChildren()) do
+        if acc:IsA("Accessory") then
+            local handle = acc:FindFirstChild("Handle")
+            if handle then
+                pcall(function()
+                    handle.Transparency = 1
+                    handle.CastShadow   = false
+                end)
+            end
+        end
+    end
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Shirt") or item:IsA("Pants") then
+            pcall(function() item:Destroy() end)
+        end
+    end
+end
+
+local function applyInvisible(char)
+    if not char then return end
+    for _, part in ipairs(getCharParts(char)) do
+        pcall(function()
+            part.Transparency = 1
+            part.CastShadow   = false
+            if part.Name ~= "HumanoidRootPart" then
+                part.Size = Vector3.new(0.05, 0.05, 0.05)
+            end
+        end)
+    end
+    for _, acc in ipairs(char:GetChildren()) do
+        if acc:IsA("Accessory") then
+            local handle = acc:FindFirstChild("Handle")
+            if handle then
+                pcall(function()
+                    handle.Transparency = 1
+                    handle.CastShadow   = false
+                end)
+            end
+        end
+    end
+end
+
+local function applyTinyScale(char, scale)
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    local description = humanoid:FindFirstChildOfClass("HumanoidDescription")
+    if description then
+        pcall(function()
+            description.BodyDepthScale  = scale
+            description.BodyHeightScale = scale
+            description.BodyWidthScale  = scale
+            description.HeadScale       = scale
+        end)
+    end
+    for _, part in ipairs(getCharParts(char)) do
+        if part.Name ~= "HumanoidRootPart" and part.Name ~= "Head" then
+            pcall(function()
+                local saved = MinimizeCfg.savedSizes[part]
+                if saved then
+                    part.Size = saved.Size * scale
+                end
+            end)
+        end
+    end
+end
+
+local function applyMinimize()
+    local char = lp.Character
+    if not char then return end
+    saveOriginalSizes(char)
+    if MinimizeCfg.mode == "HeadOnly" then
+        applyHeadOnly(char)
+    elseif MinimizeCfg.mode == "Invisible" then
+        applyInvisible(char)
+    elseif MinimizeCfg.mode == "TinyScale" then
+        applyTinyScale(char, MinimizeCfg.scale)
+    end
+    notify("Minimize", "Applied: " .. MinimizeCfg.mode, 3)
+end
+
+local function restoreMinimize()
+    local char = lp.Character
+    if not char then return end
+    restoreOriginalSizes(char)
+    for _, acc in ipairs(char:GetChildren()) do
+        if acc:IsA("Accessory") then
+            local handle = acc:FindFirstChild("Handle")
+            if handle then
+                pcall(function()
+                    handle.Transparency = 0
+                    handle.CastShadow   = true
+                end)
+            end
+        end
+    end
+    notify("Minimize", "Character restored!", 2)
+end
+
+local minimizeRespawnConn = nil
+
+local function startMinimizeLoop()
+    for _, conn in ipairs(MinimizeCfg.connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    MinimizeCfg.connections = {}
+    local char = lp.Character
+    if not char then return end
+    local conn = char.DescendantAdded:Connect(function(desc)
+        if not MinimizeCfg.enabled then return end
+        task.wait(0.1)
+        pcall(function()
+            if desc:IsA("BasePart") and desc.Name ~= "HumanoidRootPart" then
+                if MinimizeCfg.mode == "HeadOnly" and desc.Name ~= "Head" then
+                    desc.Transparency = 1
+                    desc.Size         = Vector3.new(0.05, 0.05, 0.05)
+                    desc.CanCollide   = false
+                    desc.CastShadow   = false
+                elseif MinimizeCfg.mode == "Invisible" then
+                    desc.Transparency = 1
+                    desc.CastShadow   = false
+                end
+            end
+            if desc:IsA("Accessory") then
+                local handle = desc:FindFirstChild("Handle")
+                if handle then
+                    handle.Transparency = 1
+                    handle.CastShadow   = false
+                end
+            end
+        end)
+    end)
+    table.insert(MinimizeCfg.connections, conn)
+end
+
+-- =============================================
+--   MAIN VOID STATE
 -- =============================================
 
 local VoidState = {
@@ -122,6 +623,8 @@ local VoidState = {
     adaptRefreshConn = nil,
     teleDesyncConn   = nil,
     ftLoopConn       = nil,
+    priorityConn     = nil,
+    kiciaConn        = nil,
 }
 
 -- =============================================
@@ -158,12 +661,17 @@ local function getNearestEnemy()
         local tHRP = char:FindFirstChild("HumanoidRootPart")
         if not tHRP then continue end
         local d = (hrp.Position - tHRP.Position).Magnitude
-        if d < bd then
-            bd   = d
-            best = p
-        end
+        if d < bd then bd = d; best = p end
     end
     return best
+end
+
+local function getBestTarget()
+    if PriorityCfg.enabled then
+        local voidTgt = getVoidPriorityTarget()
+        if voidTgt then return voidTgt end
+    end
+    return getNearestEnemy()
 end
 
 local function scanProjectiles()
@@ -185,19 +693,13 @@ local function getHitboxes(char)
     if not char then return {} end
     local boxes    = {}
     local priority = {
-        "HitBoxHeadSmall",
-        "HitBoxHead",
-        "HitBoxBody",
-        "HitBoxBodySmall",
-        "Head",
-        "UpperTorso",
-        "HumanoidRootPart",
+        "HitBoxHeadSmall","HitBoxHead",
+        "HitBoxBody","HitBoxBodySmall",
+        "Head","UpperTorso","HumanoidRootPart",
     }
     for _, name in ipairs(priority) do
         local part = char:FindFirstChild(name)
-        if part then
-            table.insert(boxes, part)
-        end
+        if part then table.insert(boxes, part) end
     end
     return boxes
 end
@@ -208,16 +710,96 @@ local function fireTouchOnPart(projectile, hitPart)
     for _, child in ipairs(projectile:GetChildren()) do
         if child.ClassName == "TouchTransmitter"
         or child.ClassName == "TouchInterest" then
-            ti = child
-            break
+            ti = child; break
         end
     end
     if not ti then return false end
     local ok = pcall(firetouchinterest, hitPart, ti, 0)
-    if not ok then
-        pcall(firetouchinterest, hitPart, ti, 1)
-    end
+    if not ok then pcall(firetouchinterest, hitPart, ti, 1) end
     return ok
+end
+
+-- =============================================
+--   PRIORITY SYSTEM LOOP
+-- =============================================
+
+local function startPrioritySystem()
+    if VoidState.priorityConn then
+        VoidState.priorityConn:Disconnect()
+        VoidState.priorityConn = nil
+    end
+    VoidState.priorityConn = RunService.Heartbeat:Connect(function()
+        if not PriorityCfg.enabled then return end
+        pcall(updatePriorityScores)
+
+        if HvHCfg.standoffEnabled
+        or HvHCfg.rejectDesyncJump
+        or HvHCfg.rejectJitter then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p == lp then continue end
+                if not p.Character then continue end
+                pcall(function()
+                    if HvHCfg.rejectDesyncJump then
+                        if detectDesyncJump(p) then
+                            local hist = getOrCreateHistory(p)
+                            hist.score = hist.score + HvHCfg.standoffWeight * 0.5
+                        end
+                    end
+                    if HvHCfg.rejectJitter then
+                        if detectJitter(p) then
+                            local hist = getOrCreateHistory(p)
+                            hist.score = hist.score + HvHCfg.standoffWeight * 0.3
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+-- =============================================
+--   KICIA COUNTER LOOP
+-- =============================================
+
+local function startKiciaCounter()
+    if VoidState.kiciaConn then
+        VoidState.kiciaConn:Disconnect()
+        VoidState.kiciaConn = nil
+    end
+    VoidState.kiciaConn = RunService.Heartbeat:Connect(function()
+        if not KiciaCfg.enabled then return end
+        local hrp = getHRP()
+        if not hrp then return end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local isMelee, weaponName = isHoldingMelee(p)
+            if not isMelee then continue end
+            local dist = distToPlayer(p)
+            if dist > KiciaCfg.counterDist then continue end
+            KiciaCfg.counterActive = true
+            pcall(function()
+                local savedCF = hrp.CFrame
+                hrp.CFrame = CFrame.new(hrp.Position + KiciaCfg.evadeDir)
+                RunService:BindToRenderStep(
+                    "__kiciaRestore",
+                    Enum.RenderPriority.First.Value,
+                    function()
+                        pcall(function() hrp.CFrame = savedCF end)
+                        RunService:UnbindFromRenderStep("__kiciaRestore")
+                    end
+                )
+            end)
+        end
+    end)
+end
+
+local function stopKiciaCounter()
+    KiciaCfg.counterActive = false
+    if VoidState.kiciaConn then
+        VoidState.kiciaConn:Disconnect()
+        VoidState.kiciaConn = nil
+    end
+    pcall(function() RunService:UnbindFromRenderStep("__kiciaRestore") end)
 end
 
 -- =============================================
@@ -229,9 +811,7 @@ local function stopVoidSpam()
         VoidState.hbConn:Disconnect()
         VoidState.hbConn = nil
     end
-    pcall(function()
-        RunService:UnbindFromRenderStep("__vsSync")
-    end)
+    pcall(function() RunService:UnbindFromRenderStep("__vsSync") end)
     local hrp = getHRP()
     if hrp then
         pcall(function()
@@ -244,14 +824,11 @@ end
 
 local function startVoidSpam()
     stopVoidSpam()
-
     VoidState.hbConn = RunService.Heartbeat:Connect(function()
         if not VoidState.enabled then return end
-
         local hrp = getHRP()
         if not hrp then return end
-        VoidState.hrp = hrp
-
+        VoidState.hrp    = hrp
         VoidState.clientCF = hrp.CFrame
         VoidState.clientLV = hrp.AssemblyLinearVelocity
         VoidState.clientAV = hrp.AssemblyAngularVelocity
@@ -260,21 +837,17 @@ local function startVoidSpam()
             if VoidState.adaptEnabled and VoidState.adaptTarget then
                 local tChar = VoidState.adaptTarget.Character
                 local tHRP  = tChar and tChar:FindFirstChild("HumanoidRootPart")
-
                 if tHRP then
                     VoidState.orbitAngle = (
                         VoidState.orbitAngle + ORBIT_SPEED * 0.016
                     ) % (math.pi * 2)
-
                     local ox = math.cos(VoidState.orbitAngle) * ORBIT_RADIUS
                     local oz = math.sin(VoidState.orbitAngle) * ORBIT_RADIUS
-
                     hrp.CFrame = CFrame.new(
                         tHRP.Position.X + ox,
                         VOID_HEIGHT,
                         tHRP.Position.Z + oz
                     ) * CFrame.Angles(math.pi, math.pi, math.pi)
-
                     hrp.AssemblyLinearVelocity = Vector3.new(
                         betterRandom(-500, 500, -100, 100),
                         betterRandom(-500, 500, -100, 100),
@@ -285,7 +858,6 @@ local function startVoidSpam()
                         betterRandom(-50, 50, -10, 10),
                         betterRandom(-50, 50, -10, 10)
                     )
-
                     if VoidState.teleDesync then
                         pcall(function()
                             tHRP.CFrame = CFrame.new(
@@ -296,7 +868,7 @@ local function startVoidSpam()
                         end)
                     end
                 else
-                    VoidState.adaptTarget = getNearestEnemy()
+                    VoidState.adaptTarget = getBestTarget()
                 end
             else
                 hrp.CFrame = CFrame.new(
@@ -304,7 +876,6 @@ local function startVoidSpam()
                     betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
                     betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H)
                 ) * CFrame.Angles(math.pi, math.pi, math.pi)
-
                 hrp.AssemblyLinearVelocity = Vector3.new(
                     betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
                     betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
@@ -352,20 +923,19 @@ end
 local function startAdapt()
     stopAdapt()
     VoidState.adaptEnabled = true
-    VoidState.adaptTarget  = getNearestEnemy()
-
+    VoidState.adaptTarget  = getBestTarget()
     VoidState.adaptRefreshConn = RunService.Heartbeat:Connect(function()
         if not VoidState.adaptEnabled then return end
         local cur = VoidState.adaptTarget
         if not cur
         or not cur.Character
         or not cur.Character:FindFirstChild("HumanoidRootPart") then
-            local newTgt = getNearestEnemy()
+            local newTgt = getBestTarget()
             if newTgt ~= VoidState.adaptTarget then
                 VoidState.adaptTarget = newTgt
                 VoidState.orbitAngle  = 0
                 if newTgt then
-                    notify("Adapt", "Auto-switched to: " .. newTgt.Name, 3)
+                    notify("Adapt", "Switched to: " .. newTgt.Name, 2)
                 end
             end
         end
@@ -387,12 +957,11 @@ end
 local function startTeleDesync()
     stopTeleDesync()
     VoidState.teleDesync = true
-
     VoidState.teleDesyncConn = RunService.Heartbeat:Connect(function()
         if not VoidState.teleDesync then return end
         local hrp = getHRP()
         if not hrp then return end
-        local tgt = VoidState.adaptTarget or getNearestEnemy()
+        local tgt = VoidState.adaptTarget or getBestTarget()
         if not tgt then return end
         local tChar = tgt.Character
         if not tChar then return end
@@ -408,7 +977,7 @@ local function startTeleDesync()
 end
 
 -- =============================================
---   FIRETOUCH INTEREST
+--   FIRETOUCH
 -- =============================================
 
 local function stopFireTouch()
@@ -421,40 +990,37 @@ end
 
 local function startFireTouch()
     stopFireTouch()
-
     if not firetouchinterest then
-        notify(
-            "FireTouch",
-            "firetouchinterest not available in this executor!",
-            5
-        )
+        notify("FireTouch", "firetouchinterest not available!", 5)
         VoidState.fireTouchEnabled = false
         return
     end
-
     VoidState.fireTouchEnabled = true
-
     VoidState.ftLoopConn = RunService.Heartbeat:Connect(function()
         if not VoidState.fireTouchEnabled then return end
-
         local hrp = getHRP()
         if not hrp then return end
-
-        local tP    = VoidState.adaptTarget or getNearestEnemy()
+        local tP    = VoidState.adaptTarget or getBestTarget()
         if not tP then return end
         local tChar = tP.Character
         if not tChar then return end
+
+        local useUECounter = false
+        local realHBPos    = nil
+        if UECfg.counterEnabled then
+            local isUE, hbPos = detectUEPattern(tP)
+            if isUE then
+                useUECounter = true
+                realHBPos    = hbPos
+            end
+        end
 
         local realCF = hrp.CFrame
         local realLV = hrp.AssemblyLinearVelocity
         local realAV = hrp.AssemblyAngularVelocity
 
         pcall(function()
-            hrp.CFrame = CFrame.new(
-                hrp.Position.X,
-                VOID_HEIGHT,
-                hrp.Position.Z
-            )
+            hrp.CFrame = CFrame.new(hrp.Position.X, VOID_HEIGHT, hrp.Position.Z)
         end)
 
         task.wait(0.05)
@@ -464,19 +1030,20 @@ local function startFireTouch()
 
         if #projectiles > 0 and #hitboxes > 0 then
             local offsets = {
-                Vector3.new(0,    0, 0),
-                Vector3.new(5,    0, 0),
-                Vector3.new(-5,   0, 0),
-                Vector3.new(0,    5, 0),
-                Vector3.new(0,   -5, 0),
-                Vector3.new(10,   0, 0),
+                Vector3.new(0,    0, 0), Vector3.new(5,    0, 0),
+                Vector3.new(-5,   0, 0), Vector3.new(0,    5, 0),
+                Vector3.new(0,   -5, 0), Vector3.new(10,   0, 0),
                 Vector3.new(-10,  0, 0),
             }
             for _, proj in ipairs(projectiles) do
                 for _, hbox in ipairs(hitboxes) do
                     for _, off in ipairs(offsets) do
                         pcall(function()
-                            hrp.CFrame = CFrame.new(hrp.Position + off)
+                            if useUECounter and realHBPos then
+                                hrp.CFrame = CFrame.new(realHBPos + off)
+                            else
+                                hrp.CFrame = CFrame.new(hrp.Position + off)
+                            end
                             fireTouchOnPart(proj, hbox)
                         end)
                     end
@@ -501,17 +1068,24 @@ local function stopAll()
     stopAdapt()
     stopTeleDesync()
     stopFireTouch()
+    stopKiciaCounter()
     VoidState.enabled = false
-    print("[VoidSpam] All systems stopped")
+    if VoidState.priorityConn then
+        VoidState.priorityConn:Disconnect()
+        VoidState.priorityConn = nil
+    end
+    print("[VoidSpam] All stopped")
 end
 
 local function startAll()
     VoidState.enabled = true
     startVoidSpam()
-    if VoidState.adaptEnabled     then startAdapt()      end
-    if VoidState.teleDesync       then startTeleDesync()  end
-    if VoidState.fireTouchEnabled then startFireTouch()   end
-    print("[VoidSpam] All systems started")
+    startPrioritySystem()
+    if VoidState.adaptEnabled     then startAdapt()        end
+    if VoidState.teleDesync       then startTeleDesync()    end
+    if VoidState.fireTouchEnabled then startFireTouch()     end
+    if KiciaCfg.enabled           then startKiciaCounter()  end
+    print("[VoidSpam] All started")
 end
 
 -- =============================================
@@ -527,281 +1101,486 @@ lp.CharacterAdded:Connect(function()
         startAll()
         notify("VoidSpam", "Restarted after respawn", 3)
     end
+    if MinimizeCfg.enabled then
+        task.wait(2)
+        applyMinimize()
+        startMinimizeLoop()
+        notify("Minimize", "Reapplied after respawn", 2)
+    end
 end)
+
+-- Death handler for minimize restore
+local deathConn = nil
+local function watchDeath()
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if deathConn then deathConn:Disconnect() end
+    deathConn = hum.Died:Connect(function()
+        if MinimizeCfg.restoreOnDie then
+            restoreMinimize()
+        end
+    end)
+end
+
+lp.CharacterAdded:Connect(function()
+    task.wait(1)
+    watchDeath()
+end)
+watchDeath()
 
 -- =============================================
 --   UI — VOIDSPAM TAB
 -- =============================================
 
--- Main void toggle
 local vs_toggle = sections.vs_main:CreateToggle(
-    "Enable VoidSpam",
-    false,
+    "Enable VoidSpam", false,
     function(v)
         VoidState.enabled = v
-        if v then
-            startAll()
-            notify("VoidSpam", "Active! Desync running", 3)
-        else
-            stopAll()
-            notify("VoidSpam", "Stopped", 2)
-        end
+        if v then startAll(); notify("VoidSpam","Active!",3)
+        else stopAll(); notify("VoidSpam","Stopped",2) end
     end
 )
-
 vs_toggle:CreateKeybind("V", function()
     VoidState.enabled = not VoidState.enabled
-    if VoidState.enabled then
-        startAll()
-        notify("VoidSpam", "Active via keybind!", 2)
-    else
-        stopAll()
-        notify("VoidSpam", "Stopped via keybind", 2)
-    end
+    if VoidState.enabled then startAll() else stopAll() end
+    notify("VoidSpam", VoidState.enabled and "Active!" or "Stopped", 2)
 end, "Toggle")
 
 sections.vs_main:CreateDivider()
 
--- Status label
-local vs_status = sections.vs_main:CreateLabel(
-    "Status: Inactive"
-)
-
+local vs_status = sections.vs_main:CreateLabel("Status: Inactive")
 RunService.Heartbeat:Connect(function()
     pcall(function()
         local tgt = VoidState.adaptTarget
         vs_status:UpdateText(
-            "Status: " .. (VoidState.enabled and "ACTIVE" or "Inactive")
+            "VS: " .. (VoidState.enabled and "ON" or "OFF")
             .. " | Target: " .. (tgt and tgt.Name or "None")
             .. " | Orbit: " .. math.floor(math.deg(VoidState.orbitAngle)) .. "°"
         )
     end)
 end)
 
-sections.vs_main:CreateButton(
-    "Debug Status",
-    function()
-        local hrp = getHRP()
-        local tgt = VoidState.adaptTarget
+sections.vs_main:CreateButton("Force Stop All", function()
+    stopAll(); notify("VoidSpam","Force stopped",2)
+end)
+
+sections.vs_main:CreateButton("Restart Systems", function()
+    if VoidState.enabled then
+        stopAll(); task.wait(0.3); startAll()
+        notify("VoidSpam","Restarted!",2)
+    else
+        notify("VoidSpam","Enable first!",2)
+    end
+end)
+
+sections.vs_main:CreateButton("Debug Status", function()
+    local hrp = getHRP()
+    local tgt = VoidState.adaptTarget
+    notify(
+        "VoidSpam Debug",
+        "HRP: " .. (hrp and "Found" or "Missing")
+        .. " | Active: " .. tostring(VoidState.enabled)
+        .. " | Target: " .. (tgt and tgt.Name or "None")
+        .. " | Orbit: " .. math.floor(math.deg(VoidState.orbitAngle)) .. "°",
+        5
+    )
+end)
+
+sections.vs_cfg:CreateSlider("Void Height (k)", 10, 500, 100, true, function(v)
+    VOID_HEIGHT = v * 1000
+end)
+sections.vs_cfg:CreateSlider("Orbit Radius", 1, 50, 3, false, function(v)
+    ORBIT_RADIUS = v
+end)
+sections.vs_cfg:CreateSlider("Orbit Speed", 1, 100, 8, true, function(v)
+    ORBIT_SPEED = v
+end)
+sections.vs_cfg:CreateDivider()
+sections.vs_cfg:CreateSlider("Avoid Zone Size (k)", 100, 2000, 1147, true, function(v)
+    VOID_AVOID_L = -(v * 1000)
+    VOID_AVOID_H =   v * 1000
+end)
+
+-- =============================================
+--   UI — PRIORITY TAB
+-- =============================================
+
+sections.pv_main:CreateToggle("Prioritize Void Players", false, function(v)
+    PriorityCfg.enabled = v
+    if v then
+        startPrioritySystem()
+        notify("Priority","Void prioritization active!",3)
+    else
+        notify("Priority","Off",2)
+    end
+end)
+
+sections.pv_main:CreateDivider()
+
+local pv_status = sections.pv_main:CreateLabel("Scanning players...")
+RunService.Heartbeat:Connect(function()
+    if not PriorityCfg.enabled then return end
+    pcall(function()
+        local sorted = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local hist = playerHistory[p]
+            if hist then
+                table.insert(sorted, {
+                    name  = p.Name,
+                    score = hist.score,
+                    inVoid = hist.inVoid,
+                    conf  = hist.confidence or 0,
+                })
+            end
+        end
+        table.sort(sorted, function(a, b) return a.score > b.score end)
+        local lines = {}
+        for i, entry in ipairs(sorted) do
+            if i > 3 then break end
+            table.insert(lines,
+                "#" .. i .. " " .. entry.name
+                .. " S:" .. math.floor(entry.score)
+                .. " V:" .. (entry.inVoid and "YES" or "no")
+                .. " C:" .. math.floor(entry.conf) .. "%"
+            )
+        end
+        pv_status:UpdateText(#lines > 0 and table.concat(lines, "\n") or "No data")
+    end)
+end)
+
+sections.pv_main:CreateButton("Reset All Scores", function()
+    playerHistory = {}
+    notify("Priority","Scores reset",2)
+end)
+
+sections.pv_main:CreateButton("Show Best Target", function()
+    local tgt = getVoidPriorityTarget()
+    if tgt then
+        local hist = playerHistory[tgt]
         notify(
-            "VoidSpam Debug",
-            "HRP: " .. (hrp and "Found" or "Missing")
-            .. " | Active: " .. tostring(VoidState.enabled)
-            .. " | Target: " .. (tgt and tgt.Name or "None")
-            .. " | Orbit: " .. math.floor(math.deg(VoidState.orbitAngle)) .. "°",
+            "Best: " .. tgt.Name,
+            "Score: " .. math.floor(hist and hist.score or 0)
+            .. " | Void: " .. (hist and hist.inVoid and "YES" or "no")
+            .. " | Conf: " .. math.floor(hist and hist.confidence or 0) .. "%",
             5
         )
+    else
+        notify("Priority","No scored target yet",3)
     end
-)
+end)
 
-sections.vs_main:CreateButton(
-    "Stop All Systems",
-    function()
-        stopAll()
-        notify("VoidSpam", "All systems force stopped", 3)
-    end
-)
+sections.pv_cfg:CreateSlider("Void Priority Weight", 0, 1000, 500, true, function(v)
+    PriorityCfg.voidWeight = v
+end)
+sections.pv_cfg:CreateSlider("Void Distance (studs)", 500, 10000, 2000, true, function(v)
+    PriorityCfg.voidDistance = v
+end)
 
-sections.vs_main:CreateButton(
-    "Restart Systems",
-    function()
-        if VoidState.enabled then
-            stopAll()
-            task.wait(0.3)
-            startAll()
-            notify("VoidSpam", "Restarted!", 2)
-        else
-            notify("VoidSpam", "Enable VoidSpam first!", 2)
+sections.pv_hist:CreateSlider("History Window (s)", 0.3, 3, 1.0, false, function(v)
+    PriorityCfg.historyWindow = v
+end)
+sections.pv_hist:CreateSlider("Time Decay", 0.05, 2, 0.5, false, function(v)
+    PriorityCfg.timeDecay = v
+end)
+sections.pv_hist:CreateSlider("Outlier Z-Threshold", 0.5, 4, 2.0, false, function(v)
+    PriorityCfg.outlierZThresh = v
+end)
+
+sections.pv_conf:CreateSlider("Confidence Scale", 1, 20, 10, true, function(v)
+    PriorityCfg.confidenceScale = v
+end)
+sections.pv_conf:CreateDivider()
+sections.pv_conf:CreateLabel("Confidence = void events x scale")
+sections.pv_conf:CreateLabel("Outlier = z-score above threshold")
+
+-- =============================================
+--   UI — HVH TAB
+-- =============================================
+
+sections.hvh_main:CreateToggle("HvH Standoff Mode", false, function(v)
+    HvHCfg.standoffEnabled = v
+    notify("HvH", v and "Standoff active!" or "Off", 3)
+end)
+
+sections.hvh_main:CreateDivider()
+
+sections.hvh_main:CreateToggle("Reject Desync Jump", false, function(v)
+    HvHCfg.rejectDesyncJump = v
+    notify("HvH", v and "Desync jump rejection ON" or "OFF", 2)
+end)
+
+sections.hvh_main:CreateToggle("Reject Jitter", false, function(v)
+    HvHCfg.rejectJitter = v
+    notify("HvH", v and "Jitter rejection ON" or "OFF", 2)
+end)
+
+sections.hvh_main:CreateDivider()
+
+local hvh_status = sections.hvh_main:CreateLabel("HvH: Monitoring...")
+RunService.Heartbeat:Connect(function()
+    if not HvHCfg.standoffEnabled then return end
+    pcall(function()
+        local lines = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local opp = hvhOpponents[p]
+            if not opp then continue end
+            table.insert(lines,
+                p.Name
+                .. " J:" .. opp.desyncJumps
+                .. " Jit:" .. (opp.jitterDetected and "YES" or "no")
+            )
+        end
+        hvh_status:UpdateText(
+            #lines > 0 and table.concat(lines, "\n") or "No HvH data"
+        )
+    end)
+end)
+
+sections.hvh_main:CreateButton("Reset HvH Data", function()
+    hvhOpponents = {}
+    notify("HvH","HvH data cleared",2)
+end)
+
+sections.hvh_cfg:CreateSlider("Standoff Priority Weight", 0, 20000, 5000, true, function(v)
+    HvHCfg.standoffWeight = v
+end)
+sections.hvh_cfg:CreateSlider("Desync Speed Threshold", 40, 3000, 800, true, function(v)
+    HvHCfg.desyncSpeed = v
+end)
+sections.hvh_cfg:CreateSlider("Jitter Radius", 2, 90, 15, true, function(v)
+    HvHCfg.jitterRadius = v
+end)
+
+-- UE Section
+sections.hvh_ue:CreateLabel("Detects void + CS desync (UE pattern)")
+sections.hvh_ue:CreateLabel("Aims at real hitbox instead of void HRP", true)
+sections.hvh_ue:CreateDivider()
+
+sections.hvh_ue:CreateToggle("Enable UE Detection", false, function(v)
+    UECfg.enabled = v
+    notify("UE Counter", v and "Detection active!" or "Off", 3)
+end)
+
+sections.hvh_ue:CreateToggle("UE Counter Mode", false, function(v)
+    UECfg.counterEnabled = v
+    notify("UE Counter", v and "Aiming real hitbox!" or "Off", 3)
+end)
+
+sections.hvh_ue:CreateButton("Scan For UE Players", function()
+    local found = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        local isUE, hbPos = detectUEPattern(p)
+        if isUE then
+            table.insert(found,
+                p.Name .. "@"
+                .. (hbPos and (math.floor(hbPos.X)..","..math.floor(hbPos.Y)..","..math.floor(hbPos.Z)) or "?")
+            )
         end
     end
-)
+    notify("UE Scan", #found > 0 and table.concat(found, "\n") or "None detected", 5)
+end)
 
--- Configuration section
-sections.vs_cfg:CreateSlider(
-    "Void Height",
-    10,
-    500,
-    100,
-    true,
-    function(v)
-        VOID_HEIGHT = v * 1000
+-- Kicia Section
+sections.hvh_kicia:CreateLabel("Melee Evasion Counter (Kicia)")
+sections.hvh_kicia:CreateLabel("CS evades melee range using void movement", true)
+sections.hvh_kicia:CreateDivider()
+
+sections.hvh_kicia:CreateToggle("Enable Melee Counter", false, function(v)
+    KiciaCfg.enabled = v
+    if v then startKiciaCounter(); notify("Kicia","Melee evasion active!",3)
+    else stopKiciaCounter(); notify("Kicia","Off",2) end
+end)
+
+sections.hvh_kicia:CreateSlider("Counter Distance", 5, 100, 20, true, function(v)
+    KiciaCfg.counterDist = v
+end)
+
+sections.hvh_kicia:CreateSlider("Evade Height", 10, 200, 50, true, function(v)
+    KiciaCfg.evadeDir = Vector3.new(0, v, 0)
+end)
+
+local kicia_status = sections.hvh_kicia:CreateLabel("Melee: Standby")
+RunService.Heartbeat:Connect(function()
+    pcall(function()
+        kicia_status:UpdateText(
+            "Melee Counter: " .. (KiciaCfg.counterActive and "TRIGGERED!" or "Standby")
+        )
+        KiciaCfg.counterActive = false
+    end)
+end)
+
+sections.hvh_kicia:CreateButton("Scan Melee Threats", function()
+    local threats = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        local isMelee, wName = isHoldingMelee(p)
+        if isMelee then
+            local dist = distToPlayer(p)
+            table.insert(threats, p.Name.." [".. (wName or "?") .."] "..math.floor(dist).."s")
+        end
     end
-)
+    notify("Melee Threats", #threats > 0 and table.concat(threats, "\n") or "None", 5)
+end)
 
-sections.vs_cfg:CreateSlider(
-    "Orbit Radius",
-    1,
-    50,
-    3,
-    false,
-    function(v)
-        ORBIT_RADIUS = v
+-- =============================================
+--   UI — MINIMIZE TAB
+-- =============================================
+
+sections.min_main:CreateLabel(
+    "Shrinks character to near-zero hitbox. HeadOnly = tiny black dot like the picture.",
+    true
+)
+sections.min_main:CreateDivider()
+
+sections.min_main:CreateToggle("Enable Minimize Model", false, function(v)
+    MinimizeCfg.enabled = v
+    if v then
+        applyMinimize()
+        startMinimizeLoop()
+        if minimizeRespawnConn then minimizeRespawnConn:Disconnect() end
+        minimizeRespawnConn = lp.CharacterAdded:Connect(function()
+            if not MinimizeCfg.enabled then return end
+            task.wait(2); applyMinimize(); startMinimizeLoop()
+        end)
+    else
+        restoreMinimize()
+        for _, conn in ipairs(MinimizeCfg.connections) do
+            pcall(function() conn:Disconnect() end)
+        end
+        MinimizeCfg.connections = {}
+        if minimizeRespawnConn then
+            minimizeRespawnConn:Disconnect()
+            minimizeRespawnConn = nil
+        end
     end
-)
+end)
 
-sections.vs_cfg:CreateSlider(
-    "Orbit Speed",
-    1,
-    100,
-    8,
-    true,
+sections.min_main:CreateDropdown(
+    "Minimize Mode",
+    {"HeadOnly", "Invisible", "TinyScale"},
     function(v)
-        ORBIT_SPEED = v
-    end
+        MinimizeCfg.mode = v
+        if MinimizeCfg.enabled then applyMinimize() end
+    end,
+    "HeadOnly",
+    false
 )
 
-sections.vs_cfg:CreateDivider()
+sections.min_main:CreateDivider()
 
-sections.vs_cfg:CreateLabel("Void Range Settings")
-
-sections.vs_cfg:CreateSlider(
-    "Avoid Zone Size",
-    100,
-    2000,
-    1147,
-    true,
-    function(v)
-        VOID_AVOID_L = -(v * 1000)
-        VOID_AVOID_H =   v * 1000
+sections.min_main:CreateButton("Apply Now", function()
+    if MinimizeCfg.enabled then
+        applyMinimize()
+        notify("Minimize","Reapplied: "..MinimizeCfg.mode,2)
+    else
+        notify("Minimize","Enable first!",2)
     end
-)
+end)
+
+sections.min_main:CreateButton("Restore Character", function()
+    restoreMinimize()
+end)
+
+sections.min_main:CreateButton("Force Reapply", function()
+    restoreMinimize()
+    task.wait(0.2)
+    if MinimizeCfg.enabled then
+        applyMinimize()
+        notify("Minimize","Force reapplied!",2)
+    end
+end)
+
+-- Config Section
+sections.min_cfg:CreateLabel("TinyScale mode settings:")
+sections.min_cfg:CreateSlider("Scale Size", 0.05, 1, 0.1, false, function(v)
+    MinimizeCfg.scale = v
+    if MinimizeCfg.enabled and MinimizeCfg.mode == "TinyScale" then
+        applyTinyScale(lp.Character, v)
+    end
+end)
+
+sections.min_cfg:CreateDivider()
+sections.min_cfg:CreateToggle("Restore On Death", true, function(v)
+    MinimizeCfg.restoreOnDie = v
+end)
+sections.min_cfg:CreateDivider()
+
+sections.min_cfg:CreateLabel("Modes:")
+sections.min_cfg:CreateLabel("HeadOnly = head visible only (picture)", true)
+sections.min_cfg:CreateLabel("Invisible = fully invisible", true)
+sections.min_cfg:CreateLabel("TinyScale = shrink by scale value", true)
+
+local min_status = sections.min_cfg:CreateLabel("Minimize: OFF")
+RunService.Heartbeat:Connect(function()
+    pcall(function()
+        min_status:UpdateText(
+            "Minimize: " .. (MinimizeCfg.enabled
+                and ("ON [" .. MinimizeCfg.mode .. "]")
+                or "OFF")
+        )
+    end)
+end)
 
 -- =============================================
 --   UI — ADAPT TAB
 -- =============================================
 
-local ad_toggle = sections.ad_main:CreateToggle(
-    "Enable Adapt",
-    false,
-    function(v)
-        VoidState.adaptEnabled = v
-        if v then
-            startAdapt()
-            local tgt = VoidState.adaptTarget
-            notify(
-                "Adapt",
-                "Active! Target: " .. (tgt and tgt.Name or "Searching..."),
-                3
-            )
-        else
-            stopAdapt()
-            notify("Adapt", "Off", 2)
-        end
+local ad_toggle = sections.ad_main:CreateToggle("Enable Adapt", false, function(v)
+    VoidState.adaptEnabled = v
+    if v then
+        startAdapt()
+        notify("Adapt","Active! Target: "..(VoidState.adaptTarget and VoidState.adaptTarget.Name or "Searching..."),3)
+    else
+        stopAdapt(); notify("Adapt","Off",2)
     end
-)
-
+end)
 ad_toggle:CreateKeybind("N", function()
     VoidState.adaptEnabled = not VoidState.adaptEnabled
-    if VoidState.adaptEnabled then
-        startAdapt()
-        notify("Adapt", "Active via keybind!", 2)
-    else
-        stopAdapt()
-        notify("Adapt", "Off via keybind", 2)
-    end
+    if VoidState.adaptEnabled then startAdapt() else stopAdapt() end
+    notify("Adapt", VoidState.adaptEnabled and "Active!" or "Off", 2)
 end, "Toggle")
 
-sections.ad_main:CreateToggle(
-    "Teleport Desync",
-    false,
-    function(v)
-        VoidState.teleDesync = v
-        if v then
-            startTeleDesync()
-            notify("TeleDesync", "CS teleporting target to void", 3)
-        else
-            stopTeleDesync()
-            notify("TeleDesync", "Off", 2)
-        end
-    end
-)
+sections.ad_main:CreateToggle("Teleport Desync", false, function(v)
+    VoidState.teleDesync = v
+    if v then startTeleDesync(); notify("TeleDesync","Active!",3)
+    else stopTeleDesync(); notify("TeleDesync","Off",2) end
+end)
 
 sections.ad_main:CreateDivider()
 
-sections.ad_main:CreateButton(
-    "Force Lock Nearest Enemy",
-    function()
-        local tgt = getNearestEnemy()
-        VoidState.adaptTarget = tgt
-        VoidState.orbitAngle  = 0
-        notify(
-            "Adapt",
-            tgt and "Locked onto: " .. tgt.Name or "No enemy found",
-            3
-        )
-    end
-)
+sections.ad_main:CreateButton("Force Lock Nearest", function()
+    local tgt = getBestTarget()
+    VoidState.adaptTarget = tgt; VoidState.orbitAngle = 0
+    notify("Adapt", tgt and "Locked: "..tgt.Name or "No enemy",3)
+end)
 
-sections.ad_main:CreateButton(
-    "Release Target",
-    function()
-        VoidState.adaptTarget = nil
-        VoidState.orbitAngle  = 0
-        notify("Adapt", "Target released", 2)
-    end
-)
+sections.ad_main:CreateButton("Force Lock Void Player", function()
+    local tgt = getVoidPriorityTarget() or getNearestEnemy()
+    VoidState.adaptTarget = tgt; VoidState.orbitAngle = 0
+    notify("Adapt", tgt and "Void-locked: "..tgt.Name or "No void player",3)
+end)
 
--- Target Info section
-sections.ad_info:CreateButton(
-    "Show Target Info",
-    function()
-        local tgt = VoidState.adaptTarget
-        if not tgt then
-            notify("Adapt", "No target locked", 3)
-            return
-        end
-        local char = tgt.Character
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        local tHRP = char and char:FindFirstChild("HumanoidRootPart")
-        local myHRP = getHRP()
-        local dist = (myHRP and tHRP)
-            and math.floor((myHRP.Position - tHRP.Position).Magnitude)
-            or  0
-        local hp = hum and math.floor(hum.Health) or 0
-        notify(
-            "Target: " .. tgt.Name,
-            "HP: " .. hp
-            .. " | Dist: " .. dist .. " studs"
-            .. " | Orbit: " .. math.floor(math.deg(VoidState.orbitAngle)) .. "°",
-            5
-        )
-    end
-)
+sections.ad_main:CreateButton("Release Target", function()
+    VoidState.adaptTarget = nil; VoidState.orbitAngle = 0
+    notify("Adapt","Released",2)
+end)
 
-sections.ad_info:CreateButton(
-    "List All Enemies",
-    function()
-        local names = {}
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= lp and p.Character then
-                local hum = p.Character:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    table.insert(
-                        names,
-                        p.Name .. " (" .. math.floor(hum.Health) .. "hp)"
-                    )
-                end
-            end
-        end
-        notify(
-            "Enemy List",
-            #names > 0 and table.concat(names, " | ") or "No enemies found",
-            6
-        )
-    end
-)
-
--- Live target label
 local ad_status = sections.ad_info:CreateLabel("Target: None")
-
 RunService.Heartbeat:Connect(function()
     pcall(function()
         local tgt = VoidState.adaptTarget
         if tgt and tgt.Character then
-            local hum = tgt.Character:FindFirstChildOfClass("Humanoid")
-            local hp  = hum and math.floor(hum.Health) or 0
+            local hum   = tgt.Character:FindFirstChildOfClass("Humanoid")
+            local hp    = hum and math.floor(hum.Health) or 0
+            local hist  = playerHistory[tgt]
+            local score = hist and math.floor(hist.score) or 0
             ad_status:UpdateText(
-                "Target: " .. tgt.Name .. " | HP: " .. hp
+                "Target: "..tgt.Name.." | HP: "..hp.." | Score: "..score
             )
         else
             ad_status:UpdateText("Target: None")
@@ -809,122 +1588,82 @@ RunService.Heartbeat:Connect(function()
     end)
 end)
 
+sections.ad_info:CreateButton("List All Enemies", function()
+    local names = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character then
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local hist = playerHistory[p]
+                table.insert(names,
+                    p.Name.."("..math.floor(hum.Health).."hp"
+                    ..(hist and hist.inVoid and " VOID" or "")..")"
+                )
+            end
+        end
+    end
+    notify("Enemies", #names > 0 and table.concat(names," | ") or "None", 5)
+end)
+
 -- =============================================
 --   UI — FIRETOUCH TAB
 -- =============================================
 
-sections.ft_main:CreateLabel(
-    "Requires firetouchinterest in your executor"
-)
-
+sections.ft_main:CreateLabel("Requires firetouchinterest in executor")
 sections.ft_main:CreateDivider()
 
-local ft_toggle = sections.ft_main:CreateToggle(
-    "Enable FireTouch",
-    false,
-    function(v)
-        VoidState.fireTouchEnabled = v
-        if v then
-            startFireTouch()
-            notify("FireTouch", "Active! Scanning CoreProjectile", 3)
-        else
-            stopFireTouch()
-            notify("FireTouch", "Off", 2)
-        end
-    end
-)
-
+local ft_toggle = sections.ft_main:CreateToggle("Enable FireTouch", false, function(v)
+    VoidState.fireTouchEnabled = v
+    if v then startFireTouch(); notify("FireTouch","Active!",3)
+    else stopFireTouch(); notify("FireTouch","Off",2) end
+end)
 ft_toggle:CreateKeybind("B", function()
     VoidState.fireTouchEnabled = not VoidState.fireTouchEnabled
-    if VoidState.fireTouchEnabled then
-        startFireTouch()
-        notify("FireTouch", "Active via keybind!", 2)
-    else
-        stopFireTouch()
-        notify("FireTouch", "Off via keybind", 2)
-    end
+    if VoidState.fireTouchEnabled then startFireTouch() else stopFireTouch() end
+    notify("FireTouch", VoidState.fireTouchEnabled and "Active!" or "Off", 2)
 end, "Toggle")
 
-sections.ft_main:CreateDivider()
+sections.ft_main:CreateButton("Check Executor Support", function()
+    notify("Executor","firetouchinterest: "..(firetouchinterest and "Available" or "NOT available"),4)
+end)
 
-sections.ft_main:CreateButton(
-    "Check Executor Support",
-    function()
-        local hasFunc = firetouchinterest ~= nil
-        notify(
-            "Executor Check",
-            "firetouchinterest: "
-            .. (hasFunc and "Available" or "NOT available"),
-            4
-        )
-    end
-)
+sections.ft_main:CreateButton("Scan Projectiles Now", function()
+    local projs = scanProjectiles()
+    local tgt   = VoidState.adaptTarget or getNearestEnemy()
+    local boxes = tgt and getHitboxes(tgt.Character) or {}
+    notify("Scan",
+        "Projectiles: "..#projs
+        .." | Hitboxes: "..#boxes
+        .." | FTI: "..(firetouchinterest and "Yes" or "No")
+        .." | Target: "..(tgt and tgt.Name or "None"),
+        5
+    )
+end)
 
-sections.ft_main:CreateButton(
-    "Scan Projectiles Now",
-    function()
-        local projs = scanProjectiles()
-        local tgt   = VoidState.adaptTarget or getNearestEnemy()
-        local boxes = tgt and getHitboxes(tgt.Character) or {}
-        notify(
-            "Scan Result",
-            "CoreProjectile: " .. #projs
-            .. " | Hitboxes: " .. #boxes
-            .. " | FTI: " .. (firetouchinterest and "Yes" or "No")
-            .. " | Target: " .. (tgt and tgt.Name or "None"),
-            5
-        )
-    end
-)
-
--- How it works section
-sections.ft_info:CreateLabel("Step 1:")
-sections.ft_info:CreateLabel(
-    "Finds CoreProjectile in workspace and locates TouchTransmitter inside it",
-    true
-)
+sections.ft_info:CreateLabel("Step 1: Finds CoreProjectile in workspace")
+sections.ft_info:CreateLabel("Step 2: Lifts HRP to void height")
+sections.ft_info:CreateLabel("Step 3: Calls firetouchinterest")
+sections.ft_info:CreateLabel("Step 4: 7 offsets bypass Riot Shield")
+sections.ft_info:CreateLabel("Step 5: Restores HRP position")
 sections.ft_info:CreateDivider()
-sections.ft_info:CreateLabel("Step 2:")
-sections.ft_info:CreateLabel(
-    "Lifts your HRP to void height, unloading map geometry blocking projectiles",
-    true
-)
-sections.ft_info:CreateDivider()
-sections.ft_info:CreateLabel("Step 3:")
-sections.ft_info:CreateLabel(
-    "Calls firetouchinterest on HitBoxHeadSmall with 7 offset positions to bypass Riot Shield",
-    true
-)
-sections.ft_info:CreateDivider()
-sections.ft_info:CreateLabel("Step 4:")
-sections.ft_info:CreateLabel(
-    "Instantly restores HRP position, invisible on your screen",
-    true
-)
+sections.ft_info:CreateLabel("UE Counter: aims real hitbox if", true)
+sections.ft_info:CreateLabel("void+CS pattern detected", true)
 
 -- =============================================
 --   UI — SETTINGS TAB
 -- =============================================
 
-sections.st_main:CreateLabel("VoidSpam v1.2 by Rivals Hub")
+sections.st_main:CreateLabel("VoidSpam v1.4 — Full Edition")
 sections.st_main:CreateDivider()
-
-sections.st_main:CreateButton(
-    "Unload Script",
-    function()
-        stopAll()
-        notify("VoidSpam", "Unloading...", 2)
-        task.wait(0.5)
-        library:Unload()
-    end
-)
-
-sections.st_main:CreateDivider()
-sections.st_main:CreateLabel("Keybinds:")
-sections.st_main:CreateLabel("V = Toggle VoidSpam")
-sections.st_main:CreateLabel("N = Toggle Adapt")
-sections.st_main:CreateLabel("B = Toggle FireTouch")
+sections.st_main:CreateLabel("V = VoidSpam | N = Adapt | B = FireTouch")
 sections.st_main:CreateLabel("Insert = Toggle UI")
+sections.st_main:CreateDivider()
+sections.st_main:CreateButton("Unload", function()
+    stopAll()
+    notify("VoidSpam","Unloading...",2)
+    task.wait(0.5)
+    library:Unload()
+end)
 
 -- =============================================
 --   CONFIG MANAGER
@@ -940,7 +1679,7 @@ config_manager:LoadAutoloadConfig()
 --   WINDOW STYLE
 -- =============================================
 
-window:SetBackgroundColor(Color3.fromRGB(25, 25, 25))
+window:SetBackgroundColor(Color3.fromRGB(20, 20, 20))
 window:SetBackgroundTransparency(0.3)
 
 -- =============================================
@@ -950,20 +1689,28 @@ window:SetBackgroundTransparency(0.3)
 local watermark = library:Hud()
 RunService.RenderStepped:Connect(function()
     pcall(function()
-        local tgt    = VoidState.adaptTarget
-        local status = VoidState.enabled and "ON" or "OFF"
+        local tgt  = VoidState.adaptTarget
+        local vTgt = getVoidPriorityTarget()
         watermark:SetText(
-            "VoidSpam v1.2 | "
-            .. "VS: " .. status
-            .. " | Target: " .. (tgt and tgt.Name or "None")
-            .. " | " .. os.date("%H:%M:%S")
+            "VoidSpam v1.4"
+            .." | VS: "..(VoidState.enabled and "ON" or "OFF")
+            .." | Min: "..(MinimizeCfg.enabled and MinimizeCfg.mode or "OFF")
+            .." | Target: "..(tgt and tgt.Name or "None")
+            .." | VoidPrio: "..(vTgt and vTgt.Name or "None")
+            .." | "..(os.date("%H:%M:%S"))
         )
     end)
 end)
 
 -- =============================================
+--   AUTO START PRIORITY
+-- =============================================
+
+startPrioritySystem()
+
+-- =============================================
 --   INIT
 -- =============================================
 
-notify("VoidSpam v1.2", "Loaded! nfpw UI — All systems ready", 4)
-print("[VoidSpam v1.2] Loaded — nfpw XXSCRIPT UI")
+notify("VoidSpam v1.4","Loaded! All systems ready — 7 tabs active",5)
+print("[VoidSpam v1.4] Full script loaded successfully")
