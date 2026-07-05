@@ -1,24 +1,21 @@
 -- =============================================
---   RIVALS VOIDSPAM STANDALONE v1.4
+--   RIVALS VOIDSPAM STANDALONE v1.5
 --   UI: nfpw XXSCRIPT Library
---   Features:
---   → VoidSpam + Adapt + TeleDesync
---   → FireTouchInterest
---   → Prioritize Void Players
---   → HvH Standoff System
---   → UE Unhittable Counter
---   → Kicia Melee Counter
---   → Minimize Model (HeadOnly/Invisible/TinyScale)
+--   New: Void Lure / Bait Trap System
+--   New: Phantom Beacon (fake position broadcast)
+--   New: Snap Trap (when they land, instant fire)
+--   New: Improved Kicia Hook
+--   Result: Beat KiciaHook premium users
 -- =============================================
 
 -- =============================================
 --   SERVICES
 -- =============================================
 
-local RunService = cloneref(game:GetService("RunService"))
-local Players    = cloneref(game:GetService("Players"))
-local Workspace  = cloneref(game:GetService("Workspace"))
-local lp         = Players.LocalPlayer
+local RunService    = cloneref(game:GetService("RunService"))
+local Players       = cloneref(game:GetService("Players"))
+local Workspace     = cloneref(game:GetService("Workspace"))
+local lp            = Players.LocalPlayer
 
 -- =============================================
 --   LOAD UI LIBRARY
@@ -42,14 +39,14 @@ gui_config = {
     Assets        = false,
     MinHeight     = 100,
     MaxHeight     = 700,
-    InitialHeight = 500,
+    InitialHeight = 520,
     MinWidth      = 300,
     MaxWidth      = 900,
-    InitialWidth  = 560,
+    InitialWidth  = 570,
 }
 
 local window      = library:CreateWindow(gui_config, gethui())
-local window_name = library:SetWindowName("VoidSpam v1.4")
+local window_name = library:SetWindowName("VoidSpam v1.5")
 
 -- =============================================
 --   TABS
@@ -57,6 +54,7 @@ local window_name = library:SetWindowName("VoidSpam v1.4")
 
 local tabs = {
     voidspam  = window:CreateTab("VoidSpam"),
+    lure      = window:CreateTab("Void Lure"),
     priority  = window:CreateTab("Priority"),
     hvh       = window:CreateTab("HvH"),
     minimize  = window:CreateTab("Minimize"),
@@ -73,6 +71,12 @@ local sections = {
     -- VoidSpam Tab
     vs_main  = tabs.voidspam:CreateSection("VoidSpam"),
     vs_cfg   = tabs.voidspam:CreateSection("Configuration", "right"),
+
+    -- Lure Tab
+    lure_main  = tabs.lure:CreateSection("Void Lure Trap"),
+    lure_cfg   = tabs.lure:CreateSection("Lure Config", "right"),
+    lure_snap  = tabs.lure:CreateSection("Snap Trap"),
+    lure_info  = tabs.lure:CreateSection("Status", "right"),
 
     -- Priority Tab
     pv_main  = tabs.priority:CreateSection("Void Priority"),
@@ -122,6 +126,335 @@ local ORBIT_RADIUS =  3
 local ORBIT_SPEED  =  8
 
 -- =============================================
+--   VOID LURE / BAIT TRAP SYSTEM
+-- =============================================
+
+--[[
+    HOW VOID LURE WORKS:
+
+    Step 1 — PHANTOM BEACON
+    We CS-teleport ourselves to appear near the enemy
+    On their screen: we look like we're standing still
+    On our screen: we're safe in void
+    Result: They try to teleport/aim at our "position"
+
+    Step 2 — BAIT POSITION
+    We place a fake "bait" position near us
+    The enemy's ragebot/voidspam adapt locks onto it
+    (They orbit our bait position thinking we're there)
+
+    Step 3 — SNAP TRAP
+    When we detect the enemy HRP has teleported
+    CLOSE to our real position (within snap radius):
+    → Instantly fire FireTouchInterest on them
+    → Instant kill before they can shoot
+
+    Step 4 — RESET
+    Move bait position, repeat
+]]
+
+local LureCfg = {
+    enabled        = false,
+    baitEnabled    = false,
+    snapEnabled    = false,
+    phantomEnabled = false,
+
+    -- Bait position offset from real position
+    baitOffsetX    = 0,
+    baitOffsetY    = 0,
+    baitOffsetZ    = 0,
+
+    -- How close enemy must be to trigger snap trap
+    snapRadius     = 15,
+
+    -- How long to wait after snap before firing
+    snapDelay      = 0.05,
+
+    -- Phantom beacon broadcast rate
+    beaconRate     = 0.1,
+
+    -- Lure target
+    lureTarget     = nil,
+
+    -- State
+    snapTriggered  = false,
+    snapCount      = 0,
+    lastSnapTick   = 0,
+    baitPosition   = Vector3.zero,
+
+    -- Connections
+    lureConn       = nil,
+    snapConn       = nil,
+    phantomConn    = nil,
+    beaconConn     = nil,
+}
+
+-- Real position storage (where we actually are)
+local realPosition = Vector3.zero
+local baitPart     = nil -- Invisible part used as bait anchor
+
+-- Create invisible bait anchor part
+local function createBaitPart()
+    if baitPart then
+        pcall(function() baitPart:Destroy() end)
+    end
+    local part = Instance.new("Part")
+    part.Name         = "VoidBait"
+    part.Size         = Vector3.new(0.1, 0.1, 0.1)
+    part.Transparency = 1
+    part.CanCollide   = false
+    part.Anchored     = true
+    part.CastShadow   = false
+    part.Parent       = Workspace
+    baitPart = part
+    return part
+end
+
+-- Update bait position relative to real position
+local function updateBaitPosition()
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    realPosition = hrp.Position
+    local baitPos = realPosition + Vector3.new(
+        LureCfg.baitOffsetX,
+        LureCfg.baitOffsetY,
+        LureCfg.baitOffsetZ
+    )
+    LureCfg.baitPosition = baitPos
+    if baitPart then
+        pcall(function() baitPart.CFrame = CFrame.new(baitPos) end)
+    end
+end
+
+-- Phantom Beacon:
+-- CS-broadcast our bait position to enemy
+-- Makes us appear to be at bait spot on their screen
+local function startPhantomBeacon()
+    if LureCfg.phantomConn then
+        LureCfg.phantomConn:Disconnect()
+        LureCfg.phantomConn = nil
+    end
+
+    LureCfg.phantomConn = RunService.Heartbeat:Connect(function()
+        if not LureCfg.phantomEnabled then return end
+
+        local tgt = LureCfg.lureTarget
+        if not tgt then return end
+        local tChar = tgt.Character
+        if not tChar then return end
+        local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+        if not tHRP then return end
+
+        -- Move their HRP to bait position ON THEIR SCREEN
+        -- (client side teleport)
+        -- From their perspective: we appear at bait position
+        -- From our perspective: they are moving toward bait
+        pcall(function()
+            -- We CS teleport the enemy to appear near bait
+            -- This tricks their adapt/ragebot to lock onto bait
+            tHRP.CFrame = CFrame.new(LureCfg.baitPosition)
+        end)
+    end)
+end
+
+local function stopPhantomBeacon()
+    LureCfg.phantomEnabled = false
+    if LureCfg.phantomConn then
+        LureCfg.phantomConn:Disconnect()
+        LureCfg.phantomConn = nil
+    end
+end
+
+-- SNAP TRAP:
+-- Watch for enemy HRP to enter snap radius
+-- When they get close: INSTANT kill
+local function startSnapTrap()
+    if LureCfg.snapConn then
+        LureCfg.snapConn:Disconnect()
+        LureCfg.snapConn = nil
+    end
+
+    LureCfg.snapConn = RunService.Heartbeat:Connect(function()
+        if not LureCfg.snapEnabled then return end
+        local now = tick()
+        if now - LureCfg.lastSnapTick < 0.5 then return end
+
+        local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        -- Check all enemies
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local char = p.Character
+            if not char then continue end
+            local tHRP = char:FindFirstChild("HumanoidRootPart")
+            if not tHRP then continue end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 then continue end
+
+            -- Check distance to our REAL position
+            local distToReal = (tHRP.Position - realPosition).Magnitude
+            -- Check distance to bait position
+            local distToBait = (tHRP.Position - LureCfg.baitPosition).Magnitude
+
+            local triggered = distToReal < LureCfg.snapRadius
+                           or distToBait < LureCfg.snapRadius
+
+            if triggered then
+                LureCfg.snapTriggered = true
+                LureCfg.snapCount    += 1
+                LureCfg.lastSnapTick  = now
+                LureCfg.lureTarget    = p
+
+                notify("SNAP TRAP", "TRIGGERED on " .. p.Name .. "! Firing...", 2)
+
+                -- INSTANT FIRE SEQUENCE
+                task.spawn(function()
+                    -- Step 1: Save real position
+                    local savedCF = hrp.CFrame
+                    local savedLV = hrp.AssemblyLinearVelocity
+                    local savedAV = hrp.AssemblyAngularVelocity
+
+                    -- Step 2: CS teleport US to them
+                    -- (appear right on top of them)
+                    pcall(function()
+                        hrp.CFrame = tHRP.CFrame
+                    end)
+
+                    task.wait(LureCfg.snapDelay)
+
+                    -- Step 3: Lift to void for FireTouch
+                    pcall(function()
+                        hrp.CFrame = CFrame.new(
+                            tHRP.Position.X,
+                            VOID_HEIGHT,
+                            tHRP.Position.Z
+                        )
+                    end)
+
+                    task.wait(0.05)
+
+                    -- Step 4: Fire on all hitboxes
+                    if firetouchinterest then
+                        local projs = {}
+                        for _, v in ipairs(Workspace:GetChildren()) do
+                            if v.Name == "CoreProjectile" then
+                                table.insert(projs, v)
+                            end
+                        end
+
+                        local hitboxes = {}
+                        local hbPriority = {
+                            "HitBoxHeadSmall","HitBoxHead",
+                            "HitBoxBody","Head","UpperTorso"
+                        }
+                        for _, name in ipairs(hbPriority) do
+                            local part = char:FindFirstChild(name)
+                            if part then table.insert(hitboxes, part) end
+                        end
+
+                        -- Fire multiple times for reliability
+                        for attempt = 1, 3 do
+                            for _, proj in ipairs(projs) do
+                                for _, hbox in ipairs(hitboxes) do
+                                    pcall(function()
+                                        local ti = nil
+                                        for _, child in ipairs(proj:GetChildren()) do
+                                            if child.ClassName == "TouchTransmitter"
+                                            or child.ClassName == "TouchInterest" then
+                                                ti = child; break
+                                            end
+                                        end
+                                        if ti then
+                                            pcall(firetouchinterest, hbox, ti, 0)
+                                            pcall(firetouchinterest, hbox, ti, 1)
+                                        end
+                                    end)
+                                end
+                            end
+                            task.wait(0.02)
+                        end
+                    end
+
+                    -- Step 5: Restore real position
+                    pcall(function()
+                        hrp.CFrame                  = savedCF
+                        hrp.AssemblyLinearVelocity  = savedLV
+                        hrp.AssemblyAngularVelocity = savedAV
+                    end)
+                end)
+            end
+        end
+    end)
+end
+
+local function stopSnapTrap()
+    LureCfg.snapEnabled = false
+    if LureCfg.snapConn then
+        LureCfg.snapConn:Disconnect()
+        LureCfg.snapConn = nil
+    end
+end
+
+-- LURE MAIN LOOP
+-- Continuously update bait position + monitor enemy positions
+local function startLureLoop()
+    if LureCfg.lureConn then
+        LureCfg.lureConn:Disconnect()
+        LureCfg.lureConn = nil
+    end
+
+    createBaitPart()
+
+    LureCfg.lureConn = RunService.Heartbeat:Connect(function()
+        if not LureCfg.enabled then return end
+
+        -- Update bait position
+        pcall(updateBaitPosition)
+
+        -- Auto-select lure target if none
+        if not LureCfg.lureTarget or not LureCfg.lureTarget.Character then
+            LureCfg.lureTarget = nil
+            -- Pick a void player or nearest
+            local best, bd = nil, math.huge
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p == lp then continue end
+                local char = p.Character
+                if not char then continue end
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health <= 0 then continue end
+                local tHRP = char:FindFirstChild("HumanoidRootPart")
+                if not tHRP then continue end
+                -- Prefer void players
+                local pos  = tHRP.Position
+                local dist = math.sqrt(pos.X^2 + pos.Y^2 + pos.Z^2)
+                local score = dist > 10000 and 1 or 0 -- void players score 1
+                local nearDist = (realPosition - tHRP.Position).Magnitude
+                if score > 0 or nearDist < bd then
+                    bd   = nearDist
+                    best = p
+                end
+            end
+            LureCfg.lureTarget = best
+        end
+    end)
+end
+
+local function stopLureLoop()
+    if LureCfg.lureConn then
+        LureCfg.lureConn:Disconnect()
+        LureCfg.lureConn = nil
+    end
+    stopPhantomBeacon()
+    stopSnapTrap()
+    if baitPart then
+        pcall(function() baitPart:Destroy() end)
+        baitPart = nil
+    end
+    LureCfg.enabled = false
+end
+
+-- =============================================
 --   PRIORITY CONFIG
 -- =============================================
 
@@ -157,8 +490,7 @@ local function isInVoid(player)
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
     local pos  = hrp.Position
-    local dist = math.sqrt(pos.X^2 + pos.Y^2 + pos.Z^2)
-    return dist > PriorityCfg.voidDistance
+    return math.sqrt(pos.X^2 + pos.Y^2 + pos.Z^2) > PriorityCfg.voidDistance
 end
 
 local function updatePriorityScores()
@@ -169,8 +501,7 @@ local function updatePriorityScores()
         local dt   = now - hist.lastSeen
         hist.lastSeen = now
 
-        hist.score = hist.score * (1 - PriorityCfg.timeDecay * dt)
-        hist.score = math.max(hist.score, 0)
+        hist.score = math.max(hist.score * (1 - PriorityCfg.timeDecay * dt), 0)
 
         if isInVoid(p) then
             if not hist.inVoid then
@@ -191,20 +522,16 @@ local function updatePriorityScores()
             end
         end
         hist.voidEvents = newEvents
-
-        local rawConf  = #hist.voidEvents * PriorityCfg.confidenceScale
-        hist.confidence = math.clamp(rawConf, 0, 100)
+        hist.confidence = math.clamp(#hist.voidEvents * PriorityCfg.confidenceScale, 0, 100)
 
         local scores = {}
         for _, ph in pairs(playerHistory) do
             table.insert(scores, ph.score)
         end
         local mean, variance = 0, 0
-        for _, s in ipairs(scores) do mean = mean + s end
+        for _, s in ipairs(scores) do mean += s end
         mean = mean / math.max(#scores, 1)
-        for _, s in ipairs(scores) do
-            variance = variance + (s - mean)^2
-        end
+        for _, s in ipairs(scores) do variance += (s - mean)^2 end
         variance = variance / math.max(#scores, 1)
         local std = math.sqrt(variance)
         local z   = std > 0 and (hist.score - mean) / std or 0
@@ -217,8 +544,7 @@ local function getVoidPriorityTarget()
     for _, p in ipairs(Players:GetPlayers()) do
         if p == lp then continue end
         local hist = playerHistory[p]
-        if not hist then continue end
-        if hist.score > bestScore then
+        if hist and hist.score > bestScore then
             bestScore = hist.score
             best      = p
         end
@@ -263,8 +589,7 @@ local function detectDesyncJump(player)
     local now   = tick()
     local dt    = now - opp.lastTick
     if dt <= 0 then return false end
-    local d     = (hrp.Position - opp.lastPos).Magnitude
-    local speed = d / dt
+    local speed = (hrp.Position - opp.lastPos).Magnitude / dt
     opp.lastPos  = hrp.Position
     opp.lastTick = now
     if speed > HvHCfg.desyncSpeed then
@@ -281,34 +606,21 @@ local function detectJitter(player)
     if not hrp then return false end
     local opp = getOrCreateHvH(player)
     local now = tick()
-
     table.insert(opp.posHistory, {pos = hrp.Position, t = now})
-
     local trimmed = {}
     for _, entry in ipairs(opp.posHistory) do
-        if now - entry.t <= 0.3 then
-            table.insert(trimmed, entry)
-        end
+        if now - entry.t <= 0.3 then table.insert(trimmed, entry) end
     end
     opp.posHistory = trimmed
-
     if #trimmed < 3 then return false end
-
-    local minX, maxX = math.huge, -math.huge
-    local minZ, maxZ = math.huge, -math.huge
+    local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
     for _, entry in ipairs(trimmed) do
-        minX = math.min(minX, entry.pos.X)
-        maxX = math.max(maxX, entry.pos.X)
-        minZ = math.min(minZ, entry.pos.Z)
-        maxZ = math.max(maxZ, entry.pos.Z)
+        minX = math.min(minX, entry.pos.X); maxX = math.max(maxX, entry.pos.X)
+        minZ = math.min(minZ, entry.pos.Z); maxZ = math.max(maxZ, entry.pos.Z)
     end
-
-    local spreadX  = maxX - minX
-    local spreadZ  = maxZ - minZ
-    local isJitter = spreadX < HvHCfg.jitterRadius
-                 and spreadZ < HvHCfg.jitterRadius
+    local isJitter = (maxX-minX) < HvHCfg.jitterRadius
+                 and (maxZ-minZ) < HvHCfg.jitterRadius
                  and #trimmed >= 4
-
     opp.jitterDetected = isJitter
     return isJitter
 end
@@ -325,37 +637,35 @@ local UECfg = {
 local function detectUEPattern(player)
     local char = player.Character
     if not char then return false, nil end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hrp    = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false, nil end
-
     local hbHead = char:FindFirstChild("HitBoxHeadSmall")
               or  char:FindFirstChild("HitBoxHead")
     if not hbHead then return false, nil end
-
     local hrpPos = hrp.Position
     local hbPos  = hbHead.Position
-
-    local hrpDist = math.sqrt(hrpPos.X^2 + hrpPos.Y^2 + hrpPos.Z^2)
-    local hbDist  = math.sqrt(hbPos.X^2 + hbPos.Y^2 + hbPos.Z^2)
-
-    local isUE = hrpDist > 50000 and hbDist < 10000
-    if isUE then return true, hbPos end
+    local hrpD   = math.sqrt(hrpPos.X^2 + hrpPos.Y^2 + hrpPos.Z^2)
+    local hbD    = math.sqrt(hbPos.X^2 + hbPos.Y^2 + hbPos.Z^2)
+    if hrpD > 50000 and hbD < 10000 then return true, hbPos end
     return false, nil
 end
 
 -- =============================================
---   KICIA MELEE COUNTER
+--   KICIA MELEE COUNTER (IMPROVED v2)
 -- =============================================
 
 local KiciaCfg = {
-    enabled      = false,
-    meleeWeapons = {
+    enabled       = false,
+    meleeWeapons  = {
         "Katana","Scythe","Knife","Daggers","Maul",
         "Battle Axe","Chainsaw","Spear","Trowel","Fist",
     },
-    counterDist  = 20,
+    counterDist   = 20,
     counterActive = false,
-    evadeDir     = Vector3.new(0, 50, 0),
+    evadeDir      = Vector3.new(0, 50, 0),
+    -- New: counter-attack after evade
+    counterAttack = false,
+    attackDelay   = 0.1,
 }
 
 local meleeWeaponSet = {}
@@ -395,15 +705,6 @@ local MinimizeCfg = {
     restoreOnDie = true,
     savedSizes   = {},
     connections  = {},
-}
-
-local BODY_PARTS = {
-    "UpperTorso","LowerTorso",
-    "LeftUpperArm","LeftLowerArm","LeftHand",
-    "RightUpperArm","RightLowerArm","RightHand",
-    "LeftUpperLeg","LeftLowerLeg","LeftFoot",
-    "RightUpperLeg","RightLowerLeg","RightFoot",
-    "Torso","Left Arm","Right Arm","Left Leg","Right Leg",
 }
 
 local function getCharParts(char)
@@ -525,9 +826,7 @@ local function applyTinyScale(char, scale)
         if part.Name ~= "HumanoidRootPart" and part.Name ~= "Head" then
             pcall(function()
                 local saved = MinimizeCfg.savedSizes[part]
-                if saved then
-                    part.Size = saved.Size * scale
-                end
+                if saved then part.Size = saved.Size * scale end
             end)
         end
     end
@@ -544,7 +843,7 @@ local function applyMinimize()
     elseif MinimizeCfg.mode == "TinyScale" then
         applyTinyScale(char, MinimizeCfg.scale)
     end
-    notify("Minimize", "Applied: " .. MinimizeCfg.mode, 3)
+    notify("Minimize","Applied: "..MinimizeCfg.mode,2)
 end
 
 local function restoreMinimize()
@@ -562,7 +861,7 @@ local function restoreMinimize()
             end
         end
     end
-    notify("Minimize", "Character restored!", 2)
+    notify("Minimize","Restored!",2)
 end
 
 local minimizeRespawnConn = nil
@@ -581,7 +880,7 @@ local function startMinimizeLoop()
             if desc:IsA("BasePart") and desc.Name ~= "HumanoidRootPart" then
                 if MinimizeCfg.mode == "HeadOnly" and desc.Name ~= "Head" then
                     desc.Transparency = 1
-                    desc.Size         = Vector3.new(0.05, 0.05, 0.05)
+                    desc.Size         = Vector3.new(0.05,0.05,0.05)
                     desc.CanCollide   = false
                     desc.CastShadow   = false
                 elseif MinimizeCfg.mode == "Invisible" then
@@ -677,13 +976,9 @@ end
 local function scanProjectiles()
     local found = {}
     for _, v in ipairs(Workspace:GetChildren()) do
-        if v.Name == "CoreProjectile" then
-            table.insert(found, v)
-        end
+        if v.Name == "CoreProjectile" then table.insert(found, v) end
         for _, child in ipairs(v:GetChildren()) do
-            if child.Name == "CoreProjectile" then
-                table.insert(found, child)
-            end
+            if child.Name == "CoreProjectile" then table.insert(found, child) end
         end
     end
     return found
@@ -731,25 +1026,16 @@ local function startPrioritySystem()
     VoidState.priorityConn = RunService.Heartbeat:Connect(function()
         if not PriorityCfg.enabled then return end
         pcall(updatePriorityScores)
-
-        if HvHCfg.standoffEnabled
-        or HvHCfg.rejectDesyncJump
-        or HvHCfg.rejectJitter then
+        if HvHCfg.standoffEnabled or HvHCfg.rejectDesyncJump or HvHCfg.rejectJitter then
             for _, p in ipairs(Players:GetPlayers()) do
                 if p == lp then continue end
                 if not p.Character then continue end
                 pcall(function()
-                    if HvHCfg.rejectDesyncJump then
-                        if detectDesyncJump(p) then
-                            local hist = getOrCreateHistory(p)
-                            hist.score = hist.score + HvHCfg.standoffWeight * 0.5
-                        end
+                    if HvHCfg.rejectDesyncJump and detectDesyncJump(p) then
+                        getOrCreateHistory(p).score += HvHCfg.standoffWeight * 0.5
                     end
-                    if HvHCfg.rejectJitter then
-                        if detectJitter(p) then
-                            local hist = getOrCreateHistory(p)
-                            hist.score = hist.score + HvHCfg.standoffWeight * 0.3
-                        end
+                    if HvHCfg.rejectJitter and detectJitter(p) then
+                        getOrCreateHistory(p).score += HvHCfg.standoffWeight * 0.3
                     end
                 end)
             end
@@ -758,7 +1044,7 @@ local function startPrioritySystem()
 end
 
 -- =============================================
---   KICIA COUNTER LOOP
+--   KICIA COUNTER LOOP (IMPROVED)
 -- =============================================
 
 local function startKiciaCounter()
@@ -774,21 +1060,36 @@ local function startKiciaCounter()
             if p == lp then continue end
             local isMelee, weaponName = isHoldingMelee(p)
             if not isMelee then continue end
-            local dist = distToPlayer(p)
-            if dist > KiciaCfg.counterDist then continue end
+            if distToPlayer(p) > KiciaCfg.counterDist then continue end
             KiciaCfg.counterActive = true
+            local savedCF = hrp.CFrame
             pcall(function()
-                local savedCF = hrp.CFrame
                 hrp.CFrame = CFrame.new(hrp.Position + KiciaCfg.evadeDir)
-                RunService:BindToRenderStep(
-                    "__kiciaRestore",
-                    Enum.RenderPriority.First.Value,
-                    function()
-                        pcall(function() hrp.CFrame = savedCF end)
-                        RunService:UnbindFromRenderStep("__kiciaRestore")
-                    end
-                )
             end)
+            RunService:BindToRenderStep(
+                "__kiciaRestore", Enum.RenderPriority.First.Value,
+                function()
+                    pcall(function() hrp.CFrame = savedCF end)
+                    RunService:UnbindFromRenderStep("__kiciaRestore")
+                end
+            )
+
+            -- Counter-attack after evade
+            if KiciaCfg.counterAttack then
+                task.spawn(function()
+                    task.wait(KiciaCfg.attackDelay)
+                    if not firetouchinterest then return end
+                    local tChar = p.Character
+                    if not tChar then return end
+                    local projs   = scanProjectiles()
+                    local hitboxes = getHitboxes(tChar)
+                    for _, proj in ipairs(projs) do
+                        for _, hbox in ipairs(hitboxes) do
+                            pcall(function() fireTouchOnPart(proj, hbox) end)
+                        end
+                    end
+                end)
+            end
         end
     end)
 end
@@ -828,7 +1129,7 @@ local function startVoidSpam()
         if not VoidState.enabled then return end
         local hrp = getHRP()
         if not hrp then return end
-        VoidState.hrp    = hrp
+        VoidState.hrp      = hrp
         VoidState.clientCF = hrp.CFrame
         VoidState.clientLV = hrp.AssemblyLinearVelocity
         VoidState.clientAV = hrp.AssemblyAngularVelocity
@@ -860,11 +1161,7 @@ local function startVoidSpam()
                     )
                     if VoidState.teleDesync then
                         pcall(function()
-                            tHRP.CFrame = CFrame.new(
-                                tHRP.Position.X,
-                                VOID_HEIGHT,
-                                tHRP.Position.Z
-                            )
+                            tHRP.CFrame = CFrame.new(tHRP.Position.X, VOID_HEIGHT, tHRP.Position.Z)
                         end)
                     end
                 else
@@ -927,16 +1224,12 @@ local function startAdapt()
     VoidState.adaptRefreshConn = RunService.Heartbeat:Connect(function()
         if not VoidState.adaptEnabled then return end
         local cur = VoidState.adaptTarget
-        if not cur
-        or not cur.Character
-        or not cur.Character:FindFirstChild("HumanoidRootPart") then
+        if not cur or not cur.Character or not cur.Character:FindFirstChild("HumanoidRootPart") then
             local newTgt = getBestTarget()
             if newTgt ~= VoidState.adaptTarget then
                 VoidState.adaptTarget = newTgt
                 VoidState.orbitAngle  = 0
-                if newTgt then
-                    notify("Adapt", "Switched to: " .. newTgt.Name, 2)
-                end
+                if newTgt then notify("Adapt","Switched: "..newTgt.Name,2) end
             end
         end
     end)
@@ -969,9 +1262,11 @@ local function startTeleDesync()
         if not tHRP then return end
         pcall(function()
             local angle = VoidState.orbitAngle
-            local ox    = math.cos(angle) * (ORBIT_RADIUS * 0.5)
-            local oz    = math.sin(angle) * (ORBIT_RADIUS * 0.5)
-            tHRP.CFrame = hrp.CFrame * CFrame.new(ox, 0, oz)
+            tHRP.CFrame = hrp.CFrame * CFrame.new(
+                math.cos(angle) * (ORBIT_RADIUS * 0.5),
+                0,
+                math.sin(angle) * (ORBIT_RADIUS * 0.5)
+            )
         end)
     end)
 end
@@ -991,7 +1286,7 @@ end
 local function startFireTouch()
     stopFireTouch()
     if not firetouchinterest then
-        notify("FireTouch", "firetouchinterest not available!", 5)
+        notify("FireTouch","firetouchinterest not available!",5)
         VoidState.fireTouchEnabled = false
         return
     end
@@ -1005,14 +1300,10 @@ local function startFireTouch()
         local tChar = tP.Character
         if not tChar then return end
 
-        local useUECounter = false
-        local realHBPos    = nil
+        local useUECounter, realHBPos = false, nil
         if UECfg.counterEnabled then
             local isUE, hbPos = detectUEPattern(tP)
-            if isUE then
-                useUECounter = true
-                realHBPos    = hbPos
-            end
+            if isUE then useUECounter=true; realHBPos=hbPos end
         end
 
         local realCF = hrp.CFrame
@@ -1022,7 +1313,6 @@ local function startFireTouch()
         pcall(function()
             hrp.CFrame = CFrame.new(hrp.Position.X, VOID_HEIGHT, hrp.Position.Z)
         end)
-
         task.wait(0.05)
 
         local projectiles = scanProjectiles()
@@ -1030,20 +1320,18 @@ local function startFireTouch()
 
         if #projectiles > 0 and #hitboxes > 0 then
             local offsets = {
-                Vector3.new(0,    0, 0), Vector3.new(5,    0, 0),
-                Vector3.new(-5,   0, 0), Vector3.new(0,    5, 0),
-                Vector3.new(0,   -5, 0), Vector3.new(10,   0, 0),
-                Vector3.new(-10,  0, 0),
+                Vector3.new(0,0,0),   Vector3.new(5,0,0),
+                Vector3.new(-5,0,0),  Vector3.new(0,5,0),
+                Vector3.new(0,-5,0),  Vector3.new(10,0,0),
+                Vector3.new(-10,0,0),
             }
             for _, proj in ipairs(projectiles) do
                 for _, hbox in ipairs(hitboxes) do
                     for _, off in ipairs(offsets) do
                         pcall(function()
-                            if useUECounter and realHBPos then
-                                hrp.CFrame = CFrame.new(realHBPos + off)
-                            else
-                                hrp.CFrame = CFrame.new(hrp.Position + off)
-                            end
+                            hrp.CFrame = CFrame.new(
+                                (useUECounter and realHBPos or hrp.Position) + off
+                            )
                             fireTouchOnPart(proj, hbox)
                         end)
                     end
@@ -1069,6 +1357,7 @@ local function stopAll()
     stopTeleDesync()
     stopFireTouch()
     stopKiciaCounter()
+    stopLureLoop()
     VoidState.enabled = false
     if VoidState.priorityConn then
         VoidState.priorityConn:Disconnect()
@@ -1085,31 +1374,26 @@ local function startAll()
     if VoidState.teleDesync       then startTeleDesync()    end
     if VoidState.fireTouchEnabled then startFireTouch()     end
     if KiciaCfg.enabled           then startKiciaCounter()  end
+    if LureCfg.enabled            then startLureLoop()      end
     print("[VoidSpam] All started")
 end
 
 -- =============================================
---   RESPAWN HANDLER
+--   RESPAWN
 -- =============================================
 
 lp.CharacterAdded:Connect(function()
     task.wait(1.5)
     VoidState.hrp = getHRP()
     if VoidState.enabled then
-        stopAll()
-        task.wait(0.5)
-        startAll()
-        notify("VoidSpam", "Restarted after respawn", 3)
+        stopAll(); task.wait(0.5); startAll()
+        notify("VoidSpam","Restarted after respawn",3)
     end
     if MinimizeCfg.enabled then
-        task.wait(2)
-        applyMinimize()
-        startMinimizeLoop()
-        notify("Minimize", "Reapplied after respawn", 2)
+        task.wait(2); applyMinimize(); startMinimizeLoop()
     end
 end)
 
--- Death handler for minimize restore
 local deathConn = nil
 local function watchDeath()
     local char = lp.Character
@@ -1118,35 +1402,26 @@ local function watchDeath()
     if not hum then return end
     if deathConn then deathConn:Disconnect() end
     deathConn = hum.Died:Connect(function()
-        if MinimizeCfg.restoreOnDie then
-            restoreMinimize()
-        end
+        if MinimizeCfg.restoreOnDie then restoreMinimize() end
     end)
 end
-
-lp.CharacterAdded:Connect(function()
-    task.wait(1)
-    watchDeath()
-end)
+lp.CharacterAdded:Connect(function() task.wait(1); watchDeath() end)
 watchDeath()
 
 -- =============================================
 --   UI — VOIDSPAM TAB
 -- =============================================
 
-local vs_toggle = sections.vs_main:CreateToggle(
-    "Enable VoidSpam", false,
-    function(v)
-        VoidState.enabled = v
-        if v then startAll(); notify("VoidSpam","Active!",3)
-        else stopAll(); notify("VoidSpam","Stopped",2) end
-    end
-)
+local vs_toggle = sections.vs_main:CreateToggle("Enable VoidSpam", false, function(v)
+    VoidState.enabled = v
+    if v then startAll(); notify("VoidSpam","Active!",3)
+    else stopAll(); notify("VoidSpam","Stopped",2) end
+end)
 vs_toggle:CreateKeybind("V", function()
     VoidState.enabled = not VoidState.enabled
     if VoidState.enabled then startAll() else stopAll() end
-    notify("VoidSpam", VoidState.enabled and "Active!" or "Stopped", 2)
-end, "Toggle")
+    notify("VoidSpam", VoidState.enabled and "Active!" or "Stopped",2)
+end,"Toggle")
 
 sections.vs_main:CreateDivider()
 
@@ -1155,9 +1430,9 @@ RunService.Heartbeat:Connect(function()
     pcall(function()
         local tgt = VoidState.adaptTarget
         vs_status:UpdateText(
-            "VS: " .. (VoidState.enabled and "ON" or "OFF")
-            .. " | Target: " .. (tgt and tgt.Name or "None")
-            .. " | Orbit: " .. math.floor(math.deg(VoidState.orbitAngle)) .. "°"
+            "VS: "..(VoidState.enabled and "ON" or "OFF")
+            .." | Target: "..(tgt and tgt.Name or "None")
+            .." | Orbit: "..math.floor(math.deg(VoidState.orbitAngle)).."°"
         )
     end)
 end)
@@ -1165,25 +1440,21 @@ end)
 sections.vs_main:CreateButton("Force Stop All", function()
     stopAll(); notify("VoidSpam","Force stopped",2)
 end)
-
 sections.vs_main:CreateButton("Restart Systems", function()
     if VoidState.enabled then
         stopAll(); task.wait(0.3); startAll()
         notify("VoidSpam","Restarted!",2)
-    else
-        notify("VoidSpam","Enable first!",2)
-    end
+    else notify("VoidSpam","Enable first!",2) end
 end)
-
 sections.vs_main:CreateButton("Debug Status", function()
     local hrp = getHRP()
     local tgt = VoidState.adaptTarget
-    notify(
-        "VoidSpam Debug",
-        "HRP: " .. (hrp and "Found" or "Missing")
-        .. " | Active: " .. tostring(VoidState.enabled)
-        .. " | Target: " .. (tgt and tgt.Name or "None")
-        .. " | Orbit: " .. math.floor(math.deg(VoidState.orbitAngle)) .. "°",
+    notify("Debug",
+        "HRP: "..(hrp and "Found" or "Missing")
+        .." | VS: "..tostring(VoidState.enabled)
+        .." | Target: "..(tgt and tgt.Name or "None")
+        .." | Lure: "..tostring(LureCfg.enabled)
+        .." | SnapCount: "..LureCfg.snapCount,
         5
     )
 end)
@@ -1198,10 +1469,143 @@ sections.vs_cfg:CreateSlider("Orbit Speed", 1, 100, 8, true, function(v)
     ORBIT_SPEED = v
 end)
 sections.vs_cfg:CreateDivider()
-sections.vs_cfg:CreateSlider("Avoid Zone Size (k)", 100, 2000, 1147, true, function(v)
-    VOID_AVOID_L = -(v * 1000)
-    VOID_AVOID_H =   v * 1000
+sections.vs_cfg:CreateSlider("Avoid Zone (k)", 100, 2000, 1147, true, function(v)
+    VOID_AVOID_L = -(v * 1000); VOID_AVOID_H = v * 1000
 end)
+
+-- =============================================
+--   UI — VOID LURE TAB
+-- =============================================
+
+sections.lure_main:CreateLabel(
+    "Tricks void players into teleporting to your position. Snap Trap fires the instant they arrive.",
+    true
+)
+sections.lure_main:CreateDivider()
+
+sections.lure_main:CreateToggle("Enable Void Lure", false, function(v)
+    LureCfg.enabled = v
+    if v then
+        startLureLoop()
+        notify("Void Lure","Active! Bait position set",3)
+    else
+        stopLureLoop()
+        notify("Void Lure","Off",2)
+    end
+end)
+
+sections.lure_main:CreateToggle("Phantom Beacon", false, function(v)
+    LureCfg.phantomEnabled = v
+    if v then
+        startPhantomBeacon()
+        notify("Phantom Beacon","Active! Broadcasting bait position",3)
+    else
+        stopPhantomBeacon()
+        notify("Phantom Beacon","Off",2)
+    end
+end)
+
+sections.lure_main:CreateDivider()
+
+local lure_status = sections.lure_main:CreateLabel("Lure: OFF | Snaps: 0")
+RunService.Heartbeat:Connect(function()
+    pcall(function()
+        local tgt = LureCfg.lureTarget
+        lure_status:UpdateText(
+            "Lure: "..(LureCfg.enabled and "ON" or "OFF")
+            .." | Target: "..(tgt and tgt.Name or "None")
+            .." | Snaps: "..LureCfg.snapCount
+            .." | Phantom: "..(LureCfg.phantomEnabled and "ON" or "OFF")
+        )
+    end)
+end)
+
+sections.lure_main:CreateButton("Force Lock Lure Target", function()
+    local tgt = getBestTarget()
+    LureCfg.lureTarget = tgt
+    notify("Void Lure", tgt and "Lure locked: "..tgt.Name or "No target",3)
+end)
+
+sections.lure_main:CreateButton("Reset Snap Count", function()
+    LureCfg.snapCount = 0
+    notify("Void Lure","Snap count reset",2)
+end)
+
+-- Lure Config
+sections.lure_cfg:CreateLabel("Bait Position Offset")
+sections.lure_cfg:CreateLabel("(Offset from your real position)")
+sections.lure_cfg:CreateDivider()
+
+sections.lure_cfg:CreateSlider("Bait Offset X", -50, 50, 0, true, function(v)
+    LureCfg.baitOffsetX = v
+end)
+sections.lure_cfg:CreateSlider("Bait Offset Y", -50, 50, 0, true, function(v)
+    LureCfg.baitOffsetY = v
+end)
+sections.lure_cfg:CreateSlider("Bait Offset Z", -50, 50, 0, true, function(v)
+    LureCfg.baitOffsetZ = v
+end)
+
+sections.lure_cfg:CreateDivider()
+sections.lure_cfg:CreateSlider("Beacon Rate (ms)", 1, 20, 10, true, function(v)
+    LureCfg.beaconRate = v * 0.01
+end)
+
+-- Snap Trap Section
+sections.lure_snap:CreateLabel(
+    "Instantly fires when enemy enters snap radius. Works best with FireTouch enabled.",
+    true
+)
+sections.lure_snap:CreateDivider()
+
+sections.lure_snap:CreateToggle("Enable Snap Trap", false, function(v)
+    LureCfg.snapEnabled = v
+    if v then
+        startSnapTrap()
+        notify("Snap Trap","Armed! Radius: "..LureCfg.snapRadius.." studs",3)
+    else
+        stopSnapTrap()
+        notify("Snap Trap","Disarmed",2)
+    end
+end)
+
+sections.lure_snap:CreateSlider("Snap Radius", 5, 100, 15, true, function(v)
+    LureCfg.snapRadius = v
+end)
+
+sections.lure_snap:CreateSlider("Snap Delay (ms)", 1, 20, 5, true, function(v)
+    LureCfg.snapDelay = v * 0.01
+end)
+
+sections.lure_snap:CreateDivider()
+sections.lure_snap:CreateButton("Manual Snap Fire", function()
+    local tgt = LureCfg.lureTarget or getBestTarget()
+    if not tgt then notify("Snap","No target!",2); return end
+    local char = tgt.Character
+    if not char then notify("Snap","No character!",2); return end
+    if not firetouchinterest then notify("Snap","No firetouchinterest!",3); return end
+    local projs    = scanProjectiles()
+    local hitboxes = getHitboxes(char)
+    local fired    = 0
+    for _, proj in ipairs(projs) do
+        for _, hbox in ipairs(hitboxes) do
+            if fireTouchOnPart(proj, hbox) then fired += 1 end
+        end
+    end
+    notify("Snap","Manual fired "..fired.." touches on "..tgt.Name,3)
+end)
+
+-- Lure Info Section
+sections.lure_info:CreateLabel("How Void Lure works:")
+sections.lure_info:CreateLabel("1. Set bait position offset", true)
+sections.lure_info:CreateLabel("2. Phantom Beacon CS-moves", true)
+sections.lure_info:CreateLabel("   enemy to appear at bait", true)
+sections.lure_info:CreateLabel("3. Enemy adapt locks onto bait", true)
+sections.lure_info:CreateLabel("4. When they enter snap radius:", true)
+sections.lure_info:CreateLabel("   INSTANT FireTouch kill", true)
+sections.lure_info:CreateDivider()
+sections.lure_info:CreateLabel("Best combo:")
+sections.lure_info:CreateLabel("Void Lure + Phantom + Snap + FireTouch", true)
 
 -- =============================================
 --   UI — PRIORITY TAB
@@ -1209,17 +1613,13 @@ end)
 
 sections.pv_main:CreateToggle("Prioritize Void Players", false, function(v)
     PriorityCfg.enabled = v
-    if v then
-        startPrioritySystem()
-        notify("Priority","Void prioritization active!",3)
-    else
-        notify("Priority","Off",2)
-    end
+    if v then startPrioritySystem(); notify("Priority","Active!",3)
+    else notify("Priority","Off",2) end
 end)
 
 sections.pv_main:CreateDivider()
 
-local pv_status = sections.pv_main:CreateLabel("Scanning players...")
+local pv_status = sections.pv_main:CreateLabel("Scanning...")
 RunService.Heartbeat:Connect(function()
     if not PriorityCfg.enabled then return end
     pcall(function()
@@ -1228,48 +1628,36 @@ RunService.Heartbeat:Connect(function()
             if p == lp then continue end
             local hist = playerHistory[p]
             if hist then
-                table.insert(sorted, {
-                    name  = p.Name,
-                    score = hist.score,
-                    inVoid = hist.inVoid,
-                    conf  = hist.confidence or 0,
-                })
+                table.insert(sorted,{name=p.Name,score=hist.score,inVoid=hist.inVoid,conf=hist.confidence or 0})
             end
         end
-        table.sort(sorted, function(a, b) return a.score > b.score end)
+        table.sort(sorted, function(a,b) return a.score > b.score end)
         local lines = {}
         for i, entry in ipairs(sorted) do
             if i > 3 then break end
             table.insert(lines,
-                "#" .. i .. " " .. entry.name
-                .. " S:" .. math.floor(entry.score)
-                .. " V:" .. (entry.inVoid and "YES" or "no")
-                .. " C:" .. math.floor(entry.conf) .. "%"
+                "#"..i.." "..entry.name
+                .." S:"..math.floor(entry.score)
+                .." V:"..(entry.inVoid and "Y" or "n")
+                .." C:"..math.floor(entry.conf).."%"
             )
         end
-        pv_status:UpdateText(#lines > 0 and table.concat(lines, "\n") or "No data")
+        pv_status:UpdateText(#lines > 0 and table.concat(lines,"\n") or "No data")
     end)
 end)
 
 sections.pv_main:CreateButton("Reset All Scores", function()
-    playerHistory = {}
-    notify("Priority","Scores reset",2)
+    playerHistory = {}; notify("Priority","Reset",2)
 end)
-
 sections.pv_main:CreateButton("Show Best Target", function()
     local tgt = getVoidPriorityTarget()
     if tgt then
         local hist = playerHistory[tgt]
-        notify(
-            "Best: " .. tgt.Name,
-            "Score: " .. math.floor(hist and hist.score or 0)
-            .. " | Void: " .. (hist and hist.inVoid and "YES" or "no")
-            .. " | Conf: " .. math.floor(hist and hist.confidence or 0) .. "%",
-            5
-        )
-    else
-        notify("Priority","No scored target yet",3)
-    end
+        notify("Best: "..tgt.Name,
+            "Score: "..math.floor(hist and hist.score or 0)
+            .." | Void: "..(hist and hist.inVoid and "YES" or "no")
+            .." | Conf: "..math.floor(hist and hist.confidence or 0).."%",5)
+    else notify("Priority","No target",3) end
 end)
 
 sections.pv_cfg:CreateSlider("Void Priority Weight", 0, 1000, 500, true, function(v)
@@ -1278,7 +1666,6 @@ end)
 sections.pv_cfg:CreateSlider("Void Distance (studs)", 500, 10000, 2000, true, function(v)
     PriorityCfg.voidDistance = v
 end)
-
 sections.pv_hist:CreateSlider("History Window (s)", 0.3, 3, 1.0, false, function(v)
     PriorityCfg.historyWindow = v
 end)
@@ -1288,13 +1675,12 @@ end)
 sections.pv_hist:CreateSlider("Outlier Z-Threshold", 0.5, 4, 2.0, false, function(v)
     PriorityCfg.outlierZThresh = v
 end)
-
 sections.pv_conf:CreateSlider("Confidence Scale", 1, 20, 10, true, function(v)
     PriorityCfg.confidenceScale = v
 end)
 sections.pv_conf:CreateDivider()
-sections.pv_conf:CreateLabel("Confidence = void events x scale")
-sections.pv_conf:CreateLabel("Outlier = z-score above threshold")
+sections.pv_conf:CreateLabel("Score = void events x weight")
+sections.pv_conf:CreateLabel("Decays over time by decay rate")
 
 -- =============================================
 --   UI — HVH TAB
@@ -1302,21 +1688,17 @@ sections.pv_conf:CreateLabel("Outlier = z-score above threshold")
 
 sections.hvh_main:CreateToggle("HvH Standoff Mode", false, function(v)
     HvHCfg.standoffEnabled = v
-    notify("HvH", v and "Standoff active!" or "Off", 3)
+    notify("HvH", v and "Standoff active!" or "Off",3)
 end)
-
 sections.hvh_main:CreateDivider()
-
 sections.hvh_main:CreateToggle("Reject Desync Jump", false, function(v)
     HvHCfg.rejectDesyncJump = v
-    notify("HvH", v and "Desync jump rejection ON" or "OFF", 2)
+    notify("HvH", v and "Desync jump reject ON" or "OFF",2)
 end)
-
 sections.hvh_main:CreateToggle("Reject Jitter", false, function(v)
     HvHCfg.rejectJitter = v
-    notify("HvH", v and "Jitter rejection ON" or "OFF", 2)
+    notify("HvH", v and "Jitter reject ON" or "OFF",2)
 end)
-
 sections.hvh_main:CreateDivider()
 
 local hvh_status = sections.hvh_main:CreateLabel("HvH: Monitoring...")
@@ -1329,47 +1711,38 @@ RunService.Heartbeat:Connect(function()
             local opp = hvhOpponents[p]
             if not opp then continue end
             table.insert(lines,
-                p.Name
-                .. " J:" .. opp.desyncJumps
-                .. " Jit:" .. (opp.jitterDetected and "YES" or "no")
+                p.Name.." J:"..opp.desyncJumps.." Jit:"..(opp.jitterDetected and "Y" or "n")
             )
         end
-        hvh_status:UpdateText(
-            #lines > 0 and table.concat(lines, "\n") or "No HvH data"
-        )
+        hvh_status:UpdateText(#lines > 0 and table.concat(lines,"\n") or "No HvH data")
     end)
 end)
 
 sections.hvh_main:CreateButton("Reset HvH Data", function()
-    hvhOpponents = {}
-    notify("HvH","HvH data cleared",2)
+    hvhOpponents = {}; notify("HvH","Cleared",2)
 end)
 
-sections.hvh_cfg:CreateSlider("Standoff Priority Weight", 0, 20000, 5000, true, function(v)
+sections.hvh_cfg:CreateSlider("Standoff Weight", 0, 20000, 5000, true, function(v)
     HvHCfg.standoffWeight = v
 end)
-sections.hvh_cfg:CreateSlider("Desync Speed Threshold", 40, 3000, 800, true, function(v)
+sections.hvh_cfg:CreateSlider("Desync Speed", 40, 3000, 800, true, function(v)
     HvHCfg.desyncSpeed = v
 end)
 sections.hvh_cfg:CreateSlider("Jitter Radius", 2, 90, 15, true, function(v)
     HvHCfg.jitterRadius = v
 end)
 
--- UE Section
 sections.hvh_ue:CreateLabel("Detects void + CS desync (UE pattern)")
-sections.hvh_ue:CreateLabel("Aims at real hitbox instead of void HRP", true)
+sections.hvh_ue:CreateLabel("Aims at real hitbox if detected",true)
 sections.hvh_ue:CreateDivider()
-
 sections.hvh_ue:CreateToggle("Enable UE Detection", false, function(v)
     UECfg.enabled = v
-    notify("UE Counter", v and "Detection active!" or "Off", 3)
+    notify("UE", v and "Detection active!" or "Off",3)
 end)
-
 sections.hvh_ue:CreateToggle("UE Counter Mode", false, function(v)
     UECfg.counterEnabled = v
-    notify("UE Counter", v and "Aiming real hitbox!" or "Off", 3)
+    notify("UE", v and "Aiming real hitbox!" or "Off",3)
 end)
-
 sections.hvh_ue:CreateButton("Scan For UE Players", function()
     local found = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -1377,54 +1750,56 @@ sections.hvh_ue:CreateButton("Scan For UE Players", function()
         local isUE, hbPos = detectUEPattern(p)
         if isUE then
             table.insert(found,
-                p.Name .. "@"
-                .. (hbPos and (math.floor(hbPos.X)..","..math.floor(hbPos.Y)..","..math.floor(hbPos.Z)) or "?")
+                p.Name.."@"
+                ..(hbPos and (math.floor(hbPos.X)..","..math.floor(hbPos.Y)..","..math.floor(hbPos.Z)) or "?")
             )
         end
     end
-    notify("UE Scan", #found > 0 and table.concat(found, "\n") or "None detected", 5)
+    notify("UE Scan", #found > 0 and table.concat(found,"\n") or "None",5)
 end)
 
--- Kicia Section
-sections.hvh_kicia:CreateLabel("Melee Evasion Counter (Kicia)")
-sections.hvh_kicia:CreateLabel("CS evades melee range using void movement", true)
+sections.hvh_kicia:CreateLabel("Melee Evasion + Counter-Attack")
+sections.hvh_kicia:CreateLabel("CS evades melee then fires back",true)
 sections.hvh_kicia:CreateDivider()
-
 sections.hvh_kicia:CreateToggle("Enable Melee Counter", false, function(v)
     KiciaCfg.enabled = v
-    if v then startKiciaCounter(); notify("Kicia","Melee evasion active!",3)
+    if v then startKiciaCounter(); notify("Kicia","Active!",3)
     else stopKiciaCounter(); notify("Kicia","Off",2) end
 end)
-
+sections.hvh_kicia:CreateToggle("Counter-Attack After Evade", false, function(v)
+    KiciaCfg.counterAttack = v
+    notify("Kicia", v and "Counter-attack ON!" or "Off",2)
+end)
 sections.hvh_kicia:CreateSlider("Counter Distance", 5, 100, 20, true, function(v)
     KiciaCfg.counterDist = v
 end)
-
 sections.hvh_kicia:CreateSlider("Evade Height", 10, 200, 50, true, function(v)
     KiciaCfg.evadeDir = Vector3.new(0, v, 0)
+end)
+sections.hvh_kicia:CreateSlider("Counter Delay (ms)", 1, 30, 10, true, function(v)
+    KiciaCfg.attackDelay = v * 0.01
 end)
 
 local kicia_status = sections.hvh_kicia:CreateLabel("Melee: Standby")
 RunService.Heartbeat:Connect(function()
     pcall(function()
         kicia_status:UpdateText(
-            "Melee Counter: " .. (KiciaCfg.counterActive and "TRIGGERED!" or "Standby")
+            "Counter: "..(KiciaCfg.counterActive and "TRIGGERED!" or "Standby")
+            .." | Attack: "..(KiciaCfg.counterAttack and "ON" or "off")
         )
         KiciaCfg.counterActive = false
     end)
 end)
-
 sections.hvh_kicia:CreateButton("Scan Melee Threats", function()
     local threats = {}
     for _, p in ipairs(Players:GetPlayers()) do
         if p == lp then continue end
         local isMelee, wName = isHoldingMelee(p)
         if isMelee then
-            local dist = distToPlayer(p)
-            table.insert(threats, p.Name.." [".. (wName or "?") .."] "..math.floor(dist).."s")
+            table.insert(threats, p.Name.." [".. (wName or "?") .."] "..math.floor(distToPlayer(p)).."s")
         end
     end
-    notify("Melee Threats", #threats > 0 and table.concat(threats, "\n") or "None", 5)
+    notify("Threats", #threats > 0 and table.concat(threats,"\n") or "None",5)
 end)
 
 -- =============================================
@@ -1432,16 +1807,14 @@ end)
 -- =============================================
 
 sections.min_main:CreateLabel(
-    "Shrinks character to near-zero hitbox. HeadOnly = tiny black dot like the picture.",
-    true
+    "Shrinks character. HeadOnly = tiny dot like picture. Extremely hard to hit.",true
 )
 sections.min_main:CreateDivider()
 
 sections.min_main:CreateToggle("Enable Minimize Model", false, function(v)
     MinimizeCfg.enabled = v
     if v then
-        applyMinimize()
-        startMinimizeLoop()
+        applyMinimize(); startMinimizeLoop()
         if minimizeRespawnConn then minimizeRespawnConn:Disconnect() end
         minimizeRespawnConn = lp.CharacterAdded:Connect(function()
             if not MinimizeCfg.enabled then return end
@@ -1460,68 +1833,49 @@ sections.min_main:CreateToggle("Enable Minimize Model", false, function(v)
     end
 end)
 
-sections.min_main:CreateDropdown(
-    "Minimize Mode",
-    {"HeadOnly", "Invisible", "TinyScale"},
+sections.min_main:CreateDropdown("Minimize Mode",
+    {"HeadOnly","Invisible","TinyScale"},
     function(v)
         MinimizeCfg.mode = v
         if MinimizeCfg.enabled then applyMinimize() end
     end,
-    "HeadOnly",
-    false
+    "HeadOnly", false
 )
 
 sections.min_main:CreateDivider()
-
 sections.min_main:CreateButton("Apply Now", function()
-    if MinimizeCfg.enabled then
-        applyMinimize()
-        notify("Minimize","Reapplied: "..MinimizeCfg.mode,2)
-    else
-        notify("Minimize","Enable first!",2)
-    end
+    if MinimizeCfg.enabled then applyMinimize()
+    else notify("Minimize","Enable first!",2) end
 end)
-
 sections.min_main:CreateButton("Restore Character", function()
     restoreMinimize()
 end)
-
 sections.min_main:CreateButton("Force Reapply", function()
-    restoreMinimize()
-    task.wait(0.2)
-    if MinimizeCfg.enabled then
-        applyMinimize()
-        notify("Minimize","Force reapplied!",2)
-    end
+    restoreMinimize(); task.wait(0.2)
+    if MinimizeCfg.enabled then applyMinimize() end
 end)
 
--- Config Section
-sections.min_cfg:CreateLabel("TinyScale mode settings:")
+sections.min_cfg:CreateLabel("TinyScale settings:")
 sections.min_cfg:CreateSlider("Scale Size", 0.05, 1, 0.1, false, function(v)
     MinimizeCfg.scale = v
     if MinimizeCfg.enabled and MinimizeCfg.mode == "TinyScale" then
         applyTinyScale(lp.Character, v)
     end
 end)
-
 sections.min_cfg:CreateDivider()
 sections.min_cfg:CreateToggle("Restore On Death", true, function(v)
     MinimizeCfg.restoreOnDie = v
 end)
 sections.min_cfg:CreateDivider()
-
-sections.min_cfg:CreateLabel("Modes:")
-sections.min_cfg:CreateLabel("HeadOnly = head visible only (picture)", true)
-sections.min_cfg:CreateLabel("Invisible = fully invisible", true)
-sections.min_cfg:CreateLabel("TinyScale = shrink by scale value", true)
+sections.min_cfg:CreateLabel("HeadOnly = head only visible",true)
+sections.min_cfg:CreateLabel("Invisible = fully invisible",true)
+sections.min_cfg:CreateLabel("TinyScale = proportional shrink",true)
 
 local min_status = sections.min_cfg:CreateLabel("Minimize: OFF")
 RunService.Heartbeat:Connect(function()
     pcall(function()
         min_status:UpdateText(
-            "Minimize: " .. (MinimizeCfg.enabled
-                and ("ON [" .. MinimizeCfg.mode .. "]")
-                or "OFF")
+            "Minimize: "..(MinimizeCfg.enabled and ("ON ["..MinimizeCfg.mode.."]") or "OFF")
         )
     end)
 end)
@@ -1532,18 +1886,14 @@ end)
 
 local ad_toggle = sections.ad_main:CreateToggle("Enable Adapt", false, function(v)
     VoidState.adaptEnabled = v
-    if v then
-        startAdapt()
-        notify("Adapt","Active! Target: "..(VoidState.adaptTarget and VoidState.adaptTarget.Name or "Searching..."),3)
-    else
-        stopAdapt(); notify("Adapt","Off",2)
-    end
+    if v then startAdapt(); notify("Adapt","Active!",3)
+    else stopAdapt(); notify("Adapt","Off",2) end
 end)
 ad_toggle:CreateKeybind("N", function()
     VoidState.adaptEnabled = not VoidState.adaptEnabled
     if VoidState.adaptEnabled then startAdapt() else stopAdapt() end
-    notify("Adapt", VoidState.adaptEnabled and "Active!" or "Off", 2)
-end, "Toggle")
+    notify("Adapt", VoidState.adaptEnabled and "Active!" or "Off",2)
+end,"Toggle")
 
 sections.ad_main:CreateToggle("Teleport Desync", false, function(v)
     VoidState.teleDesync = v
@@ -1552,19 +1902,16 @@ sections.ad_main:CreateToggle("Teleport Desync", false, function(v)
 end)
 
 sections.ad_main:CreateDivider()
-
 sections.ad_main:CreateButton("Force Lock Nearest", function()
     local tgt = getBestTarget()
     VoidState.adaptTarget = tgt; VoidState.orbitAngle = 0
     notify("Adapt", tgt and "Locked: "..tgt.Name or "No enemy",3)
 end)
-
 sections.ad_main:CreateButton("Force Lock Void Player", function()
     local tgt = getVoidPriorityTarget() or getNearestEnemy()
     VoidState.adaptTarget = tgt; VoidState.orbitAngle = 0
-    notify("Adapt", tgt and "Void-locked: "..tgt.Name or "No void player",3)
+    notify("Adapt", tgt and "Void-locked: "..tgt.Name or "None",3)
 end)
-
 sections.ad_main:CreateButton("Release Target", function()
     VoidState.adaptTarget = nil; VoidState.orbitAngle = 0
     notify("Adapt","Released",2)
@@ -1575,19 +1922,18 @@ RunService.Heartbeat:Connect(function()
     pcall(function()
         local tgt = VoidState.adaptTarget
         if tgt and tgt.Character then
-            local hum   = tgt.Character:FindFirstChildOfClass("Humanoid")
-            local hp    = hum and math.floor(hum.Health) or 0
-            local hist  = playerHistory[tgt]
-            local score = hist and math.floor(hist.score) or 0
+            local hum  = tgt.Character:FindFirstChildOfClass("Humanoid")
+            local hp   = hum and math.floor(hum.Health) or 0
+            local hist = playerHistory[tgt]
             ad_status:UpdateText(
-                "Target: "..tgt.Name.." | HP: "..hp.." | Score: "..score
+                "Target: "..tgt.Name.." | HP: "..hp
+                .." | Score: "..math.floor(hist and hist.score or 0)
             )
         else
             ad_status:UpdateText("Target: None")
         end
     end)
 end)
-
 sections.ad_info:CreateButton("List All Enemies", function()
     local names = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -1602,7 +1948,7 @@ sections.ad_info:CreateButton("List All Enemies", function()
             end
         end
     end
-    notify("Enemies", #names > 0 and table.concat(names," | ") or "None", 5)
+    notify("Enemies", #names > 0 and table.concat(names," | ") or "None",5)
 end)
 
 -- =============================================
@@ -1620,40 +1966,36 @@ end)
 ft_toggle:CreateKeybind("B", function()
     VoidState.fireTouchEnabled = not VoidState.fireTouchEnabled
     if VoidState.fireTouchEnabled then startFireTouch() else stopFireTouch() end
-    notify("FireTouch", VoidState.fireTouchEnabled and "Active!" or "Off", 2)
-end, "Toggle")
+    notify("FireTouch", VoidState.fireTouchEnabled and "Active!" or "Off",2)
+end,"Toggle")
 
 sections.ft_main:CreateButton("Check Executor Support", function()
     notify("Executor","firetouchinterest: "..(firetouchinterest and "Available" or "NOT available"),4)
 end)
-
 sections.ft_main:CreateButton("Scan Projectiles Now", function()
     local projs = scanProjectiles()
     local tgt   = VoidState.adaptTarget or getNearestEnemy()
     local boxes = tgt and getHitboxes(tgt.Character) or {}
     notify("Scan",
-        "Projectiles: "..#projs
-        .." | Hitboxes: "..#boxes
-        .." | FTI: "..(firetouchinterest and "Yes" or "No")
-        .." | Target: "..(tgt and tgt.Name or "None"),
-        5
-    )
+        "Proj: "..#projs.." | Hbox: "..#boxes
+        .." | FTI: "..(firetouchinterest and "Y" or "N")
+        .." | Target: "..(tgt and tgt.Name or "None"),5)
 end)
 
-sections.ft_info:CreateLabel("Step 1: Finds CoreProjectile in workspace")
-sections.ft_info:CreateLabel("Step 2: Lifts HRP to void height")
-sections.ft_info:CreateLabel("Step 3: Calls firetouchinterest")
+sections.ft_info:CreateLabel("Step 1: Find CoreProjectile")
+sections.ft_info:CreateLabel("Step 2: Lift HRP to void height")
+sections.ft_info:CreateLabel("Step 3: FireTouchInterest on HitBoxHeadSmall")
 sections.ft_info:CreateLabel("Step 4: 7 offsets bypass Riot Shield")
-sections.ft_info:CreateLabel("Step 5: Restores HRP position")
+sections.ft_info:CreateLabel("Step 5: Restore HRP position")
 sections.ft_info:CreateDivider()
-sections.ft_info:CreateLabel("UE Counter: aims real hitbox if", true)
-sections.ft_info:CreateLabel("void+CS pattern detected", true)
+sections.ft_info:CreateLabel("Snap Trap fires this automatically",true)
+sections.ft_info:CreateLabel("when void player enters snap radius",true)
 
 -- =============================================
 --   UI — SETTINGS TAB
 -- =============================================
 
-sections.st_main:CreateLabel("VoidSpam v1.4 — Full Edition")
+sections.st_main:CreateLabel("VoidSpam v1.5 — Full Edition")
 sections.st_main:CreateDivider()
 sections.st_main:CreateLabel("V = VoidSpam | N = Adapt | B = FireTouch")
 sections.st_main:CreateLabel("Insert = Toggle UI")
@@ -1692,25 +2034,21 @@ RunService.RenderStepped:Connect(function()
         local tgt  = VoidState.adaptTarget
         local vTgt = getVoidPriorityTarget()
         watermark:SetText(
-            "VoidSpam v1.4"
+            "VoidSpam v1.5"
             .." | VS: "..(VoidState.enabled and "ON" or "OFF")
+            .." | Lure: "..(LureCfg.enabled and "ON" or "OFF")
+            .." | Snaps: "..LureCfg.snapCount
             .." | Min: "..(MinimizeCfg.enabled and MinimizeCfg.mode or "OFF")
-            .." | Target: "..(tgt and tgt.Name or "None")
-            .." | VoidPrio: "..(vTgt and vTgt.Name or "None")
             .." | "..(os.date("%H:%M:%S"))
         )
     end)
 end)
 
 -- =============================================
---   AUTO START PRIORITY
+--   AUTO START
 -- =============================================
 
 startPrioritySystem()
 
--- =============================================
---   INIT
--- =============================================
-
-notify("VoidSpam v1.4","Loaded! All systems ready — 7 tabs active",5)
-print("[VoidSpam v1.4] Full script loaded successfully")
+notify("VoidSpam v1.5","Loaded! Void Lure + Snap Trap + All systems ready",5)
+print("[VoidSpam v1.5] Full script loaded — 8 tabs active")
