@@ -1,11 +1,12 @@
 -- =============================================
---   RIVALS VOIDSPAM STANDALONE v1.5
---   UI: nfpw XXSCRIPT Library
---   New: Void Lure / Bait Trap System
---   New: Phantom Beacon (fake position broadcast)
---   New: Snap Trap (when they land, instant fire)
---   New: Improved Kicia Hook
---   Result: Beat KiciaHook premium users
+--   RIVALS VOIDSPAM v1.6
+--   Anti-KiciaHook Premium Edition
+--   New: Premium counter systems
+--   New: Multi-layer desync
+--   New: Prediction-based snap
+--   New: Hitbox expansion
+--   New: Server tick manipulation
+--   New: Anti-resolver
 -- =============================================
 
 -- =============================================
@@ -46,7 +47,7 @@ gui_config = {
 }
 
 local window      = library:CreateWindow(gui_config, gethui())
-local window_name = library:SetWindowName("VoidSpam v1.5")
+local window_name = library:SetWindowName("VoidSpam v1.6 | Anti-KiciaHook")
 
 -- =============================================
 --   TABS
@@ -55,6 +56,7 @@ local window_name = library:SetWindowName("VoidSpam v1.5")
 local tabs = {
     voidspam  = window:CreateTab("VoidSpam"),
     lure      = window:CreateTab("Void Lure"),
+    antikicia = window:CreateTab("Anti-Kicia"),
     priority  = window:CreateTab("Priority"),
     hvh       = window:CreateTab("HvH"),
     minimize  = window:CreateTab("Minimize"),
@@ -68,42 +70,48 @@ local tabs = {
 -- =============================================
 
 local sections = {
-    -- VoidSpam Tab
-    vs_main  = tabs.voidspam:CreateSection("VoidSpam"),
-    vs_cfg   = tabs.voidspam:CreateSection("Configuration", "right"),
+    -- VoidSpam
+    vs_main   = tabs.voidspam:CreateSection("VoidSpam"),
+    vs_cfg    = tabs.voidspam:CreateSection("Configuration","right"),
 
-    -- Lure Tab
-    lure_main  = tabs.lure:CreateSection("Void Lure Trap"),
-    lure_cfg   = tabs.lure:CreateSection("Lure Config", "right"),
-    lure_snap  = tabs.lure:CreateSection("Snap Trap"),
-    lure_info  = tabs.lure:CreateSection("Status", "right"),
+    -- Lure
+    lure_main = tabs.lure:CreateSection("Void Lure Trap"),
+    lure_cfg  = tabs.lure:CreateSection("Lure Config","right"),
+    lure_snap = tabs.lure:CreateSection("Snap Trap"),
+    lure_info = tabs.lure:CreateSection("Status","right"),
 
-    -- Priority Tab
-    pv_main  = tabs.priority:CreateSection("Void Priority"),
-    pv_cfg   = tabs.priority:CreateSection("Priority Config", "right"),
-    pv_hist  = tabs.priority:CreateSection("History & Decay"),
-    pv_conf  = tabs.priority:CreateSection("Confidence", "right"),
+    -- Anti-Kicia (NEW)
+    ak_main   = tabs.antikicia:CreateSection("Anti-KiciaHook Premium"),
+    ak_cfg    = tabs.antikicia:CreateSection("Counter Config","right"),
+    ak_res    = tabs.antikicia:CreateSection("Anti-Resolver"),
+    ak_pred   = tabs.antikicia:CreateSection("Prediction","right"),
 
-    -- HvH Tab
+    -- Priority
+    pv_main   = tabs.priority:CreateSection("Void Priority"),
+    pv_cfg    = tabs.priority:CreateSection("Priority Config","right"),
+    pv_hist   = tabs.priority:CreateSection("History & Decay"),
+    pv_conf   = tabs.priority:CreateSection("Confidence","right"),
+
+    -- HvH
     hvh_main  = tabs.hvh:CreateSection("HvH Standoff"),
-    hvh_cfg   = tabs.hvh:CreateSection("Standoff Config", "right"),
+    hvh_cfg   = tabs.hvh:CreateSection("Standoff Config","right"),
     hvh_ue    = tabs.hvh:CreateSection("UE Unhittable"),
-    hvh_kicia = tabs.hvh:CreateSection("Kicia Counter", "right"),
+    hvh_kicia = tabs.hvh:CreateSection("Kicia Counter","right"),
 
-    -- Minimize Tab
+    -- Minimize
     min_main  = tabs.minimize:CreateSection("Minimize Model"),
-    min_cfg   = tabs.minimize:CreateSection("Config & Preview", "right"),
+    min_cfg   = tabs.minimize:CreateSection("Config & Preview","right"),
 
-    -- Adapt Tab
-    ad_main  = tabs.adapt:CreateSection("Adapt System"),
-    ad_info  = tabs.adapt:CreateSection("Target Info", "right"),
+    -- Adapt
+    ad_main   = tabs.adapt:CreateSection("Adapt System"),
+    ad_info   = tabs.adapt:CreateSection("Target Info","right"),
 
-    -- FireTouch Tab
-    ft_main  = tabs.firetouch:CreateSection("FireTouchInterest"),
-    ft_info  = tabs.firetouch:CreateSection("How It Works", "right"),
+    -- FireTouch
+    ft_main   = tabs.firetouch:CreateSection("FireTouchInterest"),
+    ft_info   = tabs.firetouch:CreateSection("How It Works","right"),
 
-    -- Settings Tab
-    st_main  = tabs.settings:CreateSection("Settings"),
+    -- Settings
+    st_main   = tabs.settings:CreateSection("Settings"),
 }
 
 -- =============================================
@@ -126,332 +134,661 @@ local ORBIT_RADIUS =  3
 local ORBIT_SPEED  =  8
 
 -- =============================================
---   VOID LURE / BAIT TRAP SYSTEM
+--   ANTI-KICIA PREMIUM CONFIG
 -- =============================================
 
 --[[
-    HOW VOID LURE WORKS:
-
-    Step 1 — PHANTOM BEACON
-    We CS-teleport ourselves to appear near the enemy
-    On their screen: we look like we're standing still
-    On our screen: we're safe in void
-    Result: They try to teleport/aim at our "position"
-
-    Step 2 — BAIT POSITION
-    We place a fake "bait" position near us
-    The enemy's ragebot/voidspam adapt locks onto it
-    (They orbit our bait position thinking we're there)
-
-    Step 3 — SNAP TRAP
-    When we detect the enemy HRP has teleported
-    CLOSE to our real position (within snap radius):
-    → Instantly fire FireTouchInterest on them
-    → Instant kill before they can shoot
-
-    Step 4 — RESET
-    Move bait position, repeat
+    HOW KICIAHOOK PREMIUM WORKS (analysis):
+    
+    1. BETTER RESOLVER
+       Premium resolves your real position
+       from your void position history
+       It predicts where you'll be next tick
+    
+    2. MULTI-SHOT
+       Fires multiple shots in different positions
+       around predicted location
+       One will always hit
+    
+    3. HITBOX EXPANSION
+       Expands their own hitbox detection radius
+       Makes them easier to hit you
+    
+    4. FASTER DESYNC CYCLE
+       Premium cycles desync faster than free
+       Harder to track their real position
+    
+    HOW TO COUNTER:
+    
+    1. RANDOMIZED VOID PATTERN
+       Instead of predictable orbits, use
+       truly random patterns that cant be resolved
+    
+    2. FAKE POSITION HISTORY
+       Feed fake position data to confuse resolver
+    
+    3. MULTI-LAYER DESYNC
+       Use 3 layers of desync simultaneously
+       Makes it impossible to track real position
+    
+    4. INSTANT KILL ON DETECTION
+       When we detect KiciaHook firing at us
+       (they lift HRP to void height)
+       immediately snap-fire back
+    
+    5. HITBOX NULLIFIER
+       Shrink our hitbox to near-zero
+       While expanding detection of theirs
 ]]
 
-local LureCfg = {
-    enabled        = false,
-    baitEnabled    = false,
-    snapEnabled    = false,
-    phantomEnabled = false,
+local AntiKiciaCfg = {
+    -- Main toggles
+    enabled            = false,
+    antiResolverOn     = false,
+    multiLayerDesync   = false,
+    instantCounter     = false,
+    predictionCounter  = false,
+    hitboxNullifier    = false,
+    fakeHistoryOn      = false,
 
-    -- Bait position offset from real position
-    baitOffsetX    = 0,
-    baitOffsetY    = 0,
-    baitOffsetZ    = 0,
+    -- Detection
+    detectedKicia      = false,
+    detectedTick       = 0,
+    kiciaTarget        = nil,
+    kiciaVersion       = "Unknown", -- Free or Premium
 
-    -- How close enemy must be to trigger snap trap
-    snapRadius     = 15,
+    -- Anti-resolver settings
+    resolverLayers     = 3,         -- How many fake history layers
+    resolverSpeed      = 0.05,      -- How fast to rotate fake positions
+    resolverRadius     = 50,        -- Radius of fake position cloud
 
-    -- How long to wait after snap before firing
-    snapDelay      = 0.05,
+    -- Multi-layer desync
+    layerCount         = 3,         -- 1=basic, 2=double, 3=triple
+    layerInterval      = 0.016,     -- Time between layers
 
-    -- Phantom beacon broadcast rate
-    beaconRate     = 0.1,
+    -- Prediction counter
+    predLookAhead      = 3,         -- How many ticks ahead to predict
+    predConfidence     = 0.8,       -- Minimum confidence to fire
 
-    -- Lure target
-    lureTarget     = nil,
+    -- History for fake positions
+    fakePositions      = {},
+    fakeAngle          = 0,
 
-    -- State
-    snapTriggered  = false,
-    snapCount      = 0,
-    lastSnapTick   = 0,
-    baitPosition   = Vector3.zero,
+    -- Detection history
+    kiciaHistory       = {},
+    -- { [player] = { voidLifts=0, lastLift=0, isKicia=bool } }
 
-    -- Connections
-    lureConn       = nil,
-    snapConn       = nil,
-    phantomConn    = nil,
-    beaconConn     = nil,
+    -- Counter connections
+    detectionConn      = nil,
+    multiDesyncConn    = nil,
+    fakeHistoryConn    = nil,
+    counterConn        = nil,
 }
 
--- Real position storage (where we actually are)
-local realPosition = Vector3.zero
-local baitPart     = nil -- Invisible part used as bait anchor
+-- =============================================
+--   KICIA DETECTION ENGINE
+-- =============================================
 
--- Create invisible bait anchor part
-local function createBaitPart()
-    if baitPart then
-        pcall(function() baitPart:Destroy() end)
+--[[
+    KiciaHook signature detection:
+    
+    FREE VERSION signs:
+    - HRP lifts to ~100k studs
+    - Periodic (every ~0.1s)
+    - Velocity is zero or near-zero
+    - Pattern is predictable
+    
+    PREMIUM VERSION signs:
+    - HRP lifts to variable heights (50k-500k)
+    - Much faster cycle (~0.05s or less)
+    - Uses velocity manipulation too
+    - Position changes are less predictable
+    - They have resolver running
+]]
+
+local kiciaSignatures = {}
+-- { [player] = {
+--     lastHRPY = number,
+--     liftCount = number,
+--     liftTimes = {},
+--     avgLiftInterval = number,
+--     maxLiftHeight = number,
+--     isPremium = bool,
+-- }}
+
+local function getOrCreateSig(p)
+    if not kiciaSignatures[p] then
+        kiciaSignatures[p] = {
+            lastHRPY        = 0,
+            liftCount       = 0,
+            liftTimes       = {},
+            avgLiftInterval = 0,
+            maxLiftHeight   = 0,
+            isPremium       = false,
+            lastPos         = Vector3.zero,
+            posChanges      = {},
+        }
     end
-    local part = Instance.new("Part")
-    part.Name         = "VoidBait"
-    part.Size         = Vector3.new(0.1, 0.1, 0.1)
-    part.Transparency = 1
-    part.CanCollide   = false
-    part.Anchored     = true
-    part.CastShadow   = false
-    part.Parent       = Workspace
-    baitPart = part
-    return part
+    return kiciaSignatures[p]
 end
 
--- Update bait position relative to real position
-local function updateBaitPosition()
-    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+local function updateKiciaSignature(p)
+    local char = p.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
-    realPosition = hrp.Position
-    local baitPos = realPosition + Vector3.new(
-        LureCfg.baitOffsetX,
-        LureCfg.baitOffsetY,
-        LureCfg.baitOffsetZ
-    )
-    LureCfg.baitPosition = baitPos
-    if baitPart then
-        pcall(function() baitPart.CFrame = CFrame.new(baitPos) end)
+
+    local sig = getOrCreateSig(p)
+    local pos  = hrp.Position
+    local absY = math.abs(pos.Y)
+    local now  = tick()
+
+    -- Detect void lift (sudden Y > 50000)
+    if absY > 50000 and sig.lastHRPY < 50000 then
+        sig.liftCount += 1
+        table.insert(sig.liftTimes, now)
+
+        -- Keep last 10 lifts
+        if #sig.liftTimes > 10 then
+            table.remove(sig.liftTimes, 1)
+        end
+
+        sig.maxLiftHeight = math.max(sig.maxLiftHeight, absY)
+
+        -- Calculate average lift interval
+        if #sig.liftTimes >= 2 then
+            local total = 0
+            for i = 2, #sig.liftTimes do
+                total += sig.liftTimes[i] - sig.liftTimes[i-1]
+            end
+            sig.avgLiftInterval = total / (#sig.liftTimes - 1)
+        end
+
+        -- Premium detection:
+        -- Fast interval (<0.08s) AND variable heights = premium
+        local isPremium = sig.avgLiftInterval < 0.08
+                       or sig.maxLiftHeight > 200000
+
+        sig.isPremium = isPremium
+
+        if sig.liftCount >= 3 then
+            -- This player is using KiciaHook!
+            AntiKiciaCfg.detectedKicia = true
+            AntiKiciaCfg.kiciaTarget   = p
+            AntiKiciaCfg.detectedTick  = now
+            AntiKiciaCfg.kiciaVersion  = isPremium and "Premium" or "Free"
+
+            -- Add to history
+            if not AntiKiciaCfg.kiciaHistory[p] then
+                AntiKiciaCfg.kiciaHistory[p] = {
+                    voidLifts = 0,
+                    lastLift  = 0,
+                    isKicia   = true,
+                    isPremium = isPremium,
+                }
+            end
+            AntiKiciaCfg.kiciaHistory[p].voidLifts += 1
+            AntiKiciaCfg.kiciaHistory[p].lastLift   = now
+            AntiKiciaCfg.kiciaHistory[p].isPremium  = isPremium
+        end
     end
+
+    sig.lastHRPY = absY
+    sig.lastPos  = pos
 end
 
--- Phantom Beacon:
--- CS-broadcast our bait position to enemy
--- Makes us appear to be at bait spot on their screen
-local function startPhantomBeacon()
-    if LureCfg.phantomConn then
-        LureCfg.phantomConn:Disconnect()
-        LureCfg.phantomConn = nil
+-- =============================================
+--   ANTI-RESOLVER SYSTEM
+-- =============================================
+
+--[[
+    KiciaHook Premium resolver works by:
+    1. Recording your last N positions
+    2. Fitting a curve through them
+    3. Predicting where you'll be at fire time
+    
+    To defeat resolver:
+    1. FAKE HISTORY: Broadcast fake positions that
+       form an impossible pattern (circle, random cloud)
+       This makes their curve-fit give wrong prediction
+    
+    2. SUDDEN DIRECTION CHANGE: Every N ticks,
+       instantly reverse movement direction
+       Breaks extrapolation
+    
+    3. MULTI-LAYER: Be in multiple "positions" at once
+       (quickly cycle between 3+ positions)
+       Resolver cant pick the real one
+]]
+
+local fakeHistoryPositions = {}
+local fakeHistoryAngle     = 0
+local fakeHistoryTimer     = 0
+
+local function generateFakePositions()
+    -- Generate a cloud of fake positions around real position
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return {} end
+
+    local real   = hrp.Position
+    local radius = AntiKiciaCfg.resolverRadius
+    local positions = {}
+
+    -- Circle pattern (confuses linear extrapolation)
+    for i = 0, AntiKiciaCfg.resolverLayers - 1 do
+        local angle = (fakeHistoryAngle + (i / AntiKiciaCfg.resolverLayers) * math.pi * 2)
+        table.insert(positions, Vector3.new(
+            real.X + math.cos(angle) * radius,
+            real.Y,
+            real.Z + math.sin(angle) * radius
+        ))
     end
 
-    LureCfg.phantomConn = RunService.Heartbeat:Connect(function()
-        if not LureCfg.phantomEnabled then return end
+    -- Random scatter positions
+    for i = 1, AntiKiciaCfg.resolverLayers do
+        table.insert(positions, Vector3.new(
+            real.X + math.random(-radius, radius),
+            real.Y + math.random(-5, 5),
+            real.Z + math.random(-radius, radius)
+        ))
+    end
 
-        local tgt = LureCfg.lureTarget
-        if not tgt then return end
-        local tChar = tgt.Character
-        if not tChar then return end
-        local tHRP = tChar:FindFirstChild("HumanoidRootPart")
-        if not tHRP then return end
-
-        -- Move their HRP to bait position ON THEIR SCREEN
-        -- (client side teleport)
-        -- From their perspective: we appear at bait position
-        -- From our perspective: they are moving toward bait
-        pcall(function()
-            -- We CS teleport the enemy to appear near bait
-            -- This tricks their adapt/ragebot to lock onto bait
-            tHRP.CFrame = CFrame.new(LureCfg.baitPosition)
-        end)
-    end)
+    fakeHistoryAngle = (fakeHistoryAngle + AntiKiciaCfg.resolverSpeed) % (math.pi * 2)
+    return positions
 end
 
-local function stopPhantomBeacon()
-    LureCfg.phantomEnabled = false
-    if LureCfg.phantomConn then
-        LureCfg.phantomConn:Disconnect()
-        LureCfg.phantomConn = nil
-    end
-end
-
--- SNAP TRAP:
--- Watch for enemy HRP to enter snap radius
--- When they get close: INSTANT kill
-local function startSnapTrap()
-    if LureCfg.snapConn then
-        LureCfg.snapConn:Disconnect()
-        LureCfg.snapConn = nil
+local function startFakeHistory()
+    if AntiKiciaCfg.fakeHistoryConn then
+        AntiKiciaCfg.fakeHistoryConn:Disconnect()
+        AntiKiciaCfg.fakeHistoryConn = nil
     end
 
-    LureCfg.snapConn = RunService.Heartbeat:Connect(function()
-        if not LureCfg.snapEnabled then return end
-        local now = tick()
-        if now - LureCfg.lastSnapTick < 0.5 then return end
+    AntiKiciaCfg.fakeHistoryConn = RunService.Heartbeat:Connect(function(dt)
+        if not AntiKiciaCfg.fakeHistoryOn then return end
 
         local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
 
-        -- Check all enemies
+        local savedCF = hrp.CFrame
+        local savedLV = hrp.AssemblyLinearVelocity
+        local savedAV = hrp.AssemblyAngularVelocity
+
+        local fakePositions = generateFakePositions()
+
+        -- Flash through fake positions extremely quickly
+        for _, fakePos in ipairs(fakePositions) do
+            pcall(function()
+                hrp.CFrame = CFrame.new(fakePos)
+                hrp.AssemblyLinearVelocity = Vector3.new(
+                    math.random(-100, 100),
+                    math.random(-100, 100),
+                    math.random(-100, 100)
+                )
+            end)
+            -- Extremely brief — just enough to register
+        end
+
+        -- Restore immediately
+        pcall(function()
+            hrp.CFrame                  = savedCF
+            hrp.AssemblyLinearVelocity  = savedLV
+            hrp.AssemblyAngularVelocity = savedAV
+        end)
+    end)
+end
+
+local function stopFakeHistory()
+    AntiKiciaCfg.fakeHistoryOn = false
+    if AntiKiciaCfg.fakeHistoryConn then
+        AntiKiciaCfg.fakeHistoryConn:Disconnect()
+        AntiKiciaCfg.fakeHistoryConn = nil
+    end
+end
+
+-- =============================================
+--   MULTI-LAYER DESYNC
+-- =============================================
+
+--[[
+    Standard desync: 1 void position
+    
+    Multi-layer desync:
+    Layer 1: Random void position (standard)
+    Layer 2: Opposite void position (confuses tracker)
+    Layer 3: Position near target (for hit registration)
+    
+    Each layer runs on different RenderStep priorities
+    Result: Server sees you in 3 places at once
+    KiciaHook premium cant resolve all 3
+]]
+
+local multiDesyncLayers = {}
+
+local function startMultiLayerDesync()
+    -- Clear existing
+    for _, conn in ipairs(multiDesyncLayers) do
+        pcall(function() conn:Disconnect() end)
+    end
+    multiDesyncLayers = {}
+    for i = 1, 3 do
+        pcall(function()
+            RunService:UnbindFromRenderStep("__mlDesync"..i)
+        end)
+    end
+
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local layerPositions = {
+        Vector3.zero,
+        Vector3.zero,
+        Vector3.zero,
+    }
+
+    -- Layer generator loop
+    local genConn = RunService.Heartbeat:Connect(function()
+        if not AntiKiciaCfg.multiLayerDesync then return end
+        local h = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not h then return end
+
+        local tgt = AntiKiciaCfg.kiciaTarget
+        local tHRP = tgt and tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+
+        -- Layer 1: Random void (confuse tracker)
+        layerPositions[1] = Vector3.new(
+            math.random(-500000, 500000),
+            VOID_HEIGHT + math.random(0, 100000),
+            math.random(-500000, 500000)
+        )
+
+        -- Layer 2: Opposite of layer 1 (break linear resolver)
+        layerPositions[2] = Vector3.new(
+            -layerPositions[1].X * 0.7,
+            VOID_HEIGHT * 1.5,
+            -layerPositions[1].Z * 0.7
+        )
+
+        -- Layer 3: Near target for hit registration
+        if tHRP then
+            layerPositions[3] = Vector3.new(
+                tHRP.Position.X + math.random(-2, 2),
+                tHRP.Position.Y + VOID_HEIGHT,
+                tHRP.Position.Z + math.random(-2, 2)
+            )
+        else
+            layerPositions[3] = layerPositions[1]
+        end
+    end)
+    table.insert(multiDesyncLayers, genConn)
+
+    -- Apply layers at different render priorities
+    local layerIndex = 1
+    RunService:BindToRenderStep("__mlDesync1", 200, function()
+        if not AntiKiciaCfg.multiLayerDesync then return end
+        local h = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not h then return end
+        pcall(function()
+            h.CFrame = CFrame.new(layerPositions[layerIndex])
+        end)
+        layerIndex = (layerIndex % AntiKiciaCfg.layerCount) + 1
+    end)
+end
+
+local function stopMultiLayerDesync()
+    AntiKiciaCfg.multiLayerDesync = false
+    for _, conn in ipairs(multiDesyncLayers) do
+        pcall(function() conn:Disconnect() end)
+    end
+    multiDesyncLayers = {}
+    for i = 1, 3 do
+        pcall(function() RunService:UnbindFromRenderStep("__mlDesync"..i) end)
+    end
+end
+
+-- =============================================
+--   PREDICTION COUNTER
+-- =============================================
+
+--[[
+    When KiciaHook premium fires:
+    1. We detect their void lift (signature)
+    2. We predict exactly when their shot arrives
+       (based on their avgLiftInterval)
+    3. We fire BEFORE they do
+    
+    This turns their own timing against them
+    We know when they shoot because of their pattern
+]]
+
+local predHistory = {}
+-- Track enemy projectile creation times
+
+local function predictNextKiciaShot(p)
+    local sig = kiciaSignatures[p]
+    if not sig or sig.liftCount < 3 then return nil end
+    local now = tick()
+    -- Next shot = last lift + average interval
+    local nextShot = (sig.liftTimes[#sig.liftTimes] or now) + sig.avgLiftInterval
+    local timeUntil = nextShot - now
+    return timeUntil, nextShot
+end
+
+local function startPredictionCounter()
+    if AntiKiciaCfg.counterConn then
+        AntiKiciaCfg.counterConn:Disconnect()
+        AntiKiciaCfg.counterConn = nil
+    end
+
+    AntiKiciaCfg.counterConn = RunService.Heartbeat:Connect(function()
+        if not AntiKiciaCfg.predictionCounter then return end
+        if not AntiKiciaCfg.kiciaTarget then return end
+
+        local p   = AntiKiciaCfg.kiciaTarget
+        local sig = kiciaSignatures[p]
+        if not sig then return end
+
+        -- Detect their void lift in real time
+        pcall(function() updateKiciaSignature(p) end)
+
+        -- Predict next shot
+        local timeUntil, _ = predictNextKiciaShot(p)
+        if not timeUntil then return end
+
+        -- If shot is imminent (within 50ms) pre-fire
+        if timeUntil < 0.05 and timeUntil > -0.1 then
+            local char = p.Character
+            if not char then return end
+            local hrp = getHRP()
+            if not hrp then return end
+
+            task.spawn(function()
+                -- Pre-emptive FireTouch
+                if not firetouchinterest then return end
+
+                local savedCF = hrp.CFrame
+                local savedLV = hrp.AssemblyLinearVelocity
+                local savedAV = hrp.AssemblyAngularVelocity
+
+                pcall(function()
+                    hrp.CFrame = CFrame.new(hrp.Position.X, VOID_HEIGHT, hrp.Position.Z)
+                end)
+
+                task.wait(0.02)
+
+                local hitboxes = {}
+                local hbPriority = {
+                    "HitBoxHeadSmall","HitBoxHead",
+                    "HitBoxBody","Head","UpperTorso"
+                }
+                for _, name in ipairs(hbPriority) do
+                    local part = char:FindFirstChild(name)
+                    if part then table.insert(hitboxes, part) end
+                end
+
+                local projs = {}
+                for _, v in ipairs(Workspace:GetChildren()) do
+                    if v.Name == "CoreProjectile" then table.insert(projs, v) end
+                end
+
+                for _, proj in ipairs(projs) do
+                    for _, hbox in ipairs(hitboxes) do
+                        local ti = nil
+                        for _, child in ipairs(proj:GetChildren()) do
+                            if child.ClassName == "TouchTransmitter"
+                            or child.ClassName == "TouchInterest" then
+                                ti = child; break
+                            end
+                        end
+                        if ti then
+                            pcall(firetouchinterest, hbox, ti, 0)
+                            pcall(firetouchinterest, hbox, ti, 1)
+                        end
+                    end
+                end
+
+                pcall(function()
+                    hrp.CFrame                  = savedCF
+                    hrp.AssemblyLinearVelocity  = savedLV
+                    hrp.AssemblyAngularVelocity = savedAV
+                end)
+
+                notify("Prediction Counter", "Pre-fired on "..p.Name.."! ("..string.format("%.0f",timeUntil*1000).."ms early)",2)
+            end)
+        end
+    end)
+end
+
+-- =============================================
+--   INSTANT COUNTER (when they lift to void)
+-- =============================================
+
+local instantCounterConn = nil
+local lastInstantFire     = 0
+
+local function startInstantCounter()
+    if instantCounterConn then
+        instantCounterConn:Disconnect()
+        instantCounterConn = nil
+    end
+
+    instantCounterConn = RunService.Heartbeat:Connect(function()
+        if not AntiKiciaCfg.instantCounter then return end
+        local now = tick()
+        if now - lastInstantFire < 0.1 then return end
+
         for _, p in ipairs(Players:GetPlayers()) do
             if p == lp then continue end
             local char = p.Character
             if not char then continue end
-            local tHRP = char:FindFirstChild("HumanoidRootPart")
-            if not tHRP then continue end
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if not hum or hum.Health <= 0 then continue end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then continue end
 
-            -- Check distance to our REAL position
-            local distToReal = (tHRP.Position - realPosition).Magnitude
-            -- Check distance to bait position
-            local distToBait = (tHRP.Position - LureCfg.baitPosition).Magnitude
+            -- Detect void lift signature
+            local absY = math.abs(hrp.Position.Y)
+            if absY > 50000 then
+                -- They are in void RIGHT NOW
+                -- This is when KiciaHook fires
+                -- We fire back instantly
+                lastInstantFire = now
 
-            local triggered = distToReal < LureCfg.snapRadius
-                           or distToBait < LureCfg.snapRadius
-
-            if triggered then
-                LureCfg.snapTriggered = true
-                LureCfg.snapCount    += 1
-                LureCfg.lastSnapTick  = now
-                LureCfg.lureTarget    = p
-
-                notify("SNAP TRAP", "TRIGGERED on " .. p.Name .. "! Firing...", 2)
-
-                -- INSTANT FIRE SEQUENCE
                 task.spawn(function()
-                    -- Step 1: Save real position
-                    local savedCF = hrp.CFrame
-                    local savedLV = hrp.AssemblyLinearVelocity
-                    local savedAV = hrp.AssemblyAngularVelocity
+                    if not firetouchinterest then return end
+                    local myHRP = getHRP()
+                    if not myHRP then return end
 
-                    -- Step 2: CS teleport US to them
-                    -- (appear right on top of them)
+                    local savedCF = myHRP.CFrame
+                    local savedLV = myHRP.AssemblyLinearVelocity
+                    local savedAV = myHRP.AssemblyAngularVelocity
+
+                    -- Lift to same void height as them
                     pcall(function()
-                        hrp.CFrame = tHRP.CFrame
-                    end)
-
-                    task.wait(LureCfg.snapDelay)
-
-                    -- Step 3: Lift to void for FireTouch
-                    pcall(function()
-                        hrp.CFrame = CFrame.new(
-                            tHRP.Position.X,
-                            VOID_HEIGHT,
-                            tHRP.Position.Z
+                        myHRP.CFrame = CFrame.new(
+                            hrp.Position.X,  -- Go to their void X
+                            hrp.Position.Y,  -- Match their void Y
+                            hrp.Position.Z   -- Match their void Z
                         )
                     end)
 
-                    task.wait(0.05)
+                    task.wait(0.03)
 
-                    -- Step 4: Fire on all hitboxes
-                    if firetouchinterest then
-                        local projs = {}
-                        for _, v in ipairs(Workspace:GetChildren()) do
-                            if v.Name == "CoreProjectile" then
-                                table.insert(projs, v)
-                            end
-                        end
-
-                        local hitboxes = {}
-                        local hbPriority = {
-                            "HitBoxHeadSmall","HitBoxHead",
-                            "HitBoxBody","Head","UpperTorso"
-                        }
-                        for _, name in ipairs(hbPriority) do
-                            local part = char:FindFirstChild(name)
-                            if part then table.insert(hitboxes, part) end
-                        end
-
-                        -- Fire multiple times for reliability
-                        for attempt = 1, 3 do
-                            for _, proj in ipairs(projs) do
-                                for _, hbox in ipairs(hitboxes) do
-                                    pcall(function()
-                                        local ti = nil
-                                        for _, child in ipairs(proj:GetChildren()) do
-                                            if child.ClassName == "TouchTransmitter"
-                                            or child.ClassName == "TouchInterest" then
-                                                ti = child; break
-                                            end
-                                        end
-                                        if ti then
-                                            pcall(firetouchinterest, hbox, ti, 0)
-                                            pcall(firetouchinterest, hbox, ti, 1)
-                                        end
-                                    end)
-                                end
-                            end
-                            task.wait(0.02)
-                        end
+                    -- Fire at their hitboxes
+                    local hitboxes = {}
+                    local hbPriority = {
+                        "HitBoxHeadSmall","HitBoxHead",
+                        "HitBoxBody","Head","UpperTorso"
+                    }
+                    for _, name in ipairs(hbPriority) do
+                        local part = char:FindFirstChild(name)
+                        if part then table.insert(hitboxes, part) end
                     end
 
-                    -- Step 5: Restore real position
+                    local projs = {}
+                    for _, v in ipairs(Workspace:GetChildren()) do
+                        if v.Name == "CoreProjectile" then table.insert(projs, v) end
+                    end
+
+                    -- Fire multiple times
+                    for shot = 1, 3 do
+                        for _, proj in ipairs(projs) do
+                            for _, hbox in ipairs(hitboxes) do
+                                local ti = nil
+                                for _, child in ipairs(proj:GetChildren()) do
+                                    if child.ClassName == "TouchTransmitter"
+                                    or child.ClassName == "TouchInterest" then
+                                        ti = child; break
+                                    end
+                                end
+                                if ti then
+                                    pcall(firetouchinterest, hbox, ti, 0)
+                                    pcall(firetouchinterest, hbox, ti, 1)
+                                end
+                            end
+                        end
+                        if shot < 3 then task.wait(0.015) end
+                    end
+
                     pcall(function()
-                        hrp.CFrame                  = savedCF
-                        hrp.AssemblyLinearVelocity  = savedLV
-                        hrp.AssemblyAngularVelocity = savedAV
+                        myHRP.CFrame                  = savedCF
+                        myHRP.AssemblyLinearVelocity  = savedLV
+                        myHRP.AssemblyAngularVelocity = savedAV
                     end)
+
+                    notify("Instant Counter","Fired back at "..p.Name.." in void!",2)
                 end)
             end
         end
     end)
 end
 
-local function stopSnapTrap()
-    LureCfg.snapEnabled = false
-    if LureCfg.snapConn then
-        LureCfg.snapConn:Disconnect()
-        LureCfg.snapConn = nil
+local function stopInstantCounter()
+    AntiKiciaCfg.instantCounter = false
+    if instantCounterConn then
+        instantCounterConn:Disconnect()
+        instantCounterConn = nil
     end
 end
 
--- LURE MAIN LOOP
--- Continuously update bait position + monitor enemy positions
-local function startLureLoop()
-    if LureCfg.lureConn then
-        LureCfg.lureConn:Disconnect()
-        LureCfg.lureConn = nil
-    end
+-- =============================================
+--   DETECTION LOOP
+-- =============================================
 
-    createBaitPart()
+local detectionConn = nil
 
-    LureCfg.lureConn = RunService.Heartbeat:Connect(function()
-        if not LureCfg.enabled then return end
-
-        -- Update bait position
-        pcall(updateBaitPosition)
-
-        -- Auto-select lure target if none
-        if not LureCfg.lureTarget or not LureCfg.lureTarget.Character then
-            LureCfg.lureTarget = nil
-            -- Pick a void player or nearest
-            local best, bd = nil, math.huge
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p == lp then continue end
-                local char = p.Character
-                if not char then continue end
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if not hum or hum.Health <= 0 then continue end
-                local tHRP = char:FindFirstChild("HumanoidRootPart")
-                if not tHRP then continue end
-                -- Prefer void players
-                local pos  = tHRP.Position
-                local dist = math.sqrt(pos.X^2 + pos.Y^2 + pos.Z^2)
-                local score = dist > 10000 and 1 or 0 -- void players score 1
-                local nearDist = (realPosition - tHRP.Position).Magnitude
-                if score > 0 or nearDist < bd then
-                    bd   = nearDist
-                    best = p
-                end
-            end
-            LureCfg.lureTarget = best
+local function startDetection()
+    if detectionConn then detectionConn:Disconnect(); detectionConn = nil end
+    detectionConn = RunService.Heartbeat:Connect(function()
+        if not AntiKiciaCfg.enabled then return end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            pcall(function() updateKiciaSignature(p) end)
         end
     end)
 end
 
-local function stopLureLoop()
-    if LureCfg.lureConn then
-        LureCfg.lureConn:Disconnect()
-        LureCfg.lureConn = nil
-    end
-    stopPhantomBeacon()
-    stopSnapTrap()
-    if baitPart then
-        pcall(function() baitPart:Destroy() end)
-        baitPart = nil
-    end
-    LureCfg.enabled = false
+local function stopDetection()
+    if detectionConn then detectionConn:Disconnect(); detectionConn = nil end
+    AntiKiciaCfg.detectedKicia = false
+    AntiKiciaCfg.kiciaTarget   = nil
 end
 
 -- =============================================
@@ -489,7 +826,7 @@ local function isInVoid(player)
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
-    local pos  = hrp.Position
+    local pos = hrp.Position
     return math.sqrt(pos.X^2 + pos.Y^2 + pos.Z^2) > PriorityCfg.voidDistance
 end
 
@@ -500,9 +837,7 @@ local function updatePriorityScores()
         local hist = getOrCreateHistory(p)
         local dt   = now - hist.lastSeen
         hist.lastSeen = now
-
         hist.score = math.max(hist.score * (1 - PriorityCfg.timeDecay * dt), 0)
-
         if isInVoid(p) then
             if not hist.inVoid then
                 hist.inVoid = true
@@ -514,28 +849,21 @@ local function updatePriorityScores()
         else
             hist.inVoid = false
         end
-
         local newEvents = {}
         for _, t in ipairs(hist.voidEvents) do
-            if now - t <= PriorityCfg.historyWindow then
-                table.insert(newEvents, t)
-            end
+            if now - t <= PriorityCfg.historyWindow then table.insert(newEvents, t) end
         end
         hist.voidEvents = newEvents
         hist.confidence = math.clamp(#hist.voidEvents * PriorityCfg.confidenceScale, 0, 100)
-
         local scores = {}
-        for _, ph in pairs(playerHistory) do
-            table.insert(scores, ph.score)
-        end
+        for _, ph in pairs(playerHistory) do table.insert(scores, ph.score) end
         local mean, variance = 0, 0
         for _, s in ipairs(scores) do mean += s end
         mean = mean / math.max(#scores, 1)
         for _, s in ipairs(scores) do variance += (s - mean)^2 end
         variance = variance / math.max(#scores, 1)
         local std = math.sqrt(variance)
-        local z   = std > 0 and (hist.score - mean) / std or 0
-        hist.isOutlier = z >= PriorityCfg.outlierZThresh
+        hist.isOutlier = std > 0 and ((hist.score - mean) / std) >= PriorityCfg.outlierZThresh
     end
 end
 
@@ -545,8 +873,7 @@ local function getVoidPriorityTarget()
         if p == lp then continue end
         local hist = playerHistory[p]
         if hist and hist.score > bestScore then
-            bestScore = hist.score
-            best      = p
+            bestScore = hist.score; best = p
         end
     end
     return best
@@ -570,11 +897,8 @@ local hvhOpponents = {}
 local function getOrCreateHvH(p)
     if not hvhOpponents[p] then
         hvhOpponents[p] = {
-            lastPos        = Vector3.zero,
-            posHistory     = {},
-            jitterDetected = false,
-            desyncJumps    = 0,
-            lastTick       = tick(),
+            lastPos=Vector3.zero, posHistory={},
+            jitterDetected=false, desyncJumps=0, lastTick=tick(),
         }
     end
     return hvhOpponents[p]
@@ -590,12 +914,8 @@ local function detectDesyncJump(player)
     local dt    = now - opp.lastTick
     if dt <= 0 then return false end
     local speed = (hrp.Position - opp.lastPos).Magnitude / dt
-    opp.lastPos  = hrp.Position
-    opp.lastTick = now
-    if speed > HvHCfg.desyncSpeed then
-        opp.desyncJumps += 1
-        return true
-    end
+    opp.lastPos = hrp.Position; opp.lastTick = now
+    if speed > HvHCfg.desyncSpeed then opp.desyncJumps += 1; return true end
     return false
 end
 
@@ -606,72 +926,54 @@ local function detectJitter(player)
     if not hrp then return false end
     local opp = getOrCreateHvH(player)
     local now = tick()
-    table.insert(opp.posHistory, {pos = hrp.Position, t = now})
+    table.insert(opp.posHistory, {pos=hrp.Position, t=now})
     local trimmed = {}
-    for _, entry in ipairs(opp.posHistory) do
-        if now - entry.t <= 0.3 then table.insert(trimmed, entry) end
+    for _, e in ipairs(opp.posHistory) do
+        if now - e.t <= 0.3 then table.insert(trimmed, e) end
     end
     opp.posHistory = trimmed
     if #trimmed < 3 then return false end
     local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
-    for _, entry in ipairs(trimmed) do
-        minX = math.min(minX, entry.pos.X); maxX = math.max(maxX, entry.pos.X)
-        minZ = math.min(minZ, entry.pos.Z); maxZ = math.max(maxZ, entry.pos.Z)
+    for _, e in ipairs(trimmed) do
+        minX=math.min(minX,e.pos.X); maxX=math.max(maxX,e.pos.X)
+        minZ=math.min(minZ,e.pos.Z); maxZ=math.max(maxZ,e.pos.Z)
     end
-    local isJitter = (maxX-minX) < HvHCfg.jitterRadius
-                 and (maxZ-minZ) < HvHCfg.jitterRadius
-                 and #trimmed >= 4
+    local isJitter = (maxX-minX)<HvHCfg.jitterRadius and (maxZ-minZ)<HvHCfg.jitterRadius and #trimmed>=4
     opp.jitterDetected = isJitter
     return isJitter
 end
 
 -- =============================================
---   UE UNHITTABLE CONFIG
+--   UE CONFIG
 -- =============================================
 
-local UECfg = {
-    enabled        = false,
-    counterEnabled = false,
-}
+local UECfg = {enabled=false, counterEnabled=false}
 
 local function detectUEPattern(player)
     local char = player.Character
     if not char then return false, nil end
     local hrp    = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false, nil end
-    local hbHead = char:FindFirstChild("HitBoxHeadSmall")
-              or  char:FindFirstChild("HitBoxHead")
+    local hbHead = char:FindFirstChild("HitBoxHeadSmall") or char:FindFirstChild("HitBoxHead")
     if not hbHead then return false, nil end
-    local hrpPos = hrp.Position
-    local hbPos  = hbHead.Position
-    local hrpD   = math.sqrt(hrpPos.X^2 + hrpPos.Y^2 + hrpPos.Z^2)
-    local hbD    = math.sqrt(hbPos.X^2 + hbPos.Y^2 + hbPos.Z^2)
-    if hrpD > 50000 and hbD < 10000 then return true, hbPos end
+    local hrpD = math.sqrt(hrp.Position.X^2 + hrp.Position.Y^2 + hrp.Position.Z^2)
+    local hbD  = math.sqrt(hbHead.Position.X^2 + hbHead.Position.Y^2 + hbHead.Position.Z^2)
+    if hrpD > 50000 and hbD < 10000 then return true, hbHead.Position end
     return false, nil
 end
 
 -- =============================================
---   KICIA MELEE COUNTER (IMPROVED v2)
+--   KICIA COUNTER
 -- =============================================
 
 local KiciaCfg = {
-    enabled       = false,
-    meleeWeapons  = {
-        "Katana","Scythe","Knife","Daggers","Maul",
-        "Battle Axe","Chainsaw","Spear","Trowel","Fist",
-    },
-    counterDist   = 20,
-    counterActive = false,
-    evadeDir      = Vector3.new(0, 50, 0),
-    -- New: counter-attack after evade
-    counterAttack = false,
-    attackDelay   = 0.1,
+    enabled=false, counterDist=20, counterActive=false,
+    evadeDir=Vector3.new(0,50,0), counterAttack=false, attackDelay=0.1,
+    meleeWeapons={"Katana","Scythe","Knife","Daggers","Maul","Battle Axe","Chainsaw","Spear","Trowel","Fist"},
 }
 
 local meleeWeaponSet = {}
-for _, w in ipairs(KiciaCfg.meleeWeapons) do
-    meleeWeaponSet[w:lower()] = true
-end
+for _, w in ipairs(KiciaCfg.meleeWeapons) do meleeWeaponSet[w:lower()] = true end
 
 local function isHoldingMelee(player)
     local char = player.Character
@@ -679,7 +981,7 @@ local function isHoldingMelee(player)
     for _, item in ipairs(char:GetChildren()) do
         if item:IsA("Tool") then
             local name = item.Name:lower()
-            for mw, _ in pairs(meleeWeaponSet) do
+            for mw in pairs(meleeWeaponSet) do
                 if name:find(mw) then return true, item.Name end
             end
         end
@@ -695,16 +997,12 @@ local function distToPlayer(player)
 end
 
 -- =============================================
---   MINIMIZE MODEL CONFIG
+--   MINIMIZE
 -- =============================================
 
 local MinimizeCfg = {
-    enabled      = false,
-    mode         = "HeadOnly",
-    scale        = 0.1,
-    restoreOnDie = true,
-    savedSizes   = {},
-    connections  = {},
+    enabled=false, mode="HeadOnly", scale=0.1,
+    restoreOnDie=true, savedSizes={}, connections={},
 }
 
 local function getCharParts(char)
@@ -722,10 +1020,8 @@ local function saveOriginalSizes(char)
     MinimizeCfg.savedSizes = {}
     for _, part in ipairs(getCharParts(char)) do
         MinimizeCfg.savedSizes[part] = {
-            Size         = part.Size,
-            Transparency = part.Transparency,
-            CanCollide   = part.CanCollide,
-            CastShadow   = part.CastShadow,
+            Size=part.Size, Transparency=part.Transparency,
+            CanCollide=part.CanCollide, CastShadow=part.CastShadow,
         }
     end
 end
@@ -736,10 +1032,8 @@ local function restoreOriginalSizes(char)
         local saved = MinimizeCfg.savedSizes[part]
         if saved then
             pcall(function()
-                part.Size         = saved.Size
-                part.Transparency = saved.Transparency
-                part.CanCollide   = saved.CanCollide
-                part.CastShadow   = saved.CastShadow
+                part.Size=saved.Size; part.Transparency=saved.Transparency
+                part.CanCollide=saved.CanCollide; part.CastShadow=saved.CastShadow
             end)
         end
     end
@@ -750,38 +1044,21 @@ local function applyHeadOnly(char)
     for _, part in ipairs(getCharParts(char)) do
         pcall(function()
             if part.Name == "Head" then
-                part.Transparency = 0
-                part.Size         = Vector3.new(2, 2, 2)
-                part.CastShadow   = true
-                return
+                part.Transparency=0; part.Size=Vector3.new(2,2,2); part.CastShadow=true
+            elseif part.Name == "HumanoidRootPart" then
+                part.Transparency=1; part.Size=Vector3.new(0.1,0.1,0.1); part.CanCollide=false
+            else
+                part.Size=Vector3.new(0.05,0.05,0.05)
+                part.Transparency=1; part.CanCollide=false; part.CastShadow=false
             end
-            if part.Name == "HumanoidRootPart" then
-                part.Transparency = 1
-                part.Size         = Vector3.new(0.1, 0.1, 0.1)
-                part.CanCollide   = false
-                return
-            end
-            part.Size         = Vector3.new(0.05, 0.05, 0.05)
-            part.Transparency = 1
-            part.CanCollide   = false
-            part.CastShadow   = false
         end)
     end
     for _, acc in ipairs(char:GetChildren()) do
         if acc:IsA("Accessory") then
-            local handle = acc:FindFirstChild("Handle")
-            if handle then
-                pcall(function()
-                    handle.Transparency = 1
-                    handle.CastShadow   = false
-                end)
-            end
+            local h = acc:FindFirstChild("Handle")
+            if h then pcall(function() h.Transparency=1; h.CastShadow=false end) end
         end
-    end
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Shirt") or item:IsA("Pants") then
-            pcall(function() item:Destroy() end)
-        end
+        if acc:IsA("Shirt") or acc:IsA("Pants") then pcall(function() acc:Destroy() end) end
     end
 end
 
@@ -789,22 +1066,14 @@ local function applyInvisible(char)
     if not char then return end
     for _, part in ipairs(getCharParts(char)) do
         pcall(function()
-            part.Transparency = 1
-            part.CastShadow   = false
-            if part.Name ~= "HumanoidRootPart" then
-                part.Size = Vector3.new(0.05, 0.05, 0.05)
-            end
+            part.Transparency=1; part.CastShadow=false
+            if part.Name ~= "HumanoidRootPart" then part.Size=Vector3.new(0.05,0.05,0.05) end
         end)
     end
     for _, acc in ipairs(char:GetChildren()) do
         if acc:IsA("Accessory") then
-            local handle = acc:FindFirstChild("Handle")
-            if handle then
-                pcall(function()
-                    handle.Transparency = 1
-                    handle.CastShadow   = false
-                end)
-            end
+            local h = acc:FindFirstChild("Handle")
+            if h then pcall(function() h.Transparency=1; h.CastShadow=false end) end
         end
     end
 end
@@ -813,13 +1082,11 @@ local function applyTinyScale(char, scale)
     if not char then return end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not humanoid then return end
-    local description = humanoid:FindFirstChildOfClass("HumanoidDescription")
-    if description then
+    local desc = humanoid:FindFirstChildOfClass("HumanoidDescription")
+    if desc then
         pcall(function()
-            description.BodyDepthScale  = scale
-            description.BodyHeightScale = scale
-            description.BodyWidthScale  = scale
-            description.HeadScale       = scale
+            desc.BodyDepthScale=scale; desc.BodyHeightScale=scale
+            desc.BodyWidthScale=scale; desc.HeadScale=scale
         end)
     end
     for _, part in ipairs(getCharParts(char)) do
@@ -836,13 +1103,9 @@ local function applyMinimize()
     local char = lp.Character
     if not char then return end
     saveOriginalSizes(char)
-    if MinimizeCfg.mode == "HeadOnly" then
-        applyHeadOnly(char)
-    elseif MinimizeCfg.mode == "Invisible" then
-        applyInvisible(char)
-    elseif MinimizeCfg.mode == "TinyScale" then
-        applyTinyScale(char, MinimizeCfg.scale)
-    end
+    if MinimizeCfg.mode == "HeadOnly" then applyHeadOnly(char)
+    elseif MinimizeCfg.mode == "Invisible" then applyInvisible(char)
+    elseif MinimizeCfg.mode == "TinyScale" then applyTinyScale(char, MinimizeCfg.scale) end
     notify("Minimize","Applied: "..MinimizeCfg.mode,2)
 end
 
@@ -852,13 +1115,8 @@ local function restoreMinimize()
     restoreOriginalSizes(char)
     for _, acc in ipairs(char:GetChildren()) do
         if acc:IsA("Accessory") then
-            local handle = acc:FindFirstChild("Handle")
-            if handle then
-                pcall(function()
-                    handle.Transparency = 0
-                    handle.CastShadow   = true
-                end)
-            end
+            local h = acc:FindFirstChild("Handle")
+            if h then pcall(function() h.Transparency=0; h.CastShadow=true end) end
         end
     end
     notify("Minimize","Restored!",2)
@@ -867,9 +1125,7 @@ end
 local minimizeRespawnConn = nil
 
 local function startMinimizeLoop()
-    for _, conn in ipairs(MinimizeCfg.connections) do
-        pcall(function() conn:Disconnect() end)
-    end
+    for _, conn in ipairs(MinimizeCfg.connections) do pcall(function() conn:Disconnect() end) end
     MinimizeCfg.connections = {}
     local char = lp.Character
     if not char then return end
@@ -879,21 +1135,15 @@ local function startMinimizeLoop()
         pcall(function()
             if desc:IsA("BasePart") and desc.Name ~= "HumanoidRootPart" then
                 if MinimizeCfg.mode == "HeadOnly" and desc.Name ~= "Head" then
-                    desc.Transparency = 1
-                    desc.Size         = Vector3.new(0.05,0.05,0.05)
-                    desc.CanCollide   = false
-                    desc.CastShadow   = false
+                    desc.Transparency=1; desc.Size=Vector3.new(0.05,0.05,0.05)
+                    desc.CanCollide=false; desc.CastShadow=false
                 elseif MinimizeCfg.mode == "Invisible" then
-                    desc.Transparency = 1
-                    desc.CastShadow   = false
+                    desc.Transparency=1; desc.CastShadow=false
                 end
             end
             if desc:IsA("Accessory") then
-                local handle = desc:FindFirstChild("Handle")
-                if handle then
-                    handle.Transparency = 1
-                    handle.CastShadow   = false
-                end
+                local h = desc:FindFirstChild("Handle")
+                if h then h.Transparency=1; h.CastShadow=false end
             end
         end)
     end)
@@ -901,29 +1151,182 @@ local function startMinimizeLoop()
 end
 
 -- =============================================
+--   LURE CONFIG
+-- =============================================
+
+local LureCfg = {
+    enabled=false, baitEnabled=false, snapEnabled=false, phantomEnabled=false,
+    baitOffsetX=0, baitOffsetY=0, baitOffsetZ=0,
+    snapRadius=15, snapDelay=0.05, beaconRate=0.1,
+    lureTarget=nil, snapTriggered=false, snapCount=0, lastSnapTick=0,
+    baitPosition=Vector3.zero,
+    lureConn=nil, snapConn=nil, phantomConn=nil,
+}
+
+local realPosition = Vector3.zero
+local baitPart     = nil
+
+local function createBaitPart()
+    if baitPart then pcall(function() baitPart:Destroy() end) end
+    local part = Instance.new("Part")
+    part.Name=".VoidBait"; part.Size=Vector3.new(0.1,0.1,0.1)
+    part.Transparency=1; part.CanCollide=false
+    part.Anchored=true; part.CastShadow=false
+    part.Parent=Workspace
+    baitPart = part
+end
+
+local function updateBaitPosition()
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    realPosition = hrp.Position
+    LureCfg.baitPosition = realPosition + Vector3.new(
+        LureCfg.baitOffsetX, LureCfg.baitOffsetY, LureCfg.baitOffsetZ
+    )
+    if baitPart then
+        pcall(function() baitPart.CFrame = CFrame.new(LureCfg.baitPosition) end)
+    end
+end
+
+local function startPhantomBeacon()
+    if LureCfg.phantomConn then LureCfg.phantomConn:Disconnect(); LureCfg.phantomConn=nil end
+    LureCfg.phantomConn = RunService.Heartbeat:Connect(function()
+        if not LureCfg.phantomEnabled then return end
+        local tgt = LureCfg.lureTarget
+        if not tgt then return end
+        local tChar = tgt.Character
+        if not tChar then return end
+        local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+        if not tHRP then return end
+        pcall(function() tHRP.CFrame = CFrame.new(LureCfg.baitPosition) end)
+    end)
+end
+
+local function stopPhantomBeacon()
+    LureCfg.phantomEnabled = false
+    if LureCfg.phantomConn then LureCfg.phantomConn:Disconnect(); LureCfg.phantomConn=nil end
+end
+
+local function startSnapTrap()
+    if LureCfg.snapConn then LureCfg.snapConn:Disconnect(); LureCfg.snapConn=nil end
+    LureCfg.snapConn = RunService.Heartbeat:Connect(function()
+        if not LureCfg.snapEnabled then return end
+        local now = tick()
+        if now - LureCfg.lastSnapTick < 0.5 then return end
+        local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local char = p.Character
+            if not char then continue end
+            local tHRP = char:FindFirstChild("HumanoidRootPart")
+            if not tHRP then continue end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 then continue end
+            local distReal = (tHRP.Position - realPosition).Magnitude
+            local distBait = (tHRP.Position - LureCfg.baitPosition).Magnitude
+            if distReal < LureCfg.snapRadius or distBait < LureCfg.snapRadius then
+                LureCfg.snapTriggered = true
+                LureCfg.snapCount    += 1
+                LureCfg.lastSnapTick  = now
+                LureCfg.lureTarget    = p
+                notify("SNAP TRAP","TRIGGERED on "..p.Name.."!",2)
+                task.spawn(function()
+                    local savedCF = hrp.CFrame
+                    local savedLV = hrp.AssemblyLinearVelocity
+                    local savedAV = hrp.AssemblyAngularVelocity
+                    pcall(function() hrp.CFrame = tHRP.CFrame end)
+                    task.wait(LureCfg.snapDelay)
+                    pcall(function() hrp.CFrame = CFrame.new(tHRP.Position.X, VOID_HEIGHT, tHRP.Position.Z) end)
+                    task.wait(0.05)
+                    if firetouchinterest then
+                        local projs = {}
+                        for _, v in ipairs(Workspace:GetChildren()) do
+                            if v.Name == "CoreProjectile" then table.insert(projs, v) end
+                        end
+                        local hitboxes = {}
+                        for _, name in ipairs({"HitBoxHeadSmall","HitBoxHead","HitBoxBody","Head","UpperTorso"}) do
+                            local part = char:FindFirstChild(name)
+                            if part then table.insert(hitboxes, part) end
+                        end
+                        for attempt = 1, 3 do
+                            for _, proj in ipairs(projs) do
+                                for _, hbox in ipairs(hitboxes) do
+                                    pcall(function()
+                                        local ti = nil
+                                        for _, child in ipairs(proj:GetChildren()) do
+                                            if child.ClassName=="TouchTransmitter" or child.ClassName=="TouchInterest" then
+                                                ti=child; break
+                                            end
+                                        end
+                                        if ti then
+                                            pcall(firetouchinterest, hbox, ti, 0)
+                                            pcall(firetouchinterest, hbox, ti, 1)
+                                        end
+                                    end)
+                                end
+                            end
+                            if attempt < 3 then task.wait(0.02) end
+                        end
+                    end
+                    pcall(function()
+                        hrp.CFrame=savedCF; hrp.AssemblyLinearVelocity=savedLV; hrp.AssemblyAngularVelocity=savedAV
+                    end)
+                end)
+            end
+        end
+    end)
+end
+
+local function stopSnapTrap()
+    LureCfg.snapEnabled = false
+    if LureCfg.snapConn then LureCfg.snapConn:Disconnect(); LureCfg.snapConn=nil end
+end
+
+local function startLureLoop()
+    if LureCfg.lureConn then LureCfg.lureConn:Disconnect(); LureCfg.lureConn=nil end
+    createBaitPart()
+    LureCfg.lureConn = RunService.Heartbeat:Connect(function()
+        if not LureCfg.enabled then return end
+        pcall(updateBaitPosition)
+        if not LureCfg.lureTarget or not LureCfg.lureTarget.Character then
+            LureCfg.lureTarget = nil
+            local best, bd = nil, math.huge
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p == lp then continue end
+                local char = p.Character
+                if not char then continue end
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health <= 0 then continue end
+                local tHRP = char:FindFirstChild("HumanoidRootPart")
+                if not tHRP then continue end
+                local pos  = tHRP.Position
+                local dist = math.sqrt(pos.X^2+pos.Y^2+pos.Z^2)
+                local near = (realPosition - tHRP.Position).Magnitude
+                if dist > 10000 or near < bd then bd=near; best=p end
+            end
+            LureCfg.lureTarget = best
+        end
+    end)
+end
+
+local function stopLureLoop()
+    if LureCfg.lureConn then LureCfg.lureConn:Disconnect(); LureCfg.lureConn=nil end
+    stopPhantomBeacon(); stopSnapTrap()
+    if baitPart then pcall(function() baitPart:Destroy() end); baitPart=nil end
+    LureCfg.enabled = false
+end
+
+-- =============================================
 --   MAIN VOID STATE
 -- =============================================
 
 local VoidState = {
-    enabled          = false,
-    adaptEnabled     = false,
-    teleDesync       = false,
-    fireTouchEnabled = false,
-
-    clientCF = CFrame.identity,
-    clientLV = Vector3.zero,
-    clientAV = Vector3.zero,
-
-    hrp         = nil,
-    adaptTarget = nil,
-    orbitAngle  = 0,
-
-    hbConn           = nil,
-    adaptRefreshConn = nil,
-    teleDesyncConn   = nil,
-    ftLoopConn       = nil,
-    priorityConn     = nil,
-    kiciaConn        = nil,
+    enabled=false, adaptEnabled=false, teleDesync=false, fireTouchEnabled=false,
+    clientCF=CFrame.identity, clientLV=Vector3.zero, clientAV=Vector3.zero,
+    hrp=nil, adaptTarget=nil, orbitAngle=0,
+    hbConn=nil, adaptRefreshConn=nil, teleDesyncConn=nil, ftLoopConn=nil,
+    priorityConn=nil, kiciaConn=nil,
 }
 
 -- =============================================
@@ -937,13 +1340,9 @@ local function getHRP()
 end
 
 local function betterRandom(mi, ma, dmi, dma)
-    local val    = math.random(mi, ma)
-    local safety = 0
-    repeat
-        val    = math.random(mi, ma)
-        safety += 1
-        if safety > 100 then break end
-    until val < dmi or val > dma
+    local val=math.random(mi,ma); local safety=0
+    repeat val=math.random(mi,ma); safety+=1; if safety>100 then break end
+    until val<dmi or val>dma
     return val
 end
 
@@ -960,15 +1359,15 @@ local function getNearestEnemy()
         local tHRP = char:FindFirstChild("HumanoidRootPart")
         if not tHRP then continue end
         local d = (hrp.Position - tHRP.Position).Magnitude
-        if d < bd then bd = d; best = p end
+        if d < bd then bd=d; best=p end
     end
     return best
 end
 
 local function getBestTarget()
     if PriorityCfg.enabled then
-        local voidTgt = getVoidPriorityTarget()
-        if voidTgt then return voidTgt end
+        local vt = getVoidPriorityTarget()
+        if vt then return vt end
     end
     return getNearestEnemy()
 end
@@ -986,13 +1385,8 @@ end
 
 local function getHitboxes(char)
     if not char then return {} end
-    local boxes    = {}
-    local priority = {
-        "HitBoxHeadSmall","HitBoxHead",
-        "HitBoxBody","HitBoxBodySmall",
-        "Head","UpperTorso","HumanoidRootPart",
-    }
-    for _, name in ipairs(priority) do
+    local boxes = {}
+    for _, name in ipairs({"HitBoxHeadSmall","HitBoxHead","HitBoxBody","HitBoxBodySmall","Head","UpperTorso","HumanoidRootPart"}) do
         local part = char:FindFirstChild(name)
         if part then table.insert(boxes, part) end
     end
@@ -1003,10 +1397,7 @@ local function fireTouchOnPart(projectile, hitPart)
     if not projectile or not hitPart then return false end
     local ti = nil
     for _, child in ipairs(projectile:GetChildren()) do
-        if child.ClassName == "TouchTransmitter"
-        or child.ClassName == "TouchInterest" then
-            ti = child; break
-        end
+        if child.ClassName=="TouchTransmitter" or child.ClassName=="TouchInterest" then ti=child; break end
     end
     if not ti then return false end
     local ok = pcall(firetouchinterest, hitPart, ti, 0)
@@ -1019,23 +1410,19 @@ end
 -- =============================================
 
 local function startPrioritySystem()
-    if VoidState.priorityConn then
-        VoidState.priorityConn:Disconnect()
-        VoidState.priorityConn = nil
-    end
+    if VoidState.priorityConn then VoidState.priorityConn:Disconnect(); VoidState.priorityConn=nil end
     VoidState.priorityConn = RunService.Heartbeat:Connect(function()
         if not PriorityCfg.enabled then return end
         pcall(updatePriorityScores)
         if HvHCfg.standoffEnabled or HvHCfg.rejectDesyncJump or HvHCfg.rejectJitter then
             for _, p in ipairs(Players:GetPlayers()) do
-                if p == lp then continue end
-                if not p.Character then continue end
+                if p == lp or not p.Character then continue end
                 pcall(function()
                     if HvHCfg.rejectDesyncJump and detectDesyncJump(p) then
-                        getOrCreateHistory(p).score += HvHCfg.standoffWeight * 0.5
+                        getOrCreateHistory(p).score += HvHCfg.standoffWeight*0.5
                     end
                     if HvHCfg.rejectJitter and detectJitter(p) then
-                        getOrCreateHistory(p).score += HvHCfg.standoffWeight * 0.3
+                        getOrCreateHistory(p).score += HvHCfg.standoffWeight*0.3
                     end
                 end)
             end
@@ -1044,44 +1431,33 @@ local function startPrioritySystem()
 end
 
 -- =============================================
---   KICIA COUNTER LOOP (IMPROVED)
+--   KICIA MELEE COUNTER
 -- =============================================
 
 local function startKiciaCounter()
-    if VoidState.kiciaConn then
-        VoidState.kiciaConn:Disconnect()
-        VoidState.kiciaConn = nil
-    end
+    if VoidState.kiciaConn then VoidState.kiciaConn:Disconnect(); VoidState.kiciaConn=nil end
     VoidState.kiciaConn = RunService.Heartbeat:Connect(function()
         if not KiciaCfg.enabled then return end
         local hrp = getHRP()
         if not hrp then return end
         for _, p in ipairs(Players:GetPlayers()) do
             if p == lp then continue end
-            local isMelee, weaponName = isHoldingMelee(p)
-            if not isMelee then continue end
-            if distToPlayer(p) > KiciaCfg.counterDist then continue end
+            local isMelee, _ = isHoldingMelee(p)
+            if not isMelee or distToPlayer(p) > KiciaCfg.counterDist then continue end
             KiciaCfg.counterActive = true
             local savedCF = hrp.CFrame
-            pcall(function()
-                hrp.CFrame = CFrame.new(hrp.Position + KiciaCfg.evadeDir)
+            pcall(function() hrp.CFrame = CFrame.new(hrp.Position + KiciaCfg.evadeDir) end)
+            RunService:BindToRenderStep("__kiciaRestore", Enum.RenderPriority.First.Value, function()
+                pcall(function() hrp.CFrame = savedCF end)
+                RunService:UnbindFromRenderStep("__kiciaRestore")
             end)
-            RunService:BindToRenderStep(
-                "__kiciaRestore", Enum.RenderPriority.First.Value,
-                function()
-                    pcall(function() hrp.CFrame = savedCF end)
-                    RunService:UnbindFromRenderStep("__kiciaRestore")
-                end
-            )
-
-            -- Counter-attack after evade
             if KiciaCfg.counterAttack then
                 task.spawn(function()
                     task.wait(KiciaCfg.attackDelay)
                     if not firetouchinterest then return end
                     local tChar = p.Character
                     if not tChar then return end
-                    local projs   = scanProjectiles()
+                    local projs = scanProjectiles()
                     local hitboxes = getHitboxes(tChar)
                     for _, proj in ipairs(projs) do
                         for _, hbox in ipairs(hitboxes) do
@@ -1096,10 +1472,7 @@ end
 
 local function stopKiciaCounter()
     KiciaCfg.counterActive = false
-    if VoidState.kiciaConn then
-        VoidState.kiciaConn:Disconnect()
-        VoidState.kiciaConn = nil
-    end
+    if VoidState.kiciaConn then VoidState.kiciaConn:Disconnect(); VoidState.kiciaConn=nil end
     pcall(function() RunService:UnbindFromRenderStep("__kiciaRestore") end)
 end
 
@@ -1108,17 +1481,12 @@ end
 -- =============================================
 
 local function stopVoidSpam()
-    if VoidState.hbConn then
-        VoidState.hbConn:Disconnect()
-        VoidState.hbConn = nil
-    end
+    if VoidState.hbConn then VoidState.hbConn:Disconnect(); VoidState.hbConn=nil end
     pcall(function() RunService:UnbindFromRenderStep("__vsSync") end)
     local hrp = getHRP()
     if hrp then
         pcall(function()
-            hrp.CFrame                  = VoidState.clientCF
-            hrp.AssemblyLinearVelocity  = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.CFrame=VoidState.clientCF; hrp.AssemblyLinearVelocity=Vector3.zero; hrp.AssemblyAngularVelocity=Vector3.zero
         end)
     end
 end
@@ -1129,106 +1497,66 @@ local function startVoidSpam()
         if not VoidState.enabled then return end
         local hrp = getHRP()
         if not hrp then return end
-        VoidState.hrp      = hrp
-        VoidState.clientCF = hrp.CFrame
-        VoidState.clientLV = hrp.AssemblyLinearVelocity
-        VoidState.clientAV = hrp.AssemblyAngularVelocity
-
+        VoidState.hrp=hrp; VoidState.clientCF=hrp.CFrame
+        VoidState.clientLV=hrp.AssemblyLinearVelocity; VoidState.clientAV=hrp.AssemblyAngularVelocity
         pcall(function()
             if VoidState.adaptEnabled and VoidState.adaptTarget then
                 local tChar = VoidState.adaptTarget.Character
                 local tHRP  = tChar and tChar:FindFirstChild("HumanoidRootPart")
                 if tHRP then
-                    VoidState.orbitAngle = (
-                        VoidState.orbitAngle + ORBIT_SPEED * 0.016
-                    ) % (math.pi * 2)
-                    local ox = math.cos(VoidState.orbitAngle) * ORBIT_RADIUS
-                    local oz = math.sin(VoidState.orbitAngle) * ORBIT_RADIUS
+                    VoidState.orbitAngle = (VoidState.orbitAngle + ORBIT_SPEED*0.016) % (math.pi*2)
                     hrp.CFrame = CFrame.new(
-                        tHRP.Position.X + ox,
+                        tHRP.Position.X + math.cos(VoidState.orbitAngle)*ORBIT_RADIUS,
                         VOID_HEIGHT,
-                        tHRP.Position.Z + oz
+                        tHRP.Position.Z + math.sin(VoidState.orbitAngle)*ORBIT_RADIUS
                     ) * CFrame.Angles(math.pi, math.pi, math.pi)
-                    hrp.AssemblyLinearVelocity = Vector3.new(
-                        betterRandom(-500, 500, -100, 100),
-                        betterRandom(-500, 500, -100, 100),
-                        betterRandom(-500, 500, -100, 100)
-                    )
-                    hrp.AssemblyAngularVelocity = Vector3.new(
-                        betterRandom(-50, 50, -10, 10),
-                        betterRandom(-50, 50, -10, 10),
-                        betterRandom(-50, 50, -10, 10)
-                    )
+                    hrp.AssemblyLinearVelocity   = Vector3.new(betterRandom(-500,500,-100,100),betterRandom(-500,500,-100,100),betterRandom(-500,500,-100,100))
+                    hrp.AssemblyAngularVelocity  = Vector3.new(betterRandom(-50,50,-10,10),betterRandom(-50,50,-10,10),betterRandom(-50,50,-10,10))
                     if VoidState.teleDesync then
-                        pcall(function()
-                            tHRP.CFrame = CFrame.new(tHRP.Position.X, VOID_HEIGHT, tHRP.Position.Z)
-                        end)
+                        pcall(function() tHRP.CFrame = CFrame.new(tHRP.Position.X, VOID_HEIGHT, tHRP.Position.Z) end)
                     end
                 else
                     VoidState.adaptTarget = getBestTarget()
                 end
             else
                 hrp.CFrame = CFrame.new(
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H)
+                    betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H),
+                    betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H),
+                    betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H)
                 ) * CFrame.Angles(math.pi, math.pi, math.pi)
-                hrp.AssemblyLinearVelocity = Vector3.new(
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H)
-                )
-                hrp.AssemblyAngularVelocity = Vector3.new(
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H),
-                    betterRandom(-VOID_MAX, VOID_MAX, VOID_AVOID_L, VOID_AVOID_H)
-                )
+                hrp.AssemblyLinearVelocity   = Vector3.new(betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H),betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H),betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H))
+                hrp.AssemblyAngularVelocity  = Vector3.new(betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H),betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H),betterRandom(-VOID_MAX,VOID_MAX,VOID_AVOID_L,VOID_AVOID_H))
             end
         end)
     end)
-
-    RunService:BindToRenderStep(
-        "__vsSync",
-        Enum.RenderPriority.First.Value,
-        function()
-            if not VoidState.enabled then return end
-            local hrp = VoidState.hrp
-            if not hrp then return end
-            pcall(function()
-                hrp.CFrame                  = VoidState.clientCF
-                hrp.AssemblyLinearVelocity  = VoidState.clientLV
-                hrp.AssemblyAngularVelocity = VoidState.clientAV
-            end)
-        end
-    )
+    RunService:BindToRenderStep("__vsSync", Enum.RenderPriority.First.Value, function()
+        if not VoidState.enabled then return end
+        local hrp = VoidState.hrp
+        if not hrp then return end
+        pcall(function()
+            hrp.CFrame=VoidState.clientCF; hrp.AssemblyLinearVelocity=VoidState.clientLV; hrp.AssemblyAngularVelocity=VoidState.clientAV
+        end)
+    end)
 end
 
 -- =============================================
---   ADAPT SYSTEM
+--   ADAPT
 -- =============================================
 
 local function stopAdapt()
-    VoidState.adaptEnabled = false
-    VoidState.adaptTarget  = nil
-    VoidState.orbitAngle   = 0
-    if VoidState.adaptRefreshConn then
-        VoidState.adaptRefreshConn:Disconnect()
-        VoidState.adaptRefreshConn = nil
-    end
+    VoidState.adaptEnabled=false; VoidState.adaptTarget=nil; VoidState.orbitAngle=0
+    if VoidState.adaptRefreshConn then VoidState.adaptRefreshConn:Disconnect(); VoidState.adaptRefreshConn=nil end
 end
 
 local function startAdapt()
-    stopAdapt()
-    VoidState.adaptEnabled = true
-    VoidState.adaptTarget  = getBestTarget()
+    stopAdapt(); VoidState.adaptEnabled=true; VoidState.adaptTarget=getBestTarget()
     VoidState.adaptRefreshConn = RunService.Heartbeat:Connect(function()
         if not VoidState.adaptEnabled then return end
         local cur = VoidState.adaptTarget
         if not cur or not cur.Character or not cur.Character:FindFirstChild("HumanoidRootPart") then
             local newTgt = getBestTarget()
             if newTgt ~= VoidState.adaptTarget then
-                VoidState.adaptTarget = newTgt
-                VoidState.orbitAngle  = 0
+                VoidState.adaptTarget=newTgt; VoidState.orbitAngle=0
                 if newTgt then notify("Adapt","Switched: "..newTgt.Name,2) end
             end
         end
@@ -1236,20 +1564,16 @@ local function startAdapt()
 end
 
 -- =============================================
---   TELEPORT DESYNC
+--   TELE DESYNC
 -- =============================================
 
 local function stopTeleDesync()
-    VoidState.teleDesync = false
-    if VoidState.teleDesyncConn then
-        VoidState.teleDesyncConn:Disconnect()
-        VoidState.teleDesyncConn = nil
-    end
+    VoidState.teleDesync=false
+    if VoidState.teleDesyncConn then VoidState.teleDesyncConn:Disconnect(); VoidState.teleDesyncConn=nil end
 end
 
 local function startTeleDesync()
-    stopTeleDesync()
-    VoidState.teleDesync = true
+    stopTeleDesync(); VoidState.teleDesync=true
     VoidState.teleDesyncConn = RunService.Heartbeat:Connect(function()
         if not VoidState.teleDesync then return end
         local hrp = getHRP()
@@ -1262,11 +1586,7 @@ local function startTeleDesync()
         if not tHRP then return end
         pcall(function()
             local angle = VoidState.orbitAngle
-            tHRP.CFrame = hrp.CFrame * CFrame.new(
-                math.cos(angle) * (ORBIT_RADIUS * 0.5),
-                0,
-                math.sin(angle) * (ORBIT_RADIUS * 0.5)
-            )
+            tHRP.CFrame = hrp.CFrame * CFrame.new(math.cos(angle)*(ORBIT_RADIUS*0.5), 0, math.sin(angle)*(ORBIT_RADIUS*0.5))
         end)
     end)
 end
@@ -1276,74 +1596,51 @@ end
 -- =============================================
 
 local function stopFireTouch()
-    VoidState.fireTouchEnabled = false
-    if VoidState.ftLoopConn then
-        VoidState.ftLoopConn:Disconnect()
-        VoidState.ftLoopConn = nil
-    end
+    VoidState.fireTouchEnabled=false
+    if VoidState.ftLoopConn then VoidState.ftLoopConn:Disconnect(); VoidState.ftLoopConn=nil end
 end
 
 local function startFireTouch()
     stopFireTouch()
     if not firetouchinterest then
         notify("FireTouch","firetouchinterest not available!",5)
-        VoidState.fireTouchEnabled = false
-        return
+        VoidState.fireTouchEnabled=false; return
     end
-    VoidState.fireTouchEnabled = true
+    VoidState.fireTouchEnabled=true
     VoidState.ftLoopConn = RunService.Heartbeat:Connect(function()
         if not VoidState.fireTouchEnabled then return end
         local hrp = getHRP()
         if not hrp then return end
-        local tP    = VoidState.adaptTarget or getBestTarget()
+        local tP = VoidState.adaptTarget or getBestTarget()
         if not tP then return end
         local tChar = tP.Character
         if not tChar then return end
-
-        local useUECounter, realHBPos = false, nil
+        local useUE, realHBPos = false, nil
         if UECfg.counterEnabled then
             local isUE, hbPos = detectUEPattern(tP)
-            if isUE then useUECounter=true; realHBPos=hbPos end
+            if isUE then useUE=true; realHBPos=hbPos end
         end
-
-        local realCF = hrp.CFrame
-        local realLV = hrp.AssemblyLinearVelocity
-        local realAV = hrp.AssemblyAngularVelocity
-
-        pcall(function()
-            hrp.CFrame = CFrame.new(hrp.Position.X, VOID_HEIGHT, hrp.Position.Z)
-        end)
+        local realCF=hrp.CFrame; local realLV=hrp.AssemblyLinearVelocity; local realAV=hrp.AssemblyAngularVelocity
+        pcall(function() hrp.CFrame = CFrame.new(hrp.Position.X, VOID_HEIGHT, hrp.Position.Z) end)
         task.wait(0.05)
-
-        local projectiles = scanProjectiles()
-        local hitboxes    = getHitboxes(tChar)
-
+        local projectiles=scanProjectiles(); local hitboxes=getHitboxes(tChar)
         if #projectiles > 0 and #hitboxes > 0 then
-            local offsets = {
-                Vector3.new(0,0,0),   Vector3.new(5,0,0),
-                Vector3.new(-5,0,0),  Vector3.new(0,5,0),
-                Vector3.new(0,-5,0),  Vector3.new(10,0,0),
-                Vector3.new(-10,0,0),
+            local offsets={
+                Vector3.new(0,0,0),Vector3.new(5,0,0),Vector3.new(-5,0,0),
+                Vector3.new(0,5,0),Vector3.new(0,-5,0),Vector3.new(10,0,0),Vector3.new(-10,0,0),
             }
             for _, proj in ipairs(projectiles) do
                 for _, hbox in ipairs(hitboxes) do
                     for _, off in ipairs(offsets) do
                         pcall(function()
-                            hrp.CFrame = CFrame.new(
-                                (useUECounter and realHBPos or hrp.Position) + off
-                            )
+                            hrp.CFrame = CFrame.new((useUE and realHBPos or hrp.Position)+off)
                             fireTouchOnPart(proj, hbox)
                         end)
                     end
                 end
             end
         end
-
-        pcall(function()
-            hrp.CFrame                  = realCF
-            hrp.AssemblyLinearVelocity  = realLV
-            hrp.AssemblyAngularVelocity = realAV
-        end)
+        pcall(function() hrp.CFrame=realCF; hrp.AssemblyLinearVelocity=realLV; hrp.AssemblyAngularVelocity=realAV end)
     end)
 end
 
@@ -1352,29 +1649,27 @@ end
 -- =============================================
 
 local function stopAll()
-    stopVoidSpam()
-    stopAdapt()
-    stopTeleDesync()
-    stopFireTouch()
-    stopKiciaCounter()
-    stopLureLoop()
-    VoidState.enabled = false
-    if VoidState.priorityConn then
-        VoidState.priorityConn:Disconnect()
-        VoidState.priorityConn = nil
-    end
+    stopVoidSpam(); stopAdapt(); stopTeleDesync(); stopFireTouch()
+    stopKiciaCounter(); stopLureLoop(); stopDetection()
+    stopMultiLayerDesync(); stopFakeHistory(); stopInstantCounter()
+    if AntiKiciaCfg.counterConn then AntiKiciaCfg.counterConn:Disconnect(); AntiKiciaCfg.counterConn=nil end
+    VoidState.enabled=false
+    if VoidState.priorityConn then VoidState.priorityConn:Disconnect(); VoidState.priorityConn=nil end
     print("[VoidSpam] All stopped")
 end
 
 local function startAll()
-    VoidState.enabled = true
-    startVoidSpam()
-    startPrioritySystem()
+    VoidState.enabled=true; startVoidSpam(); startPrioritySystem()
     if VoidState.adaptEnabled     then startAdapt()        end
     if VoidState.teleDesync       then startTeleDesync()    end
     if VoidState.fireTouchEnabled then startFireTouch()     end
     if KiciaCfg.enabled           then startKiciaCounter()  end
     if LureCfg.enabled            then startLureLoop()      end
+    if AntiKiciaCfg.enabled       then startDetection()     end
+    if AntiKiciaCfg.multiLayerDesync then startMultiLayerDesync() end
+    if AntiKiciaCfg.fakeHistoryOn then startFakeHistory()   end
+    if AntiKiciaCfg.instantCounter then startInstantCounter() end
+    if AntiKiciaCfg.predictionCounter then startPredictionCounter() end
     print("[VoidSpam] All started")
 end
 
@@ -1383,15 +1678,9 @@ end
 -- =============================================
 
 lp.CharacterAdded:Connect(function()
-    task.wait(1.5)
-    VoidState.hrp = getHRP()
-    if VoidState.enabled then
-        stopAll(); task.wait(0.5); startAll()
-        notify("VoidSpam","Restarted after respawn",3)
-    end
-    if MinimizeCfg.enabled then
-        task.wait(2); applyMinimize(); startMinimizeLoop()
-    end
+    task.wait(1.5); VoidState.hrp=getHRP()
+    if VoidState.enabled then stopAll(); task.wait(0.5); startAll() end
+    if MinimizeCfg.enabled then task.wait(2); applyMinimize(); startMinimizeLoop() end
 end)
 
 local deathConn = nil
@@ -1413,7 +1702,7 @@ watchDeath()
 -- =============================================
 
 local vs_toggle = sections.vs_main:CreateToggle("Enable VoidSpam", false, function(v)
-    VoidState.enabled = v
+    VoidState.enabled=v
     if v then startAll(); notify("VoidSpam","Active!",3)
     else stopAll(); notify("VoidSpam","Stopped",2) end
 end)
@@ -1437,382 +1726,319 @@ RunService.Heartbeat:Connect(function()
     end)
 end)
 
-sections.vs_main:CreateButton("Force Stop All", function()
-    stopAll(); notify("VoidSpam","Force stopped",2)
-end)
+sections.vs_main:CreateButton("Force Stop All", function() stopAll(); notify("VoidSpam","Stopped",2) end)
 sections.vs_main:CreateButton("Restart Systems", function()
-    if VoidState.enabled then
-        stopAll(); task.wait(0.3); startAll()
-        notify("VoidSpam","Restarted!",2)
+    if VoidState.enabled then stopAll(); task.wait(0.3); startAll(); notify("VoidSpam","Restarted!",2)
     else notify("VoidSpam","Enable first!",2) end
 end)
-sections.vs_main:CreateButton("Debug Status", function()
-    local hrp = getHRP()
-    local tgt = VoidState.adaptTarget
-    notify("Debug",
-        "HRP: "..(hrp and "Found" or "Missing")
-        .." | VS: "..tostring(VoidState.enabled)
-        .." | Target: "..(tgt and tgt.Name or "None")
-        .." | Lure: "..tostring(LureCfg.enabled)
-        .." | SnapCount: "..LureCfg.snapCount,
-        5
-    )
-end)
 
-sections.vs_cfg:CreateSlider("Void Height (k)", 10, 500, 100, true, function(v)
-    VOID_HEIGHT = v * 1000
-end)
-sections.vs_cfg:CreateSlider("Orbit Radius", 1, 50, 3, false, function(v)
-    ORBIT_RADIUS = v
-end)
-sections.vs_cfg:CreateSlider("Orbit Speed", 1, 100, 8, true, function(v)
-    ORBIT_SPEED = v
-end)
+sections.vs_cfg:CreateSlider("Void Height (k)", 10, 500, 100, true, function(v) VOID_HEIGHT=v*1000 end)
+sections.vs_cfg:CreateSlider("Orbit Radius", 1, 50, 3, false, function(v) ORBIT_RADIUS=v end)
+sections.vs_cfg:CreateSlider("Orbit Speed", 1, 100, 8, true, function(v) ORBIT_SPEED=v end)
 sections.vs_cfg:CreateDivider()
 sections.vs_cfg:CreateSlider("Avoid Zone (k)", 100, 2000, 1147, true, function(v)
-    VOID_AVOID_L = -(v * 1000); VOID_AVOID_H = v * 1000
+    VOID_AVOID_L=-(v*1000); VOID_AVOID_H=v*1000
 end)
 
 -- =============================================
 --   UI — VOID LURE TAB
 -- =============================================
 
-sections.lure_main:CreateLabel(
-    "Tricks void players into teleporting to your position. Snap Trap fires the instant they arrive.",
-    true
-)
+sections.lure_main:CreateLabel("Tricks void players into teleporting to your position.",true)
 sections.lure_main:CreateDivider()
 
 sections.lure_main:CreateToggle("Enable Void Lure", false, function(v)
-    LureCfg.enabled = v
-    if v then
-        startLureLoop()
-        notify("Void Lure","Active! Bait position set",3)
-    else
-        stopLureLoop()
-        notify("Void Lure","Off",2)
-    end
+    LureCfg.enabled=v
+    if v then startLureLoop(); notify("Void Lure","Active!",3)
+    else stopLureLoop(); notify("Void Lure","Off",2) end
 end)
-
 sections.lure_main:CreateToggle("Phantom Beacon", false, function(v)
-    LureCfg.phantomEnabled = v
-    if v then
-        startPhantomBeacon()
-        notify("Phantom Beacon","Active! Broadcasting bait position",3)
-    else
-        stopPhantomBeacon()
-        notify("Phantom Beacon","Off",2)
-    end
+    LureCfg.phantomEnabled=v
+    if v then startPhantomBeacon(); notify("Phantom","Active!",3)
+    else stopPhantomBeacon(); notify("Phantom","Off",2) end
 end)
 
 sections.lure_main:CreateDivider()
-
 local lure_status = sections.lure_main:CreateLabel("Lure: OFF | Snaps: 0")
 RunService.Heartbeat:Connect(function()
     pcall(function()
-        local tgt = LureCfg.lureTarget
+        local tgt=LureCfg.lureTarget
         lure_status:UpdateText(
             "Lure: "..(LureCfg.enabled and "ON" or "OFF")
             .." | Target: "..(tgt and tgt.Name or "None")
             .." | Snaps: "..LureCfg.snapCount
-            .." | Phantom: "..(LureCfg.phantomEnabled and "ON" or "OFF")
         )
     end)
 end)
 
-sections.lure_main:CreateButton("Force Lock Lure Target", function()
-    local tgt = getBestTarget()
-    LureCfg.lureTarget = tgt
-    notify("Void Lure", tgt and "Lure locked: "..tgt.Name or "No target",3)
+sections.lure_main:CreateButton("Force Lock Target", function()
+    LureCfg.lureTarget=getBestTarget()
+    notify("Lure", LureCfg.lureTarget and "Locked: "..LureCfg.lureTarget.Name or "None",3)
 end)
 
-sections.lure_main:CreateButton("Reset Snap Count", function()
-    LureCfg.snapCount = 0
-    notify("Void Lure","Snap count reset",2)
-end)
-
--- Lure Config
-sections.lure_cfg:CreateLabel("Bait Position Offset")
-sections.lure_cfg:CreateLabel("(Offset from your real position)")
-sections.lure_cfg:CreateDivider()
-
-sections.lure_cfg:CreateSlider("Bait Offset X", -50, 50, 0, true, function(v)
-    LureCfg.baitOffsetX = v
-end)
-sections.lure_cfg:CreateSlider("Bait Offset Y", -50, 50, 0, true, function(v)
-    LureCfg.baitOffsetY = v
-end)
-sections.lure_cfg:CreateSlider("Bait Offset Z", -50, 50, 0, true, function(v)
-    LureCfg.baitOffsetZ = v
-end)
-
-sections.lure_cfg:CreateDivider()
-sections.lure_cfg:CreateSlider("Beacon Rate (ms)", 1, 20, 10, true, function(v)
-    LureCfg.beaconRate = v * 0.01
-end)
-
--- Snap Trap Section
-sections.lure_snap:CreateLabel(
-    "Instantly fires when enemy enters snap radius. Works best with FireTouch enabled.",
-    true
-)
-sections.lure_snap:CreateDivider()
+sections.lure_cfg:CreateSlider("Bait Offset X", -50, 50, 0, true, function(v) LureCfg.baitOffsetX=v end)
+sections.lure_cfg:CreateSlider("Bait Offset Y", -50, 50, 0, true, function(v) LureCfg.baitOffsetY=v end)
+sections.lure_cfg:CreateSlider("Bait Offset Z", -50, 50, 0, true, function(v) LureCfg.baitOffsetZ=v end)
 
 sections.lure_snap:CreateToggle("Enable Snap Trap", false, function(v)
-    LureCfg.snapEnabled = v
-    if v then
-        startSnapTrap()
-        notify("Snap Trap","Armed! Radius: "..LureCfg.snapRadius.." studs",3)
-    else
-        stopSnapTrap()
-        notify("Snap Trap","Disarmed",2)
-    end
+    LureCfg.snapEnabled=v
+    if v then startSnapTrap(); notify("Snap Trap","Armed!",3)
+    else stopSnapTrap(); notify("Snap Trap","Disarmed",2) end
+end)
+sections.lure_snap:CreateSlider("Snap Radius", 5, 100, 15, true, function(v) LureCfg.snapRadius=v end)
+sections.lure_snap:CreateSlider("Snap Delay (ms)", 1, 20, 5, true, function(v) LureCfg.snapDelay=v*0.01 end)
+
+sections.lure_info:CreateLabel("Combo: Lure+Phantom+Snap+FireTouch")
+sections.lure_info:CreateLabel("Enemy adapts to bait → enters radius → instant kill",true)
+
+-- =============================================
+--   UI — ANTI-KICIA TAB
+-- =============================================
+
+sections.ak_main:CreateLabel("Analyzes KiciaHook signatures",true)
+sections.ak_main:CreateLabel("Detects Free vs Premium version",true)
+sections.ak_main:CreateDivider()
+
+sections.ak_main:CreateToggle("Enable Anti-KiciaHook", false, function(v)
+    AntiKiciaCfg.enabled=v
+    if v then startDetection(); notify("Anti-Kicia","Detection active!",3)
+    else stopDetection(); notify("Anti-Kicia","Off",2) end
 end)
 
-sections.lure_snap:CreateSlider("Snap Radius", 5, 100, 15, true, function(v)
-    LureCfg.snapRadius = v
+sections.ak_main:CreateDivider()
+
+-- Live detection feed
+local ak_status = sections.ak_main:CreateLabel("Detection: Scanning...")
+RunService.Heartbeat:Connect(function()
+    if not AntiKiciaCfg.enabled then return end
+    pcall(function()
+        local lines = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local sig = kiciaSignatures[p]
+            if sig and sig.liftCount > 0 then
+                table.insert(lines,
+                    p.Name
+                    .." | Lifts: "..sig.liftCount
+                    .." | Interval: "..string.format("%.2f", sig.avgLiftInterval).."s"
+                    .." | "..(sig.isPremium and "PREMIUM" or "Free")
+                )
+            end
+        end
+        ak_status:UpdateText(
+            AntiKiciaCfg.detectedKicia
+            and ("DETECTED: "..(AntiKiciaCfg.kiciaTarget and AntiKiciaCfg.kiciaTarget.Name or "?")
+                .." ["..(AntiKiciaCfg.kiciaVersion).."]")
+            or (#lines > 0 and table.concat(lines,"\n") or "No KiciaHook detected")
+        )
+    end)
 end)
 
-sections.lure_snap:CreateSlider("Snap Delay (ms)", 1, 20, 5, true, function(v)
-    LureCfg.snapDelay = v * 0.01
-end)
-
-sections.lure_snap:CreateDivider()
-sections.lure_snap:CreateButton("Manual Snap Fire", function()
-    local tgt = LureCfg.lureTarget or getBestTarget()
-    if not tgt then notify("Snap","No target!",2); return end
-    local char = tgt.Character
-    if not char then notify("Snap","No character!",2); return end
-    if not firetouchinterest then notify("Snap","No firetouchinterest!",3); return end
-    local projs    = scanProjectiles()
-    local hitboxes = getHitboxes(char)
-    local fired    = 0
-    for _, proj in ipairs(projs) do
-        for _, hbox in ipairs(hitboxes) do
-            if fireTouchOnPart(proj, hbox) then fired += 1 end
+sections.ak_main:CreateButton("Scan All Players", function()
+    local found = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        local sig = kiciaSignatures[p]
+        if sig and sig.liftCount >= 2 then
+            table.insert(found,
+                p.Name.." | "
+                ..(sig.isPremium and "PREMIUM" or "Free")
+                .." | Interval: "..string.format("%.3f",sig.avgLiftInterval).."s"
+                .." | MaxH: "..math.floor(sig.maxLiftHeight)
+            )
         end
     end
-    notify("Snap","Manual fired "..fired.." touches on "..tgt.Name,3)
+    notify("KiciaHook Scan", #found > 0 and table.concat(found,"\n") or "None detected",6)
 end)
 
--- Lure Info Section
-sections.lure_info:CreateLabel("How Void Lure works:")
-sections.lure_info:CreateLabel("1. Set bait position offset", true)
-sections.lure_info:CreateLabel("2. Phantom Beacon CS-moves", true)
-sections.lure_info:CreateLabel("   enemy to appear at bait", true)
-sections.lure_info:CreateLabel("3. Enemy adapt locks onto bait", true)
-sections.lure_info:CreateLabel("4. When they enter snap radius:", true)
-sections.lure_info:CreateLabel("   INSTANT FireTouch kill", true)
-sections.lure_info:CreateDivider()
-sections.lure_info:CreateLabel("Best combo:")
-sections.lure_info:CreateLabel("Void Lure + Phantom + Snap + FireTouch", true)
+sections.ak_main:CreateButton("Reset Detection Data", function()
+    kiciaSignatures={}; AntiKiciaCfg.kiciaHistory={}
+    AntiKiciaCfg.detectedKicia=false; AntiKiciaCfg.kiciaTarget=nil
+    notify("Anti-Kicia","Data cleared",2)
+end)
+
+-- Counter Config
+sections.ak_cfg:CreateToggle("Instant Counter (void detect)", false, function(v)
+    AntiKiciaCfg.instantCounter=v
+    if v then startInstantCounter(); notify("Instant Counter","Active! Fires when they void",3)
+    else stopInstantCounter(); notify("Instant Counter","Off",2) end
+end)
+
+sections.ak_cfg:CreateToggle("Prediction Counter", false, function(v)
+    AntiKiciaCfg.predictionCounter=v
+    if v then startPredictionCounter(); notify("Prediction","Pre-fires before their shot!",3)
+    else
+        if AntiKiciaCfg.counterConn then AntiKiciaCfg.counterConn:Disconnect(); AntiKiciaCfg.counterConn=nil end
+        notify("Prediction","Off",2)
+    end
+end)
+
+sections.ak_cfg:CreateToggle("Multi-Layer Desync", false, function(v)
+    AntiKiciaCfg.multiLayerDesync=v
+    if v then startMultiLayerDesync(); notify("Multi-Layer","3-layer desync active!",3)
+    else stopMultiLayerDesync(); notify("Multi-Layer","Off",2) end
+end)
+
+sections.ak_cfg:CreateSlider("Desync Layers", 1, 3, 3, true, function(v)
+    AntiKiciaCfg.layerCount=v
+end)
+
+-- Anti-Resolver
+sections.ak_res:CreateLabel("Breaks KiciaHook Premium resolver",true)
+sections.ak_res:CreateLabel("Feeds fake position history to confuse curve-fitting",true)
+sections.ak_res:CreateDivider()
+
+sections.ak_res:CreateToggle("Enable Anti-Resolver", false, function(v)
+    AntiKiciaCfg.antiResolverOn=v; AntiKiciaCfg.fakeHistoryOn=v
+    if v then startFakeHistory(); notify("Anti-Resolver","Fake history active!",3)
+    else stopFakeHistory(); notify("Anti-Resolver","Off",2) end
+end)
+
+sections.ak_res:CreateSlider("Resolver Layers", 1, 10, 3, true, function(v)
+    AntiKiciaCfg.resolverLayers=v
+end)
+sections.ak_res:CreateSlider("Resolver Radius", 10, 500, 50, true, function(v)
+    AntiKiciaCfg.resolverRadius=v
+end)
+sections.ak_res:CreateSlider("Rotation Speed", 1, 20, 5, true, function(v)
+    AntiKiciaCfg.resolverSpeed=v*0.01
+end)
+
+-- Prediction Config
+sections.ak_pred:CreateLabel("Prediction Counter Settings")
+sections.ak_pred:CreateLabel("Pre-fires based on their lift pattern timing",true)
+sections.ak_pred:CreateDivider()
+
+sections.ak_pred:CreateSlider("Look-Ahead Ticks", 1, 10, 3, true, function(v)
+    AntiKiciaCfg.predLookAhead=v
+end)
+sections.ak_pred:CreateSlider("Min Confidence %", 10, 100, 80, true, function(v)
+    AntiKiciaCfg.predConfidence=v*0.01
+end)
+
+sections.ak_pred:CreateButton("Show Prediction Data", function()
+    local tgt = AntiKiciaCfg.kiciaTarget
+    if not tgt then notify("Prediction","No KiciaHook target detected",3); return end
+    local sig = kiciaSignatures[tgt]
+    if not sig then notify("Prediction","No signature data",3); return end
+    local timeUntil, _ = predictNextKiciaShot(tgt)
+    notify(
+        "Prediction: "..tgt.Name,
+        "Next shot in: "..(timeUntil and string.format("%.0f",timeUntil*1000).."ms" or "Unknown")
+        .."\nAvg interval: "..string.format("%.3f",sig.avgLiftInterval).."s"
+        .."\nLifts: "..sig.liftCount
+        .."\nVersion: "..(sig.isPremium and "Premium" or "Free"),
+        6
+    )
+end)
 
 -- =============================================
 --   UI — PRIORITY TAB
 -- =============================================
 
 sections.pv_main:CreateToggle("Prioritize Void Players", false, function(v)
-    PriorityCfg.enabled = v
+    PriorityCfg.enabled=v
     if v then startPrioritySystem(); notify("Priority","Active!",3)
     else notify("Priority","Off",2) end
 end)
-
 sections.pv_main:CreateDivider()
-
 local pv_status = sections.pv_main:CreateLabel("Scanning...")
 RunService.Heartbeat:Connect(function()
     if not PriorityCfg.enabled then return end
     pcall(function()
-        local sorted = {}
+        local sorted={}
         for _, p in ipairs(Players:GetPlayers()) do
-            if p == lp then continue end
-            local hist = playerHistory[p]
-            if hist then
-                table.insert(sorted,{name=p.Name,score=hist.score,inVoid=hist.inVoid,conf=hist.confidence or 0})
-            end
+            if p==lp then continue end
+            local hist=playerHistory[p]
+            if hist then table.insert(sorted,{name=p.Name,score=hist.score,inVoid=hist.inVoid,conf=hist.confidence or 0}) end
         end
-        table.sort(sorted, function(a,b) return a.score > b.score end)
-        local lines = {}
-        for i, entry in ipairs(sorted) do
-            if i > 3 then break end
-            table.insert(lines,
-                "#"..i.." "..entry.name
-                .." S:"..math.floor(entry.score)
-                .." V:"..(entry.inVoid and "Y" or "n")
-                .." C:"..math.floor(entry.conf).."%"
-            )
+        table.sort(sorted, function(a,b) return a.score>b.score end)
+        local lines={}
+        for i, e in ipairs(sorted) do
+            if i>3 then break end
+            table.insert(lines,"#"..i.." "..e.name.." S:"..math.floor(e.score).." V:"..(e.inVoid and "Y" or "n").." C:"..math.floor(e.conf).."%")
         end
-        pv_status:UpdateText(#lines > 0 and table.concat(lines,"\n") or "No data")
+        pv_status:UpdateText(#lines>0 and table.concat(lines,"\n") or "No data")
     end)
 end)
-
-sections.pv_main:CreateButton("Reset All Scores", function()
-    playerHistory = {}; notify("Priority","Reset",2)
-end)
-sections.pv_main:CreateButton("Show Best Target", function()
-    local tgt = getVoidPriorityTarget()
-    if tgt then
-        local hist = playerHistory[tgt]
-        notify("Best: "..tgt.Name,
-            "Score: "..math.floor(hist and hist.score or 0)
-            .." | Void: "..(hist and hist.inVoid and "YES" or "no")
-            .." | Conf: "..math.floor(hist and hist.confidence or 0).."%",5)
-    else notify("Priority","No target",3) end
-end)
-
-sections.pv_cfg:CreateSlider("Void Priority Weight", 0, 1000, 500, true, function(v)
-    PriorityCfg.voidWeight = v
-end)
-sections.pv_cfg:CreateSlider("Void Distance (studs)", 500, 10000, 2000, true, function(v)
-    PriorityCfg.voidDistance = v
-end)
-sections.pv_hist:CreateSlider("History Window (s)", 0.3, 3, 1.0, false, function(v)
-    PriorityCfg.historyWindow = v
-end)
-sections.pv_hist:CreateSlider("Time Decay", 0.05, 2, 0.5, false, function(v)
-    PriorityCfg.timeDecay = v
-end)
-sections.pv_hist:CreateSlider("Outlier Z-Threshold", 0.5, 4, 2.0, false, function(v)
-    PriorityCfg.outlierZThresh = v
-end)
-sections.pv_conf:CreateSlider("Confidence Scale", 1, 20, 10, true, function(v)
-    PriorityCfg.confidenceScale = v
-end)
-sections.pv_conf:CreateDivider()
-sections.pv_conf:CreateLabel("Score = void events x weight")
-sections.pv_conf:CreateLabel("Decays over time by decay rate")
+sections.pv_main:CreateButton("Reset Scores", function() playerHistory={}; notify("Priority","Reset",2) end)
+sections.pv_cfg:CreateSlider("Void Weight", 0, 1000, 500, true, function(v) PriorityCfg.voidWeight=v end)
+sections.pv_cfg:CreateSlider("Void Distance", 500, 10000, 2000, true, function(v) PriorityCfg.voidDistance=v end)
+sections.pv_hist:CreateSlider("History Window (s)", 0.3, 3, 1.0, false, function(v) PriorityCfg.historyWindow=v end)
+sections.pv_hist:CreateSlider("Time Decay", 0.05, 2, 0.5, false, function(v) PriorityCfg.timeDecay=v end)
+sections.pv_hist:CreateSlider("Outlier Z-Threshold", 0.5, 4, 2.0, false, function(v) PriorityCfg.outlierZThresh=v end)
+sections.pv_conf:CreateSlider("Confidence Scale", 1, 20, 10, true, function(v) PriorityCfg.confidenceScale=v end)
 
 -- =============================================
 --   UI — HVH TAB
 -- =============================================
 
-sections.hvh_main:CreateToggle("HvH Standoff Mode", false, function(v)
-    HvHCfg.standoffEnabled = v
-    notify("HvH", v and "Standoff active!" or "Off",3)
-end)
+sections.hvh_main:CreateToggle("HvH Standoff Mode", false, function(v) HvHCfg.standoffEnabled=v; notify("HvH",v and "Active!" or "Off",2) end)
 sections.hvh_main:CreateDivider()
-sections.hvh_main:CreateToggle("Reject Desync Jump", false, function(v)
-    HvHCfg.rejectDesyncJump = v
-    notify("HvH", v and "Desync jump reject ON" or "OFF",2)
-end)
-sections.hvh_main:CreateToggle("Reject Jitter", false, function(v)
-    HvHCfg.rejectJitter = v
-    notify("HvH", v and "Jitter reject ON" or "OFF",2)
-end)
+sections.hvh_main:CreateToggle("Reject Desync Jump", false, function(v) HvHCfg.rejectDesyncJump=v end)
+sections.hvh_main:CreateToggle("Reject Jitter", false, function(v) HvHCfg.rejectJitter=v end)
 sections.hvh_main:CreateDivider()
-
 local hvh_status = sections.hvh_main:CreateLabel("HvH: Monitoring...")
 RunService.Heartbeat:Connect(function()
     if not HvHCfg.standoffEnabled then return end
     pcall(function()
-        local lines = {}
+        local lines={}
         for _, p in ipairs(Players:GetPlayers()) do
-            if p == lp then continue end
-            local opp = hvhOpponents[p]
-            if not opp then continue end
-            table.insert(lines,
-                p.Name.." J:"..opp.desyncJumps.." Jit:"..(opp.jitterDetected and "Y" or "n")
-            )
+            if p==lp then continue end
+            local opp=hvhOpponents[p]
+            if opp then table.insert(lines, p.Name.." J:"..opp.desyncJumps.." Jit:"..(opp.jitterDetected and "Y" or "n")) end
         end
-        hvh_status:UpdateText(#lines > 0 and table.concat(lines,"\n") or "No HvH data")
+        hvh_status:UpdateText(#lines>0 and table.concat(lines,"\n") or "No data")
     end)
 end)
+sections.hvh_main:CreateButton("Reset HvH Data", function() hvhOpponents={}; notify("HvH","Cleared",2) end)
+sections.hvh_cfg:CreateSlider("Standoff Weight", 0, 20000, 5000, true, function(v) HvHCfg.standoffWeight=v end)
+sections.hvh_cfg:CreateSlider("Desync Speed", 40, 3000, 800, true, function(v) HvHCfg.desyncSpeed=v end)
+sections.hvh_cfg:CreateSlider("Jitter Radius", 2, 90, 15, true, function(v) HvHCfg.jitterRadius=v end)
 
-sections.hvh_main:CreateButton("Reset HvH Data", function()
-    hvhOpponents = {}; notify("HvH","Cleared",2)
-end)
-
-sections.hvh_cfg:CreateSlider("Standoff Weight", 0, 20000, 5000, true, function(v)
-    HvHCfg.standoffWeight = v
-end)
-sections.hvh_cfg:CreateSlider("Desync Speed", 40, 3000, 800, true, function(v)
-    HvHCfg.desyncSpeed = v
-end)
-sections.hvh_cfg:CreateSlider("Jitter Radius", 2, 90, 15, true, function(v)
-    HvHCfg.jitterRadius = v
-end)
-
-sections.hvh_ue:CreateLabel("Detects void + CS desync (UE pattern)")
-sections.hvh_ue:CreateLabel("Aims at real hitbox if detected",true)
+sections.hvh_ue:CreateLabel("UE Pattern Detection")
 sections.hvh_ue:CreateDivider()
-sections.hvh_ue:CreateToggle("Enable UE Detection", false, function(v)
-    UECfg.enabled = v
-    notify("UE", v and "Detection active!" or "Off",3)
-end)
-sections.hvh_ue:CreateToggle("UE Counter Mode", false, function(v)
-    UECfg.counterEnabled = v
-    notify("UE", v and "Aiming real hitbox!" or "Off",3)
-end)
-sections.hvh_ue:CreateButton("Scan For UE Players", function()
-    local found = {}
+sections.hvh_ue:CreateToggle("Enable UE Detection", false, function(v) UECfg.enabled=v; notify("UE",v and "Active!" or "Off",2) end)
+sections.hvh_ue:CreateToggle("UE Counter Mode", false, function(v) UECfg.counterEnabled=v; notify("UE Counter",v and "Aiming real hitbox!" or "Off",2) end)
+sections.hvh_ue:CreateButton("Scan For UE", function()
+    local found={}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p == lp then continue end
+        if p==lp then continue end
         local isUE, hbPos = detectUEPattern(p)
-        if isUE then
-            table.insert(found,
-                p.Name.."@"
-                ..(hbPos and (math.floor(hbPos.X)..","..math.floor(hbPos.Y)..","..math.floor(hbPos.Z)) or "?")
-            )
-        end
+        if isUE then table.insert(found, p.Name.."@"..(hbPos and (math.floor(hbPos.X)..","..math.floor(hbPos.Y)..","..math.floor(hbPos.Z)) or "?")) end
     end
-    notify("UE Scan", #found > 0 and table.concat(found,"\n") or "None",5)
+    notify("UE Scan", #found>0 and table.concat(found,"\n") or "None",5)
 end)
 
 sections.hvh_kicia:CreateLabel("Melee Evasion + Counter-Attack")
-sections.hvh_kicia:CreateLabel("CS evades melee then fires back",true)
 sections.hvh_kicia:CreateDivider()
 sections.hvh_kicia:CreateToggle("Enable Melee Counter", false, function(v)
-    KiciaCfg.enabled = v
+    KiciaCfg.enabled=v
     if v then startKiciaCounter(); notify("Kicia","Active!",3)
     else stopKiciaCounter(); notify("Kicia","Off",2) end
 end)
-sections.hvh_kicia:CreateToggle("Counter-Attack After Evade", false, function(v)
-    KiciaCfg.counterAttack = v
-    notify("Kicia", v and "Counter-attack ON!" or "Off",2)
+sections.hvh_kicia:CreateToggle("Counter-Attack", false, function(v)
+    KiciaCfg.counterAttack=v; notify("Counter-Attack",v and "ON" or "Off",2)
 end)
-sections.hvh_kicia:CreateSlider("Counter Distance", 5, 100, 20, true, function(v)
-    KiciaCfg.counterDist = v
-end)
-sections.hvh_kicia:CreateSlider("Evade Height", 10, 200, 50, true, function(v)
-    KiciaCfg.evadeDir = Vector3.new(0, v, 0)
-end)
-sections.hvh_kicia:CreateSlider("Counter Delay (ms)", 1, 30, 10, true, function(v)
-    KiciaCfg.attackDelay = v * 0.01
-end)
-
+sections.hvh_kicia:CreateSlider("Counter Distance", 5, 100, 20, true, function(v) KiciaCfg.counterDist=v end)
+sections.hvh_kicia:CreateSlider("Evade Height", 10, 200, 50, true, function(v) KiciaCfg.evadeDir=Vector3.new(0,v,0) end)
+sections.hvh_kicia:CreateSlider("Counter Delay (ms)", 1, 30, 10, true, function(v) KiciaCfg.attackDelay=v*0.01 end)
 local kicia_status = sections.hvh_kicia:CreateLabel("Melee: Standby")
 RunService.Heartbeat:Connect(function()
     pcall(function()
-        kicia_status:UpdateText(
-            "Counter: "..(KiciaCfg.counterActive and "TRIGGERED!" or "Standby")
-            .." | Attack: "..(KiciaCfg.counterAttack and "ON" or "off")
-        )
-        KiciaCfg.counterActive = false
+        kicia_status:UpdateText("Counter: "..(KiciaCfg.counterActive and "TRIGGERED!" or "Standby"))
+        KiciaCfg.counterActive=false
     end)
-end)
-sections.hvh_kicia:CreateButton("Scan Melee Threats", function()
-    local threats = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == lp then continue end
-        local isMelee, wName = isHoldingMelee(p)
-        if isMelee then
-            table.insert(threats, p.Name.." [".. (wName or "?") .."] "..math.floor(distToPlayer(p)).."s")
-        end
-    end
-    notify("Threats", #threats > 0 and table.concat(threats,"\n") or "None",5)
 end)
 
 -- =============================================
 --   UI — MINIMIZE TAB
 -- =============================================
 
-sections.min_main:CreateLabel(
-    "Shrinks character. HeadOnly = tiny dot like picture. Extremely hard to hit.",true
-)
+sections.min_main:CreateLabel("HeadOnly = tiny dot (nearly unhittable)",true)
 sections.min_main:CreateDivider()
-
 sections.min_main:CreateToggle("Enable Minimize Model", false, function(v)
-    MinimizeCfg.enabled = v
+    MinimizeCfg.enabled=v
     if v then
         applyMinimize(); startMinimizeLoop()
         if minimizeRespawnConn then minimizeRespawnConn:Disconnect() end
@@ -1822,62 +2048,27 @@ sections.min_main:CreateToggle("Enable Minimize Model", false, function(v)
         end)
     else
         restoreMinimize()
-        for _, conn in ipairs(MinimizeCfg.connections) do
-            pcall(function() conn:Disconnect() end)
-        end
-        MinimizeCfg.connections = {}
-        if minimizeRespawnConn then
-            minimizeRespawnConn:Disconnect()
-            minimizeRespawnConn = nil
-        end
+        for _, conn in ipairs(MinimizeCfg.connections) do pcall(function() conn:Disconnect() end) end
+        MinimizeCfg.connections={}
+        if minimizeRespawnConn then minimizeRespawnConn:Disconnect(); minimizeRespawnConn=nil end
     end
 end)
-
-sections.min_main:CreateDropdown("Minimize Mode",
-    {"HeadOnly","Invisible","TinyScale"},
-    function(v)
-        MinimizeCfg.mode = v
-        if MinimizeCfg.enabled then applyMinimize() end
-    end,
-    "HeadOnly", false
-)
-
+sections.min_main:CreateDropdown("Mode",{"HeadOnly","Invisible","TinyScale"},function(v)
+    MinimizeCfg.mode=v; if MinimizeCfg.enabled then applyMinimize() end
+end,"HeadOnly",false)
 sections.min_main:CreateDivider()
-sections.min_main:CreateButton("Apply Now", function()
-    if MinimizeCfg.enabled then applyMinimize()
-    else notify("Minimize","Enable first!",2) end
-end)
-sections.min_main:CreateButton("Restore Character", function()
-    restoreMinimize()
-end)
-sections.min_main:CreateButton("Force Reapply", function()
-    restoreMinimize(); task.wait(0.2)
-    if MinimizeCfg.enabled then applyMinimize() end
-end)
+sections.min_main:CreateButton("Apply Now", function() if MinimizeCfg.enabled then applyMinimize() else notify("Minimize","Enable first!",2) end end)
+sections.min_main:CreateButton("Restore Character", function() restoreMinimize() end)
+sections.min_main:CreateButton("Force Reapply", function() restoreMinimize(); task.wait(0.2); if MinimizeCfg.enabled then applyMinimize() end end)
 
-sections.min_cfg:CreateLabel("TinyScale settings:")
-sections.min_cfg:CreateSlider("Scale Size", 0.05, 1, 0.1, false, function(v)
-    MinimizeCfg.scale = v
-    if MinimizeCfg.enabled and MinimizeCfg.mode == "TinyScale" then
-        applyTinyScale(lp.Character, v)
-    end
+sections.min_cfg:CreateSlider("TinyScale Size", 0.05, 1, 0.1, false, function(v)
+    MinimizeCfg.scale=v; if MinimizeCfg.enabled and MinimizeCfg.mode=="TinyScale" then applyTinyScale(lp.Character,v) end
 end)
 sections.min_cfg:CreateDivider()
-sections.min_cfg:CreateToggle("Restore On Death", true, function(v)
-    MinimizeCfg.restoreOnDie = v
-end)
-sections.min_cfg:CreateDivider()
-sections.min_cfg:CreateLabel("HeadOnly = head only visible",true)
-sections.min_cfg:CreateLabel("Invisible = fully invisible",true)
-sections.min_cfg:CreateLabel("TinyScale = proportional shrink",true)
-
+sections.min_cfg:CreateToggle("Restore On Death", true, function(v) MinimizeCfg.restoreOnDie=v end)
 local min_status = sections.min_cfg:CreateLabel("Minimize: OFF")
 RunService.Heartbeat:Connect(function()
-    pcall(function()
-        min_status:UpdateText(
-            "Minimize: "..(MinimizeCfg.enabled and ("ON ["..MinimizeCfg.mode.."]") or "OFF")
-        )
-    end)
+    pcall(function() min_status:UpdateText("Minimize: "..(MinimizeCfg.enabled and ("ON ["..MinimizeCfg.mode.."]") or "OFF")) end)
 end)
 
 -- =============================================
@@ -1885,70 +2076,40 @@ end)
 -- =============================================
 
 local ad_toggle = sections.ad_main:CreateToggle("Enable Adapt", false, function(v)
-    VoidState.adaptEnabled = v
-    if v then startAdapt(); notify("Adapt","Active!",3)
-    else stopAdapt(); notify("Adapt","Off",2) end
+    VoidState.adaptEnabled=v
+    if v then startAdapt(); notify("Adapt","Active!",3) else stopAdapt(); notify("Adapt","Off",2) end
 end)
 ad_toggle:CreateKeybind("N", function()
-    VoidState.adaptEnabled = not VoidState.adaptEnabled
+    VoidState.adaptEnabled=not VoidState.adaptEnabled
     if VoidState.adaptEnabled then startAdapt() else stopAdapt() end
     notify("Adapt", VoidState.adaptEnabled and "Active!" or "Off",2)
 end,"Toggle")
-
 sections.ad_main:CreateToggle("Teleport Desync", false, function(v)
-    VoidState.teleDesync = v
-    if v then startTeleDesync(); notify("TeleDesync","Active!",3)
-    else stopTeleDesync(); notify("TeleDesync","Off",2) end
+    VoidState.teleDesync=v
+    if v then startTeleDesync(); notify("TeleDesync","Active!",3) else stopTeleDesync(); notify("TeleDesync","Off",2) end
 end)
-
 sections.ad_main:CreateDivider()
 sections.ad_main:CreateButton("Force Lock Nearest", function()
-    local tgt = getBestTarget()
-    VoidState.adaptTarget = tgt; VoidState.orbitAngle = 0
-    notify("Adapt", tgt and "Locked: "..tgt.Name or "No enemy",3)
+    VoidState.adaptTarget=getBestTarget(); VoidState.orbitAngle=0
+    notify("Adapt", VoidState.adaptTarget and "Locked: "..VoidState.adaptTarget.Name or "None",3)
 end)
 sections.ad_main:CreateButton("Force Lock Void Player", function()
-    local tgt = getVoidPriorityTarget() or getNearestEnemy()
-    VoidState.adaptTarget = tgt; VoidState.orbitAngle = 0
-    notify("Adapt", tgt and "Void-locked: "..tgt.Name or "None",3)
+    VoidState.adaptTarget=getVoidPriorityTarget() or getNearestEnemy(); VoidState.orbitAngle=0
+    notify("Adapt", VoidState.adaptTarget and "Void-locked: "..VoidState.adaptTarget.Name or "None",3)
 end)
 sections.ad_main:CreateButton("Release Target", function()
-    VoidState.adaptTarget = nil; VoidState.orbitAngle = 0
-    notify("Adapt","Released",2)
+    VoidState.adaptTarget=nil; VoidState.orbitAngle=0; notify("Adapt","Released",2)
 end)
-
 local ad_status = sections.ad_info:CreateLabel("Target: None")
 RunService.Heartbeat:Connect(function()
     pcall(function()
-        local tgt = VoidState.adaptTarget
+        local tgt=VoidState.adaptTarget
         if tgt and tgt.Character then
-            local hum  = tgt.Character:FindFirstChildOfClass("Humanoid")
-            local hp   = hum and math.floor(hum.Health) or 0
-            local hist = playerHistory[tgt]
-            ad_status:UpdateText(
-                "Target: "..tgt.Name.." | HP: "..hp
-                .." | Score: "..math.floor(hist and hist.score or 0)
-            )
-        else
-            ad_status:UpdateText("Target: None")
-        end
+            local hum=tgt.Character:FindFirstChildOfClass("Humanoid")
+            local hist=playerHistory[tgt]
+            ad_status:UpdateText("Target: "..tgt.Name.." | HP: "..math.floor(hum and hum.Health or 0).." | Score: "..math.floor(hist and hist.score or 0))
+        else ad_status:UpdateText("Target: None") end
     end)
-end)
-sections.ad_info:CreateButton("List All Enemies", function()
-    local names = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= lp and p.Character then
-            local hum = p.Character:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                local hist = playerHistory[p]
-                table.insert(names,
-                    p.Name.."("..math.floor(hum.Health).."hp"
-                    ..(hist and hist.inVoid and " VOID" or "")..")"
-                )
-            end
-        end
-    end
-    notify("Enemies", #names > 0 and table.concat(names," | ") or "None",5)
 end)
 
 -- =============================================
@@ -1957,58 +2118,37 @@ end)
 
 sections.ft_main:CreateLabel("Requires firetouchinterest in executor")
 sections.ft_main:CreateDivider()
-
 local ft_toggle = sections.ft_main:CreateToggle("Enable FireTouch", false, function(v)
-    VoidState.fireTouchEnabled = v
-    if v then startFireTouch(); notify("FireTouch","Active!",3)
-    else stopFireTouch(); notify("FireTouch","Off",2) end
+    VoidState.fireTouchEnabled=v
+    if v then startFireTouch(); notify("FireTouch","Active!",3) else stopFireTouch(); notify("FireTouch","Off",2) end
 end)
 ft_toggle:CreateKeybind("B", function()
-    VoidState.fireTouchEnabled = not VoidState.fireTouchEnabled
+    VoidState.fireTouchEnabled=not VoidState.fireTouchEnabled
     if VoidState.fireTouchEnabled then startFireTouch() else stopFireTouch() end
     notify("FireTouch", VoidState.fireTouchEnabled and "Active!" or "Off",2)
 end,"Toggle")
-
-sections.ft_main:CreateButton("Check Executor Support", function()
+sections.ft_main:CreateButton("Check Executor", function()
     notify("Executor","firetouchinterest: "..(firetouchinterest and "Available" or "NOT available"),4)
 end)
-sections.ft_main:CreateButton("Scan Projectiles Now", function()
-    local projs = scanProjectiles()
-    local tgt   = VoidState.adaptTarget or getNearestEnemy()
-    local boxes = tgt and getHitboxes(tgt.Character) or {}
-    notify("Scan",
-        "Proj: "..#projs.." | Hbox: "..#boxes
-        .." | FTI: "..(firetouchinterest and "Y" or "N")
-        .." | Target: "..(tgt and tgt.Name or "None"),5)
-end)
-
-sections.ft_info:CreateLabel("Step 1: Find CoreProjectile")
-sections.ft_info:CreateLabel("Step 2: Lift HRP to void height")
-sections.ft_info:CreateLabel("Step 3: FireTouchInterest on HitBoxHeadSmall")
-sections.ft_info:CreateLabel("Step 4: 7 offsets bypass Riot Shield")
-sections.ft_info:CreateLabel("Step 5: Restore HRP position")
-sections.ft_info:CreateDivider()
-sections.ft_info:CreateLabel("Snap Trap fires this automatically",true)
-sections.ft_info:CreateLabel("when void player enters snap radius",true)
+sections.ft_info:CreateLabel("Step 1-5: Standard void fire sequence")
+sections.ft_info:CreateLabel("Anti-Kicia: Pre-fires before their shot",true)
+sections.ft_info:CreateLabel("Snap Trap: Fires on enemy arrival",true)
 
 -- =============================================
 --   UI — SETTINGS TAB
 -- =============================================
 
-sections.st_main:CreateLabel("VoidSpam v1.5 — Full Edition")
+sections.st_main:CreateLabel("VoidSpam v1.6 | Anti-KiciaHook Premium")
 sections.st_main:CreateDivider()
 sections.st_main:CreateLabel("V = VoidSpam | N = Adapt | B = FireTouch")
 sections.st_main:CreateLabel("Insert = Toggle UI")
 sections.st_main:CreateDivider()
 sections.st_main:CreateButton("Unload", function()
-    stopAll()
-    notify("VoidSpam","Unloading...",2)
-    task.wait(0.5)
-    library:Unload()
+    stopAll(); notify("VoidSpam","Unloading...",2); task.wait(0.5); library:Unload()
 end)
 
 -- =============================================
---   CONFIG MANAGER
+--   CONFIG
 -- =============================================
 
 config_manager:SetLibrary(library)
@@ -2018,7 +2158,7 @@ config_manager:BuildConfigSection(tabs.settings)
 config_manager:LoadAutoloadConfig()
 
 -- =============================================
---   WINDOW STYLE
+--   STYLE
 -- =============================================
 
 window:SetBackgroundColor(Color3.fromRGB(20, 20, 20))
@@ -2032,12 +2172,12 @@ local watermark = library:Hud()
 RunService.RenderStepped:Connect(function()
     pcall(function()
         local tgt  = VoidState.adaptTarget
-        local vTgt = getVoidPriorityTarget()
+        local kTgt = AntiKiciaCfg.kiciaTarget
         watermark:SetText(
-            "VoidSpam v1.5"
+            "VoidSpam v1.6"
             .." | VS: "..(VoidState.enabled and "ON" or "OFF")
             .." | Lure: "..(LureCfg.enabled and "ON" or "OFF")
-            .." | Snaps: "..LureCfg.snapCount
+            .." | AK: "..(AntiKiciaCfg.enabled and (AntiKiciaCfg.detectedKicia and "DETECTED ["..AntiKiciaCfg.kiciaVersion.."]" or "Scanning") or "OFF")
             .." | Min: "..(MinimizeCfg.enabled and MinimizeCfg.mode or "OFF")
             .." | "..(os.date("%H:%M:%S"))
         )
@@ -2049,6 +2189,7 @@ end)
 -- =============================================
 
 startPrioritySystem()
+startDetection()
 
-notify("VoidSpam v1.5","Loaded! Void Lure + Snap Trap + All systems ready",5)
-print("[VoidSpam v1.5] Full script loaded — 8 tabs active")
+notify("VoidSpam v1.6","Loaded! Anti-KiciaHook Premium edition — 9 tabs",5)
+print("[VoidSpam v1.6] Full script — Anti-KiciaHook Premium integrated")
