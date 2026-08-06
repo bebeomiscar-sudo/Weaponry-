@@ -1,2682 +1,1440 @@
--- AC Bypass
-local _stbl; _stbl = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
-    if mt and typeof(mt) == "table" and rawget(mt, "__mode") == "kv" then
-        local tr = debug.traceback()
-        if tr:find("MiscellaneousController") then
-            return _stbl({1,2,3}, {})
-        end
-    end
-    return _stbl(tbl, mt)
-end))
+-- ═══════════════════════════════════════════════════════════════════════
+-- RAGEBOT v2 — Full Fixed & Integrated System
+-- Fixes: p169 undefined, nil weapon guard, trove leaks,
+--        type fallback, reset order, processedParts stale,
+--        OnEmpty infinite swap, part destroy guard
+-- ═══════════════════════════════════════════════════════════════════════
 
-coroutine.wrap(function()
-    pcall(function()
-        local function _proc(o)
-            pcall(function()
-                if o:IsA("LocalScript") or o:IsA("ModuleScript") then
-                    local _s, nm = pcall(function() return o.Name:lower() end)
-                    if not _s or not nm then return end
-                    local _tags = {"anticheat","ac","detection","ban","kick","security","moderation"}
-                    for _i = 1, #_tags do
-                        if nm:find(_tags[_i]) then
-                            pcall(function() o.Disabled = true end)
-                            break
-                        end
-                    end
-                end
-            end)
-        end
-        pcall(function()
-            local _desc = game:GetDescendants()
-            for _i = 1, #_desc do _proc(_desc[_i]) end
-        end)
-        pcall(function() game.DescendantAdded:Connect(_proc) end)
-    end)
-    pcall(function()
-        local _nc = game:GetService("NetworkClient")
-        if not _nc then return end
-        _nc.ChildAdded:Connect(function(ch)
-            pcall(function()
-                local _ok, _n = pcall(function() return ch.Name:lower() end)
-                if _ok and _n then
-                    if _n:find("anticheat") or _n:find("detection") then
-                        pcall(function() ch:Destroy() end)
-                    end
-                end
-            end)
-        end)
-    end)
-end)()
+local RagebotV2 = {}
+RagebotV2.__index = RagebotV2
 
-local _fakeEv
-pcall(function()
-    _fakeEv = Instance.new("RemoteEvent")
-    _fakeEv.Name = "ClientAlert"
-    _fakeEv.Parent = LocalPlayer
-end)
+-- ═══════════════════════════════════════════
+-- SERVICES
+-- ═══════════════════════════════════════════
+local cr          = cloneref or function(o) return o end
+local Players     = cr(game:GetService("Players"))
+local RunService  = cr(game:GetService("RunService"))
+local Workspace   = cr(game:GetService("Workspace"))
 
-pcall(function()
-    local _rf = game:GetService("ReplicatedFirst")
-    local _tgt = _rf:WaitForChild("LocalScript3", 10)
-    local _ct = 0
-    local _gc = getgc(false)
-    for _i = 1, #_gc do
-        local _fn = _gc[_i]
-        if type(_fn) ~= "function" then continue end
-        local _ok1, _env = pcall(getfenv, _fn)
-        if not _ok1 or type(_env) ~= "table" then continue end
-        local _ok2, _scr = pcall(function() return rawget(_env, "script") end)
-        if not _ok2 or not _scr or typeof(_scr) ~= "Instance" then continue end
-        local _ok3, _ss = pcall(tostring, _scr)
-        if not _ok3 then continue end
-        if not (_scr == _tgt or (type(_ss) == "string" and _ss:find("LoadingScreen"))) then continue end
-        local _ok4, _consts = pcall(debug.getconstants, _fn)
-        if not _ok4 or type(_consts) ~= "table" then continue end
-        for _j = 1, #_consts do
-            local _c = _consts[_j]
-            if type(_c) == "string" and (_c:find("TakeTheL") or _c:find("ban") or _c:find("kick")) then
-                pcall(function()
-                    hookfunction(_fn, function() end)
-                    _ct += 1
-                end)
-                break
-            end
-        end
-    end
-end)
+local lp          = Players.LocalPlayer
 
-task.wait(4)
+-- ═══════════════════════════════════════════
+-- CONFIG SCHEMA
+-- ═══════════════════════════════════════════
+local RagebotConfig = {
+    Enabled           = false,
+    ShootFrames       = 1,        -- frames to hold shoot lock
+    Stability         = 0.05,     -- spatial gate threshold (seconds)
+    PrioritizeHackers = false,    -- target players with suspicious tags first
+
+    Weapons = {
+        Enabled  = true,
+        Priority = "Closest",     -- "Closest"|"LowHP"|"HighHP"|"Random"
+        OnEmpty  = "Reload",      -- "Reload"|"Swap"|"None"
+    },
+
+    Evasion = {
+        Mode = "Translocate",     -- "Translocate"|"ProjectileBreaker"|"Random"
+
+        Translocate = {
+            Offset = Vector3.new(0, 2, 0),
+        },
+
+        ProjectileBreaker = {
+            DepthUp              = 8,
+            DepthForward         = 4,
+            FallbackRadius       = 12,
+            FallbackHeight       = 6,
+            RepositionInterval   = 0.35,
+        },
+
+        Random = {
+            BaseRadius           = 20,
+            RadiusRandomFactor   = 0.5,
+            AnchorFromCharacter  = true,
+        },
+    },
+}
+
+-- ═══════════════════════════════════════════
+-- INTERNAL STATE
+-- ═══════════════════════════════════════════
+local RGState = {
+    enabled               = false,
+    innerContext          = nil,
+    lastTargetWorld       = nil,
+    lastDefensiveAngles   = nil,
+    attackCooldown        = 0,
+    hitboxWindowUntil     = 0,
+    repositionTimer       = 0,
+    originalFPDH          = Workspace.FallenPartsDestroyHeight,
+    connections           = {},
+    gluedParts            = {},     -- PartGlue table
+    measurements          = {},     -- SpatialLimitGate
+}
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: ShootLock — FIXED (p169 was undefined)
+-- ═══════════════════════════════════════════════════════════════════════
+local ShootLock = {}
+ShootLock.__index = ShootLock
+
+function ShootLock.new()
+    return setmetatable({ _lockedUntil = nil }, ShootLock)
+end
 
 --[[
-    Cloakware — integrated into nfpw GUI library
-    Original Cloakware logic by its authors.
-    GUI re-skinned to nfpw Library by request.
-    UPDATED: Fixed team check for Rivals, added Box ESP, Distance ESP, Wall Check for Aim
-    UPDATED V2: Body Rotation for Aim, Color Pickers instead of RGB sliders
-    UPDATED V3: Magic Bullet + Name Spoofer + First Person Aimbot Fix
+    FIX: Original had p169 undefined in 2-param function
+    Added lockDuration as proper 3rd parameter
+    Added nil guard on lockDuration before arithmetic
 ]]
+function ShootLock:ShouldFire(shouldLock, lockDuration)
+    local now       = os.clock()
+    local isLocked  = self._lockedUntil ~= nil
+                      and now < self._lockedUntil
 
--- ============================================================
--- GUI SETUP
--- ============================================================
-local stored_fonts = {}
-gui_config = {
-    Color        = Color3.fromRGB(255, 255, 255),
-    Keybind      = Enum.KeyCode.RightShift,
-    Assets       = false,
-    MinHeight    = 45,
-    MaxHeight    = 250,
-    InitialHeight= 300,
-    MinWidth     = 250,
-    MaxWidth     = 900,
-    InitialWidth = 460,
-}
-for _, v in Enum.Font:GetEnumItems() do table.insert(stored_fonts, v.Name) end
+    -- Only set lock if both params valid
+    if shouldLock and type(lockDuration) == "number" then
+        self._lockedUntil = now + lockDuration
+    end
 
-local config  = (getfenv().gui_config) or nil
-local library = loadstring(game:HttpGet("https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/Module.lua"))()
-local window  = library:CreateWindow(config, gethui())
-library:SetWindowName("Cloakhook | rivals beta")
-
--- ============================================================
--- TABS
--- ============================================================
-local tabs = {
-    cosmetics = window:CreateTab("Cosmetics"),
-    esp       = window:CreateTab("ESP"),
-    aim       = window:CreateTab("Aim"),
-    gunmods   = window:CreateTab("Gun Mods"),
-    visuals   = window:CreateTab("World"),
-    spoofer   = window:CreateTab("Spoofer"),
-    settings  = window:CreateTab("Settings"),
-}
-
--- ============================================================
--- HELPER
--- ============================================================
-local function Notify(data)
-    window:Notify(data.Title or "Cloakware", data.Description or "", data.Time or 3)
+    return isLocked or (shouldLock == true)
 end
 
--- ============================================================
--- TEAM CHECK HELPER (WORKS FOR RIVALS)
--- ============================================================
-local function IsTeamMate(player)
-    local LP = game:GetService("Players").LocalPlayer
-    if not LP then return false end
-    
-    if LP.Team and player.Team then
-        if LP.Team == player.Team then return true end
+function ShootLock:Reset()
+    self._lockedUntil = nil
+end
+
+function ShootLock:IsLocked()
+    if self._lockedUntil == nil then return false end
+    return os.clock() < self._lockedUntil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: PartGlue — FIXED (no destroy guard, refCount leak)
+-- ═══════════════════════════════════════════════════════════════════════
+local PartGlue = {}
+PartGlue.__index = PartGlue
+
+function PartGlue.new()
+    return setmetatable({ _glued = {} }, PartGlue)
+end
+
+--[[
+    FIX: Added Instance:IsDescendantOf check before
+    restoring weld — prevents error on destroyed parts
+    FIX: refCount was never bounds-checked (could go negative)
+]]
+function PartGlue:Acquire(part, hitboxRef)
+    if not part or not part.Parent then return CFrame.identity end
+
+    local entry = self._glued[part]
+    if entry then
+        entry.refCount += 1
+        return part.CFrame
     end
-    
-    if LP.TeamColor and player.TeamColor then
-        if LP.TeamColor == player.TeamColor then return true end
-    end
-    
-    local lpChar = LP.Character
-    local pChar = player.Character
-    if lpChar and pChar then
-        local lpTeam = lpChar:FindFirstChild("Team") or lpChar:FindFirstChild("team")
-        local pTeam = pChar:FindFirstChild("Team") or pChar:FindFirstChild("team")
-        if lpTeam and pTeam and lpTeam.Value == pTeam.Value then return true end
-        
-        local lpHead = lpChar:FindFirstChild("Head")
-        local pHead = pChar:FindFirstChild("Head")
-        if lpHead and pHead then
-            if lpHead.BrickColor == pHead.BrickColor then return true end
+
+    -- Find existing weld
+    local weld = nil
+    for _, v in ipairs(part:GetChildren()) do
+        if v:IsA("WeldConstraint") or v:IsA("Weld") then
+            weld = v; break
         end
     end
-    
-    local lpTeamAttr = LP:GetAttribute("Team")
-    local pTeamAttr = player:GetAttribute("Team")
-    if lpTeamAttr and pTeamAttr and lpTeamAttr == pTeamAttr then return true end
-    
+
+    -- Detach weld Part1, anchor part
+    local originalPart1 = nil
+    if weld then
+        originalPart1   = weld.Part1
+        weld.Part1      = nil
+    end
+
+    local ok = pcall(function()
+        part.Anchored = true
+    end)
+
+    if not ok then
+        -- Part is locked/read-only — skip
+        if weld and originalPart1 then
+            weld.Part1 = originalPart1
+        end
+        return part.CFrame
+    end
+
+    self._glued[part] = {
+        refCount     = 1,
+        weld         = weld,
+        originalPart1 = originalPart1,
+    }
+
+    return part.CFrame
+end
+
+function PartGlue:Release(part)
+    if not part then return end
+    local entry = self._glued[part]
+    if not entry then return end
+
+    entry.refCount = math.max(0, entry.refCount - 1)
+    if entry.refCount > 0 then return end
+
+    --[[
+        FIX: Check part AND weld still exist in workspace
+        before attempting to restore — prevents nil index error
+    ]]
+    local weld         = entry.weld
+    local origPart1    = entry.originalPart1
+
+    if weld and weld.Parent
+    and origPart1 and origPart1.Parent then
+        pcall(function()
+            weld.Part1          = origPart1
+            origPart1.Anchored  = false
+        end)
+    end
+
+    -- Unanchor the glued part if still valid
+    if part.Parent then
+        pcall(function() part.Anchored = false end)
+    end
+
+    self._glued[part] = nil
+end
+
+function PartGlue:ReleaseAll()
+    for part, _ in pairs(self._glued) do
+        self:Release(part)
+    end
+    table.clear(self._glued)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: SpatialLimitGate — FIXED (expectedDuration logic)
+-- ═══════════════════════════════════════════════════════════════════════
+local SpatialLimitGate = {}
+SpatialLimitGate.__index = SpatialLimitGate
+
+local SPATIAL_BOUND = 4194304  -- original v100 constant
+
+function SpatialLimitGate.new()
+    return setmetatable({ _measurements = {} }, SpatialLimitGate)
+end
+
+--[[
+    FIX: Original had no nil-check on measurements
+    Added position validity check before inserting
+    Added cleanup of old measurements (sliding window)
+]]
+function SpatialLimitGate:Check(character)
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return true end -- allow if no HRP
+
+    local pos = hrp.Position
+    local now = os.clock()
+
+    -- Check bounds
+    if  math.abs(pos.X) > SPATIAL_BOUND
+    or  math.abs(pos.Y) > SPATIAL_BOUND
+    or  math.abs(pos.Z) > SPATIAL_BOUND then
+        return false -- out of valid space
+    end
+
+    -- Record measurement
+    table.insert(self._measurements, { t = now, pos = pos })
+
+    -- Clean old measurements (keep last 2 seconds)
+    local cutoff = now - 2
+    local fresh  = {}
+    for _, m in ipairs(self._measurements) do
+        if m.t >= cutoff then
+            table.insert(fresh, m)
+        end
+    end
+    self._measurements = fresh
+
+    -- Stability check: if moved too fast recently → unstable
+    local stability = RagebotConfig.Stability
+    if #fresh >= 2 then
+        local oldest  = fresh[1]
+        local elapsed = now - oldest.t
+        if elapsed > 0 and elapsed < stability then
+            local dist = (pos - oldest.pos).Magnitude
+            if dist > 500 then
+                return false -- teleported too recently
+            end
+        end
+    end
+
+    return true
+end
+
+function SpatialLimitGate:Reset()
+    table.clear(self._measurements)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: OOBKiller — FIXED (stale _processedParts, no env validation)
+-- ═══════════════════════════════════════════════════════════════════════
+local OOBKiller = {}
+OOBKiller.__index = OOBKiller
+
+function OOBKiller.new()
+    return setmetatable({
+        --[[
+            FIX: Use weak keys so destroyed parts
+            are auto-removed from processedParts
+        ]]
+        _processedParts    = setmetatable({}, { __mode = "k" }),
+        _pool              = {},
+        _poolEnvironmentID = nil,
+        _nextCooldown      = -1,
+    }, OOBKiller)
+end
+
+--[[
+    FIX: Validate environment ID before using cached pool
+    Clears pool if environment changed (map reload/new round)
+]]
+function OOBKiller:_ValidatePool(environmentID)
+    if self._poolEnvironmentID ~= environmentID then
+        table.clear(self._pool)
+        table.clear(self._processedParts)
+        self._poolEnvironmentID = environmentID
+    end
+end
+
+function OOBKiller:_ScanParts(environmentID)
+    self:_ValidatePool(environmentID)
+    if #self._pool > 0 then return end
+
+    -- Scan workspace for OutOfBoundsPart with KillDelay == 0
+    for _, v in ipairs(Workspace:GetDescendants()) do
+        if v.Name == "OutOfBoundsPart"
+        and v:IsA("BasePart")
+        and not self._processedParts[v] then
+            local kd = v:GetAttribute("KillDelay")
+            if kd == 0 then
+                self._processedParts[v] = true
+                table.insert(self._pool, v)
+            end
+        end
+    end
+end
+
+function OOBKiller:GetKillPosition(environmentID, offset)
+    self:_ScanParts(environmentID)
+
+    if #self._pool > 0 then
+        local part     = self._pool[math.random(1, #self._pool)]
+        local safeOffset = offset or RagebotConfig.Evasion.Translocate.Offset
+        return part.Position + safeOffset
+    end
+
+    -- Fallback: random ring at ±1073741824
+    local axes    = { Vector3.xAxis, Vector3.zAxis }
+    local chosen  = axes[math.random(1, #axes)]
+    local sign    = math.random(0,1) == 0 and 1 or -1
+    return chosen * (1073741824 * sign)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: TargetSelection
+-- ═══════════════════════════════════════════════════════════════════════
+local TargetSelection = {}
+TargetSelection.__index = TargetSelection
+
+function TargetSelection.new()
+    return setmetatable({ _current = nil }, TargetSelection)
+end
+
+local function sameTm(p)
+    local ok = false
+    pcall(function()
+        local a = lp:GetAttribute("TeamID")
+        local b = p:GetAttribute("TeamID")
+        if a ~= nil and b ~= nil then ok = (a == b) end
+    end)
+    return ok
+end
+
+local function isAlive(char)
+    if not char then return false end
+    local hm = char:FindFirstChildOfClass("Humanoid")
+    return hm and hm.Health > 0
+end
+
+local function isSuspicious(p)
+    -- Basic heuristic: has exploit-related attributes or abnormal ping
+    local ping = p:GetAttribute("Ping")
+    if ping and ping < 5 then return true end
     return false
 end
 
--- ============================================================
--- WALL CHECK HELPER (FOR AIM)
--- ============================================================
-local function IsWallBetween(pos1, pos2)
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    local LP = game:GetService("Players").LocalPlayer
-    if LP.Character then
-        raycastParams.FilterDescendantsInstances = {LP.Character}
-    end
-    
-    local direction = pos2 - pos1
-    local raycastResult = workspace:Raycast(pos1, direction.Unit * direction.Magnitude, raycastParams)
-    
-    if raycastResult then
-        local hitPart = raycastResult.Instance
-        if hitPart and hitPart.CanCollide then
-            local hitPlayer = game:GetService("Players"):GetPlayerFromCharacter(hitPart.Parent)
-            if not hitPlayer or hitPlayer == LP then
-                return true
-            end
+function TargetSelection:GetTarget()
+    -- Validate current target still alive
+    if self._current then
+        local chr = self._current.Character
+        if not isAlive(chr) then
+            self._current = nil
         end
     end
-    
-    return false
-end
-
--- ============================================================
--- SPOOFER TAB
--- ============================================================
-local sec_spoofer_profile = tabs.spoofer:CreateSection("Profile Spoofer")
-local sec_spoofer_name    = tabs.spoofer:CreateSection("Name Changer", "right")
-local sec_spoofer_misc    = tabs.spoofer:CreateSection("Misc")
-local sec_spoofer_gunbg   = tabs.spoofer:CreateSection("Gun Background Changer", "right")
-
-local spooferVictim   = "20349956"
-local spooferLevel    = 1
-local spooferStreak   = 1
-local spooferElo      = 0
-local spooferKeys     = 1
-local spooferPremium  = false
-local spooferVerified = false
-local spooferPlatform = "DESKTOP"
-
-sec_spoofer_profile:CreateTextBox("Victim User ID", "20349956", true, function(v) spooferVictim = v end)
-sec_spoofer_profile:CreateSlider("Level",     1, 1000,  1, true, function(v) spooferLevel  = v end)
-sec_spoofer_profile:CreateSlider("Win Streak",0, 9999,  1, true, function(v) spooferStreak = v end)
-sec_spoofer_profile:CreateSlider("Elo",       0, 99999, 0, true, function(v) spooferElo    = v end)
-sec_spoofer_profile:CreateSlider("Keys",      0, 9999,  1, true, function(v) spooferKeys   = v end)
-sec_spoofer_profile:CreateToggle("Spoof Premium",        false, function(v) spooferPremium  = v end)
-sec_spoofer_profile:CreateToggle("Spoof Verified Badge", false, function(v) spooferVerified = v end)
-sec_spoofer_profile:CreateDropdown("Platform", {"DESKTOP","MOBILE","CONSOLE","VR"}, function(v) spooferPlatform = v end, "DESKTOP", false)
-sec_spoofer_profile:CreateButton("Apply Spoofer", function()
-    getgenv().Config = {
-        victim   = tonumber(spooferVictim) or 20349956,
-        helper   = "",
-        level    = spooferLevel,
-        streak   = spooferStreak,
-        elo      = spooferElo,
-        keys     = spooferKeys,
-        premium  = spooferPremium,
-        verified = spooferVerified,
-        unlockall= false,
-        platform = spooferPlatform,
-        join     = "discord.gg/rivalscomp",
-    }
-    pcall(function()
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/WEFGQERQEGWGE/a/refs/heads/main/UDRCRFRAMESCRIPT.lua"))()
-    end)
-    Notify({Title="Cloakware", Description="Spoofer applied!", Time=3})
-end)
-
--- ============================================================
--- NAME SPOOFER (NAME ONLY)
--- ============================================================
-getgenv().NameSpooferConfig = getgenv().NameSpooferConfig or {
-    name_spoof = false,
-    your_spoofed_name = "Andy",
-    spoofed_enemy_names = "Johnny",
-}
-
-local nameSpooferRunning = false
-local nameSpooferConnections = {}
-
-local function startNameSpoofer()
-    if nameSpooferRunning then return end
-    nameSpooferRunning = true
-    
-    local Players = game:GetService("Players")
-    local LocalPlayer = Players.LocalPlayer
-    local Config = getgenv().NameSpooferConfig
-    local connections = {}
-
-    local function spoofPlayer(player)
-        if not Config.name_spoof then return end
-        if player == LocalPlayer then
-            pcall(function()
-                player.Name = Config.your_spoofed_name
-                player.DisplayName = Config.your_spoofed_name
-            end)
-        else
-            pcall(function()
-                player.Name = Config.spoofed_enemy_names
-                player.DisplayName = Config.spoofed_enemy_names
-            end)
-        end
-    end
-
-    local function findAllTitleLabels(instance, results)
-        results = results or {}
-        if not instance then return results end
-        for _, child in ipairs(instance:GetChildren()) do
-            if child:IsA("TextLabel") and child.Name == "Title" then
-                table.insert(results, child)
-            end
-            findAllTitleLabels(child, results)
-        end
-        return results
-    end
-
-    local GUI_PATH = {
-        "PlayerGui", "MainGui", "PlayerList", "Container",
-        "Elements", "Container", "Middle", "List", "Container"
-    }
-
-    local function getListContainer()
-        local node = LocalPlayer
-        for _, name in ipairs(GUI_PATH) do
-            if not node then return nil end
-            node = node:FindFirstChild(name)
-        end
-        return node
-    end
-
-    local function spoofTitleLabelsInContainer(container)
-        if not container then return end
-        for _, playerFrame in ipairs(container:GetChildren()) do
-            if playerFrame:IsA("Frame") then
-                local spoofed = false
-                local innerContainer = playerFrame:FindFirstChild("Container")
-                if innerContainer and innerContainer:IsA("Frame") then
-                    for _, child in ipairs(innerContainer:GetChildren()) do
-                        if child:IsA("Frame") then
-                            local titleLabel = child:FindFirstChild("Title")
-                            if titleLabel and titleLabel:IsA("TextLabel") then
-                                local isLocal =
-                                    titleLabel.Text == LocalPlayer.Name or
-                                    titleLabel.Text == LocalPlayer.DisplayName
-                                titleLabel.Text = isLocal
-                                    and Config.your_spoofed_name
-                                    or Config.spoofed_enemy_names
-                                spoofed = true
-                            end
-                        end
-                    end
-                end
-
-                if not spoofed then
-                    local labels = findAllTitleLabels(playerFrame)
-                    for _, titleLabel in ipairs(labels) do
-                        local isLocal =
-                            titleLabel.Text == LocalPlayer.Name or
-                            titleLabel.Text == LocalPlayer.DisplayName
-                        titleLabel.Text = isLocal
-                            and Config.your_spoofed_name
-                            or Config.spoofed_enemy_names
-                    end
-                end
-            end
-        end
-    end
-
-    local function watchContainerForNewFrames(container)
-        if not container then return end
-        local conn = container.ChildAdded:Connect(function(child)
-            if child:IsA("Frame") then
-                task.wait(0.1)
-                pcall(spoofTitleLabelsInContainer, container)
-            end
-        end)
-        table.insert(connections, conn)
-    end
-
-    local function startGuiSpoofLoop()
-        task.spawn(function()
-            local playerGui = LocalPlayer:WaitForChild("PlayerGui", 30)
-            if not playerGui then return end
-
-            local monitoredContainer = nil
-
-            while task.wait(0.5) do
-                if not Config.name_spoof then continue end
-
-                local listContainer = getListContainer()
-
-                if listContainer and listContainer ~= monitoredContainer then
-                    monitoredContainer = listContainer
-                    watchContainerForNewFrames(listContainer)
-                end
-
-                if listContainer then
-                    pcall(spoofTitleLabelsInContainer, listContainer)
-                end
-            end
-        end)
-    end
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        spoofPlayer(player)
-    end
-
-    local playerAddedConn = Players.PlayerAdded:Connect(function(player)
-        spoofPlayer(player)
-    end)
-    table.insert(connections, playerAddedConn)
-
-    startGuiSpoofLoop()
-
-    nameSpooferConnections = connections
-end
-
-local function stopNameSpoofer()
-    nameSpooferRunning = false
-    for _, conn in ipairs(nameSpooferConnections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    nameSpooferConnections = {}
-end
-
-sec_spoofer_name:CreateLabel("── Name Spoofer ──")
-sec_spoofer_name:CreateToggle("Enable Name Spoof", false, function(value)
-    getgenv().NameSpooferConfig.name_spoof = value
-    if value then
-        startNameSpoofer()
-        Notify({Title="Cloakware", Description="Name Spoofer ON", Time=3})
-    else
-        stopNameSpoofer()
-        Notify({Title="Cloakware", Description="Name Spoofer OFF", Time=3})
-    end
-end)
-
-sec_spoofer_name:CreateTextBox("Your Spoofed Name", "Andy", false, function(v)
-    getgenv().NameSpooferConfig.your_spoofed_name = v
-end)
-
-sec_spoofer_name:CreateTextBox("Enemy Spoofed Name", "Johnny", false, function(v)
-    getgenv().NameSpooferConfig.spoofed_enemy_names = v
-end)
-
-sec_spoofer_name:CreateButton("Apply Name Spoofer", function()
-    if not getgenv().NameSpooferConfig.name_spoof then
-        Notify({Title="Cloakware", Description="Enable Name Spoof first!", Time=3})
-        return
-    end
-    local Players = game:GetService("Players")
-    local LocalPlayer = Players.LocalPlayer
-    local Config = getgenv().NameSpooferConfig
-    
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then
-            pcall(function()
-                player.Name = Config.your_spoofed_name
-                player.DisplayName = Config.your_spoofed_name
-            end)
-        else
-            pcall(function()
-                player.Name = Config.spoofed_enemy_names
-                player.DisplayName = Config.spoofed_enemy_names
-            end)
-        end
-    end
-    Notify({Title="Cloakware", Description="Names applied!", Time=3})
-end)
-
-sec_spoofer_misc:CreateToggle("Aim Assist on PC", false, function(value)
-    if value then
-        pcall(function()
-            local DC = require(game:GetService("Players").LocalPlayer.PlayerScripts.Controllers:WaitForChild("DebugController"))
-            DC:SetHandicapsEnabled(true)
-        end)
-        Notify({Title="Cloakware", Description="Aim Assist ON", Time=3})
-    else
-        Notify({Title="Cloakware", Description="Rejoin to disable Aim Assist", Time=3})
-    end
-end)
-
--- Gun BG Color Pickers
-local gunBGToggle = false
-local gunBGColor = Color3.fromRGB(100, 0, 200)
-local gunStrokeColor = Color3.fromRGB(170, 0, 255)
-
-sec_spoofer_gunbg:CreateLabel("Gun Background Changer")
-sec_spoofer_gunbg:CreateLabel("Background Color")
-sec_spoofer_gunbg:CreateColorpicker("BG Color", function(color, transparency)
-    gunBGColor = color
-end, false, false, nil)
-sec_spoofer_gunbg:CreateLabel("Stroke Color")
-sec_spoofer_gunbg:CreateColorpicker("Stroke Color", function(color, transparency)
-    gunStrokeColor = color
-end, false, false, nil)
-sec_spoofer_gunbg:CreateToggle("Enable Gun BG Changer", false, function(value)
-    gunBGToggle = value
-    local player = game:GetService("Players").LocalPlayer
-    local handlerPath = player:WaitForChild("PlayerScripts"):WaitForChild("Modules", 10)
-    if not handlerPath then Notify({Title="Cloakware", Description="Modules folder not found", Time=3}) return end
-    local wsh = handlerPath:WaitForChild("WeaponStatusHandler", 5)
-    if not wsh then Notify({Title="Cloakware", Description="WeaponStatusHandler not found", Time=3}) return end
-    if value then
-        local ok, WSH = pcall(require, wsh)
-        if not ok or not WSH then Notify({Title="Cloakware", Description="Failed to load handler", Time=3}) return end
-        if not getgenv()._GunBGOrigFn then getgenv()._GunBGOrigFn = WSH.ApplyItemStatusToBackground end
-        WSH.ApplyItemStatusToBackground = function(self, background, stroke, status)
-            background.BackgroundColor3 = gunBGColor
-            if stroke then
-                stroke.Color     = gunStrokeColor
-                stroke.Thickness = 2
-            end
-            local parent = background.Parent
-            if parent and parent:FindFirstChild("Icon") then
-                pcall(function() parent.Icon.Picture.ImageTransparency = 0.1 end)
-            end
-            return getgenv()._GunBGOrigFn(self, background, stroke, "Banned")
-        end
-        Notify({Title="Cloakware", Description="Gun BG Changer ON", Time=3})
-    else
-        local ok, WSH = pcall(require, wsh)
-        if ok and WSH and getgenv()._GunBGOrigFn then WSH.ApplyItemStatusToBackground = getgenv()._GunBGOrigFn end
-        Notify({Title="Cloakware", Description="Gun BG Changer OFF", Time=3})
-    end
-end)
-
--- ============================================================
--- WORLD / VISUALS TAB
--- ============================================================
-local sec_sky      = tabs.visuals:CreateSection("Sky Changer")
-local sec_cross    = tabs.visuals:CreateSection("Crosshair", "right")
-local sec_display  = tabs.visuals:CreateSection("Display")
-local sec_pfx      = tabs.visuals:CreateSection("Player FX", "right")
-local sec_lighting = tabs.visuals:CreateSection("Lighting Effects")
-local sec_post     = tabs.visuals:CreateSection("Post Processing", "right")
-
-local skyOverrideIds = {
-    ["Cloudy"]="74767438665074",["Night Sky"]="88110670766869",["Night Space 2"]="107881180472035",
-    ["OG Sky"]="112101217860693",["SpongeBob"]="95002124246064",["Minecraft Night"]="82259228134115",
-    ["Minecraft Hills"]="83122419798321",["Fortnite"]="136330694284987",["Anime Sky"]="94472834002833",
-    ["Gray"]="137244370041816",["Pixel Sky"]="82609732302208",["Blue"]="91465938827700",
-    ["Cat"]="113962197892416",["Windows XP"]="104207244315138",["Anime Girl 67"]="109464581573289",
-}
-local activeSkyName = "None"
-local skyCharConn   = nil
-
-local function removeSkyConn()
-    if skyCharConn then skyCharConn:Disconnect() skyCharConn=nil end
-end
-local function applySkyById(id)
-    local L = game:GetService("Lighting")
-    for _,v in pairs(L:GetChildren()) do if v:IsA("Sky") then v:Destroy() end end
-    if not id then return end
-    local s = Instance.new("Sky") s.Name="CustomSky"
-    local a = "rbxassetid://"..tostring(id)
-    s.SkyboxBk=a s.SkyboxDn=a s.SkyboxFt=a s.SkyboxLf=a s.SkyboxRt=a s.SkyboxUp=a s.Parent=L
-end
-local function runSkyOnce(skyName)
-    task.spawn(function()
-        pcall(function() loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Cosmos-sky-60497"))() end)
-        local id = skyOverrideIds[skyName]
-        if id then task.wait(0.5) applySkyById(tonumber(id)) end
-    end)
-end
-local function activateSky(skyName)
-    removeSkyConn() activeSkyName = skyName
-    if skyName == "None" then applySkyById(nil) return end
-    runSkyOnce(skyName)
-    local player = game:GetService("Players").LocalPlayer
-    skyCharConn = player.CharacterAdded:Connect(function()
-        task.wait(1) if activeSkyName == skyName then runSkyOnce(skyName) end
-    end)
-end
-
-local skyList = {"None","Cosmos","Cloudy","Night Sky","Night Space 2","OG Sky","SpongeBob",
-    "Minecraft Night","Minecraft Hills","Fortnite","Anime Sky","Gray","Pixel Sky",
-    "Blue","Cat","Windows XP","Anime Girl 67"}
-sec_sky:CreateDropdown("Sky Changer", skyList, function(value)
-    activateSky(value)
-    Notify({Title="Cloakware", Description=value=="None" and "Sky removed" or "Sky: "..value, Time=3})
-end, "None", false)
-
-sec_sky:CreateLabel("Sky Ambient / Light")
-local lightPresets = {"Default","Sunrise","Golden Hour","Midday","Overcast","Moonlight","Deep Night","Purple Dusk","Neon Night"}
-sec_sky:CreateDropdown("Light Preset", lightPresets, function(value)
-    local L = game:GetService("Lighting")
-    local presets = {
-        ["Default"]     ={ct=14,  br=2,   am={70,70,70},    oa={127,127,127}, ct_={0,0,0},      cb={0,0,0}},
-        ["Sunrise"]     ={ct=6.5, br=1.5, am={255,160,80},  oa={255,120,60},  ct_={255,140,60}, cb={180,80,30}},
-        ["Golden Hour"] ={ct=17.5,br=1.8, am={255,180,80},  oa={255,150,50},  ct_={255,160,60}, cb={120,60,20}},
-        ["Midday"]      ={ct=12,  br=3,   am={140,160,200}, oa={160,180,220}, ct_={200,220,255},cb={80,100,140}},
-        ["Overcast"]    ={ct=13,  br=0.8, am={120,120,130}, oa={140,140,150}, ct_={160,160,180},cb={80,80,90}},
-        ["Moonlight"]   ={ct=0,   br=0.4, am={30,40,80},    oa={20,30,70},    ct_={60,80,150},  cb={10,15,40}},
-        ["Deep Night"]  ={ct=2,   br=0.1, am={5,5,15},      oa={5,5,10},      ct_={10,10,30},   cb={0,0,5}},
-        ["Purple Dusk"] ={ct=19,  br=1.2, am={80,30,120},   oa={60,20,100},   ct_={120,50,180}, cb={40,10,70}},
-        ["Neon Night"]  ={ct=0,   br=0.3, am={0,200,180},   oa={200,0,150},   ct_={0,255,200},  cb={180,0,120}},
-    }
-    local p = presets[value] if not p then return end
-    L.ClockTime=p.ct L.Brightness=p.br
-    L.Ambient           = Color3.fromRGB(table.unpack(p.am))
-    L.OutdoorAmbient    = Color3.fromRGB(table.unpack(p.oa))
-    L.ColorShift_Top    = Color3.fromRGB(table.unpack(p.ct_))
-    L.ColorShift_Bottom = Color3.fromRGB(table.unpack(p.cb))
-    Notify({Title="Cloakware", Description="Light: "..value, Time=3})
-end, "Default", false)
-
-local customSkyInput = ""
-sec_sky:CreateLabel("Custom Sky Asset ID")
-sec_sky:CreateTextBox("Asset ID", "", true, function(v) customSkyInput = v end)
-sec_sky:CreateButton("Apply Custom Sky", function()
-    local id = tonumber(customSkyInput)
-    if not id then Notify({Title="Cloakware", Description="Invalid ID!", Time=3}) return end
-    removeSkyConn() activeSkyName = "Custom" applySkyById(id)
-    local player = game:GetService("Players").LocalPlayer
-    skyCharConn = player.CharacterAdded:Connect(function()
-        task.wait(1) if activeSkyName=="Custom" then applySkyById(id) end
-    end)
-    Notify({Title="Cloakware", Description="Custom sky applied!", Time=3})
-end)
-sec_sky:CreateButton("Remove Sky", function()
-    activateSky("None") Notify({Title="Cloakware", Description="Sky removed", Time=3})
-end)
-
--- ---- Crosshair ----
-local crosshairSize         = 18
-local crosshairTransparency = 0
-local crosshairSpinSpeed    = 180
-local crosshairSpinEnabled  = false
-local activeCrosshairImg    = nil
-local crosshairSpinConn     = nil
-
-local function updateCrosshairSize(px)
-    crosshairSize = px
-    if activeCrosshairImg and activeCrosshairImg.Parent then activeCrosshairImg.Size = UDim2.new(0,px,0,px) end
-end
-local function updateCrosshairTransparency(t)
-    crosshairTransparency = t
-    if activeCrosshairImg and activeCrosshairImg.Parent then activeCrosshairImg.ImageTransparency = t end
-end
-local function stopCrosshairSpin()
-    if crosshairSpinConn then crosshairSpinConn:Disconnect() crosshairSpinConn=nil end
-    if activeCrosshairImg and activeCrosshairImg.Parent then activeCrosshairImg.Rotation = 0 end
-end
-local function startCrosshairSpin()
-    stopCrosshairSpin()
-    local rot = 0
-    crosshairSpinConn = game:GetService("RunService").Heartbeat:Connect(function(dt)
-        if not crosshairSpinEnabled then stopCrosshairSpin() return end
-        if activeCrosshairImg and activeCrosshairImg.Parent then
-            rot = (rot + dt * crosshairSpinSpeed) % 360
-            activeCrosshairImg.Rotation = rot
-        end
-    end)
-end
-local function applyCrosshairId(id)
-    local UIS    = game:GetService("UserInputService")
-    local player = game:GetService("Players").LocalPlayer
-    stopCrosshairSpin() activeCrosshairImg = nil
-    if player.PlayerGui:FindFirstChild("CustomCrosshair") then player.PlayerGui.CustomCrosshair:Destroy() end
-    if not id then UIS.MouseIconEnabled = true return end
-    UIS.MouseIconEnabled = false
-    local gui = Instance.new("ScreenGui")
-    gui.Name="CustomCrosshair" gui.ResetOnSpawn=false gui.IgnoreGuiInset=true
-    gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling gui.DisplayOrder=999
-    gui.Parent = player:WaitForChild("PlayerGui")
-    local img = Instance.new("ImageLabel")
-    img.Parent=gui img.BackgroundTransparency=1
-    img.AnchorPoint=Vector2.new(0.5,0.5) img.Position=UDim2.new(0.5,0,0.5,0)
-    img.Size=UDim2.new(0,crosshairSize,0,crosshairSize)
-    img.Image="rbxassetid://"..tostring(id)
-    img.ImageTransparency=crosshairTransparency img.ZIndex=999
-    activeCrosshairImg = img
-    if crosshairSpinEnabled then startCrosshairSpin() end
-end
-
-local crosshairOptions = {
-    "None","Star Of David","Anime Girl","Waifu","Arch Nemesis","Blue",
-    "Anime Girl 2","Anime Girl 3","Cat Girl","War Girl","Anime Girl 4","Heart",
-    "Red","Red Circle",">_<","Red Dot","Cross Black & Orange","Shoot Here","Bear","Eye",
-}
-local crosshairIds = {
-    ["Star Of David"]="97119437608195",["Anime Girl"]="79216314487066",["Waifu"]="72832875179387",
-    ["Arch Nemesis"]="140137370989348",["Blue"]="132978903107437",["Anime Girl 2"]="82717960681617",
-    ["Anime Girl 3"]="89750858799107",["Cat Girl"]="70828131886725",["War Girl"]="124392198809000",
-    ["Anime Girl 4"]="135680763424054",["Heart"]="84741491642738",["Red"]="74167414999932",
-    ["Red Circle"]="137169210592771",[">_<"]="139087949379354",["Red Dot"]="126626243214155",
-    ["Cross Black & Orange"]="105360854855878",["Shoot Here"]="72211842134989",
-    ["Bear"]="110608604400943",["Eye"]="120563904191852",
-}
-
-sec_cross:CreateDropdown("Crosshair", crosshairOptions, function(value)
-    if value == "None" then applyCrosshairId(nil) Notify({Title="Cloakware",Description="Crosshair removed",Time=3}) return end
-    local id = tonumber(crosshairIds[value]) if not id then return end
-    applyCrosshairId(id) Notify({Title="Cloakware",Description="Crosshair: "..value,Time=3})
-end, "None", false)
-sec_cross:CreateSlider("Size",         8,   200, 18,  true, function(v) updateCrosshairSize(v) end)
-sec_cross:CreateSlider("Transparency", 0,   100, 0,   true, function(v) updateCrosshairTransparency(v/100) end)
-sec_cross:CreateToggle("Spin Crosshair", false, function(value)
-    crosshairSpinEnabled = value
-    if value then startCrosshairSpin() else stopCrosshairSpin() end
-    Notify({Title="Cloakware",Description=value and "Spin ON" or "Spin OFF",Time=3})
-end)
-sec_cross:CreateSlider("Spin Speed", 10, 1440, 180, true, function(v)
-    crosshairSpinSpeed = v
-    if crosshairSpinEnabled then startCrosshairSpin() end
-end)
-local customCrosshairInput = ""
-sec_cross:CreateLabel("Custom Crosshair Asset ID")
-sec_cross:CreateTextBox("Asset ID", "", true, function(v) customCrosshairInput = v end)
-sec_cross:CreateButton("Apply Custom Crosshair", function()
-    local id = tonumber(customCrosshairInput)
-    if not id then Notify({Title="Cloakware",Description="Invalid ID!",Time=3}) return end
-    applyCrosshairId(id) Notify({Title="Cloakware",Description="Custom crosshair applied!",Time=3})
-end)
-sec_cross:CreateButton("Remove Crosshair", function()
-    applyCrosshairId(nil) Notify({Title="Cloakware",Description="Crosshair removed",Time=3})
-end)
-
--- ---- Display ----
-sec_display:CreateToggle("Dark Textures", false, function(value)
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore textures",Time=4}) return end
-    local function isMapPart(p)
-        if not p:IsA("BasePart") then return false end
-        if p:FindFirstAncestorOfClass("Tool") then return false end
-        local pm = p:FindFirstAncestorOfClass("Model")
-        if pm and pm:FindFirstChildOfClass("Humanoid") then return false end
-        if p:FindFirstChildWhichIsA("SpecialMesh") or p:FindFirstChildWhichIsA("MeshPart") then return false end
-        if p.Size.Magnitude < 5 then return false end
-        if p.Material == Enum.Material.Grass or p.Name:lower():find("tree") then return false end
-        if not p.Anchored then return false end return true
-    end
-    local function applyCharcoal()
-        for _,p in pairs(workspace:GetDescendants()) do
-            if isMapPart(p) then p.Color=Color3.fromRGB(50,50,50) p.Material=Enum.Material.SmoothPlastic end
-        end
-    end
-    applyCharcoal()
-    game:GetService("Players").LocalPlayer.CharacterAdded:Connect(function() task.wait(1) applyCharcoal() end)
-    Notify({Title="Cloakware",Description="Dark Textures ON",Time=3})
-end)
-sec_display:CreateToggle("Remove Textures (Potato FPS)", false, function(value)
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore textures",Time=4}) return end
-    local player = game:GetService("Players").LocalPlayer
-    local function isWeaponDescendant(obj)
-        if obj:FindFirstAncestorOfClass("Tool") then return true end
-        local char = player.Character
-        if char and obj:IsDescendantOf(char) then return true end return false
-    end
-    local function nukeTextures(obj)
-        if isWeaponDescendant(obj) then return end
-        if obj:IsA("Texture") or obj:IsA("Decal") or obj:IsA("SpecialMesh") then pcall(function() obj.Transparency=1 end) end
-        if obj:IsA("BasePart") then
-            if obj:FindFirstAncestorOfClass("Tool") then return end
-            local pm=obj:FindFirstAncestorOfClass("Model")
-            if pm and pm:FindFirstChildOfClass("Humanoid") then return end
-            pcall(function() obj.Material=Enum.Material.SmoothPlastic obj.CastShadow=false end)
-        end
-    end
-    for _,obj in pairs(workspace:GetDescendants()) do pcall(nukeTextures,obj) end
-    workspace.DescendantAdded:Connect(function(obj) pcall(nukeTextures,obj) end)
-    local L = game:GetService("Lighting")
-    for _,v in pairs(L:GetChildren()) do
-        if v:IsA("BloomEffect") or v:IsA("SunRaysEffect") or v:IsA("DepthOfFieldEffect")
-        or v:IsA("ColorCorrectionEffect") or v:IsA("BlurEffect") then pcall(function() v.Enabled=false end) end
-    end
-    L.GlobalShadows=false
-    pcall(function() workspace.Terrain.Decoration=false workspace.Terrain.WaterWaveSize=0 end)
-    Notify({Title="Cloakware",Description="Potato Mode ON — max FPS!",Time=4})
-end)
-sec_display:CreateToggle("Fullbright", false, function(value)
-    local L = game:GetService("Lighting")
-    if value then
-        L.Brightness=100 L.FogEnd=100000 L.GlobalShadows=false
-        L.Ambient=Color3.fromRGB(178,178,178) L.OutdoorAmbient=Color3.fromRGB(178,178,178)
-        Notify({Title="Cloakware",Description="Fullbright ON",Time=3})
-    else
-        L.Brightness=2 L.FogEnd=100000 L.GlobalShadows=true
-        L.Ambient=Color3.fromRGB(70,70,70) L.OutdoorAmbient=Color3.fromRGB(127,127,127)
-        Notify({Title="Cloakware",Description="Fullbright OFF",Time=3})
-    end
-end)
-sec_display:CreateToggle("Wireframe / Ghost Map", false, function(value)
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore",Time=4}) return end
-    local function ghostPart(p)
-        if not p:IsA("BasePart") then return end
-        local pm=p:FindFirstAncestorOfClass("Model")
-        if pm and pm:FindFirstChildOfClass("Humanoid") then return end
-        if p:FindFirstAncestorOfClass("Tool") then return end
-        p.Transparency=0.85 p.CastShadow=false
-    end
-    for _,p in pairs(workspace:GetDescendants()) do pcall(ghostPart,p) end
-    workspace.DescendantAdded:Connect(function(p) pcall(ghostPart,p) end)
-    Notify({Title="Cloakware",Description="Ghost Map ON",Time=3})
-end)
-
-local rainbowMapEnabled = false
-sec_display:CreateToggle("Rainbow Map", false, function(value)
-    rainbowMapEnabled = value
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore",Time=4}) return end
-    local mapParts = {}
-    local function collectMapPart(p)
-        if not p:IsA("BasePart") then return end
-        local pm=p:FindFirstAncestorOfClass("Model")
-        if pm and pm:FindFirstChildOfClass("Humanoid") then return end
-        if p:FindFirstAncestorOfClass("Tool") then return end
-        if p.Anchored then table.insert(mapParts,p) end
-    end
-    for _,p in pairs(workspace:GetDescendants()) do collectMapPart(p) end
-    workspace.DescendantAdded:Connect(collectMapPart)
-    local hue = 0
-    game:GetService("RunService").Heartbeat:Connect(function(dt)
-        if not rainbowMapEnabled then return end
-        hue=(hue+dt*0.1)%1
-        local col=Color3.fromHSV(hue,0.8,1)
-        for _,p in pairs(mapParts) do pcall(function() p.Color=col end) end
-    end)
-    Notify({Title="Cloakware",Description="Rainbow Map ON",Time=3})
-end)
-
--- ---- Player FX ----
-sec_pfx:CreateToggle("No Arms", false, function(value)
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore arms",Time=3}) return end
-    local function disableIfArm(obj)
-        if obj:IsA("BasePart") and (obj.Name=="RightArm" or obj.Name=="LeftArm") then
-            obj.Transparency=1 obj.CanCollide=false obj.Anchored=true
-        end
-    end
-    for _,obj in pairs(workspace:GetDescendants()) do disableIfArm(obj) end
-    workspace.DescendantAdded:Connect(disableIfArm)
-    Notify({Title="Cloakware",Description="No Arms ON",Time=3})
-end)
-sec_pfx:CreateToggle("China Hat", false, function(value)
-    getgenv().ChinaHatSettings = getgenv().ChinaHatSettings or {}
-    getgenv().ChinaHatSettings.enabled = value
-    if not value then
-        local p = game:GetService("Players").LocalPlayer
-        if p.Character then
-            for _,obj in pairs(p.Character:GetDescendants()) do
-                if obj:IsA("Part") then
-                    local m = obj:FindFirstChildWhichIsA("SpecialMesh")
-                    if m and m.MeshId=="rbxassetid://1033714" then obj:Destroy() end
-                end
-            end
-        end
-        Notify({Title="Cloakware",Description="China Hat OFF",Time=3}) return
-    end
-    local S = {Players=game:GetService("Players")} S.LocalPlayer=S.Players.LocalPlayer
-    getgenv().ChinaHatSettings={enabled=true,hatColor=Color3.fromRGB(255,105,180),lightColor=Color3.fromRGB(255,105,180),lightBrightness=0,lightRange=12,scale=Vector3.new(1.7,1.1,1.7)}
-    local function CreateHat(Character)
-        local Head=Character:FindFirstChild("Head") if not Head then return end
-        local Cone=Instance.new("Part")
-        Cone.Size=Vector3.new(1,1,1) Cone.BrickColor=BrickColor.new("Hot pink")
-        Cone.Material=Enum.Material.Neon Cone.Transparency=0.2 Cone.Anchored=false Cone.CanCollide=false
-        Cone.Color=getgenv().ChinaHatSettings.hatColor
-        local Mesh=Instance.new("SpecialMesh") Mesh.MeshType=Enum.MeshType.FileMesh
-        Mesh.MeshId="rbxassetid://1033714" Mesh.Scale=getgenv().ChinaHatSettings.scale Mesh.Parent=Cone
-        local Weld=Instance.new("Weld") Weld.Part0=Head Weld.Part1=Cone Weld.C0=CFrame.new(0,0.9,0) Weld.Parent=Cone
-        local Light=Instance.new("PointLight") Light.Color=getgenv().ChinaHatSettings.lightColor
-        Light.Brightness=getgenv().ChinaHatSettings.lightBrightness Light.Range=getgenv().ChinaHatSettings.lightRange
-        Light.Shadows=true Light.Parent=Cone Cone.Parent=Character
-    end
-    local function OnChar(Character)
-        if getgenv().ChinaHatSettings.enabled then Character:WaitForChild("Head") CreateHat(Character) end
-    end
-    S.LocalPlayer.CharacterAdded:Connect(OnChar)
-    if S.LocalPlayer.Character then OnChar(S.LocalPlayer.Character) end
-    Notify({Title="Cloakware",Description="China Hat ON",Time=3})
-end)
-sec_pfx:CreateToggle("No Animations", false, function(value)
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore animations",Time=3}) return end
-    local function stiffen(char)
-        local animate=char:WaitForChild("Animate",5) if animate then animate.Disabled=true end
-        local hum=char:WaitForChild("Humanoid",5)
-        if hum then
-            local anim=hum:FindFirstChildOfClass("Animator") if anim then anim:Destroy() end
-            for _,t in pairs(hum:GetPlayingAnimationTracks()) do t:Stop(0) end hum.PlatformStand=true
-        end
-    end
-    local Players = game:GetService("Players")
-    for _,p in pairs(Players:GetPlayers()) do
-        if p.Character then task.spawn(stiffen,p.Character) end p.CharacterAdded:Connect(stiffen)
-    end
-    Players.PlayerAdded:Connect(function(p) p.CharacterAdded:Connect(stiffen) end)
-    Notify({Title="Cloakware",Description="No Animations ON",Time=3})
-end)
-
-local rainbowSelfEnabled = false
-sec_pfx:CreateToggle("Rainbow Self", false, function(value)
-    rainbowSelfEnabled = value
-    local player = game:GetService("Players").LocalPlayer
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore colours",Time=3}) return end
-    local hue = 0
-    game:GetService("RunService").Heartbeat:Connect(function(dt)
-        if not rainbowSelfEnabled then return end
-        hue=(hue+dt*0.15)%1
-        local col=Color3.fromHSV(hue,1,1)
-        if player.Character then
-            for _,p in pairs(player.Character:GetDescendants()) do
-                if p:IsA("BasePart") and p.Name~="HumanoidRootPart" then pcall(function() p.Color=col end) end
-            end
-        end
-    end)
-    Notify({Title="Cloakware",Description="Rainbow Self ON",Time=3})
-end)
-
--- ---- Lighting Effects ----
-sec_lighting:CreateToggle("Blood Moon", false, function(value)
-    local L=game:GetService("Lighting")
-    if value then
-        L.Ambient=Color3.fromRGB(80,0,0) L.OutdoorAmbient=Color3.fromRGB(60,0,0)
-        L.ColorShift_Top=Color3.fromRGB(180,0,0) L.ColorShift_Bottom=Color3.fromRGB(80,0,0)
-        L.FogColor=Color3.fromRGB(60,0,0) L.FogEnd=300
-    else
-        L.Ambient=Color3.fromRGB(70,70,70) L.OutdoorAmbient=Color3.fromRGB(127,127,127)
-        L.ColorShift_Top=Color3.fromRGB(0,0,0) L.ColorShift_Bottom=Color3.fromRGB(0,0,0)
-        L.FogColor=Color3.fromRGB(192,192,192) L.FogEnd=100000
-    end
-    Notify({Title="Cloakware",Description="Blood Moon "..(value and "ON" or "OFF"),Time=3})
-end)
-sec_lighting:CreateToggle("Night Mode", false, function(value)
-    local L=game:GetService("Lighting")
-    if value then
-        L.ClockTime=0 L.Brightness=0.3 L.Ambient=Color3.fromRGB(20,20,40)
-        L.OutdoorAmbient=Color3.fromRGB(10,10,30) L.FogColor=Color3.fromRGB(10,10,30) L.FogEnd=200
-    else
-        L.ClockTime=14 L.Brightness=2 L.Ambient=Color3.fromRGB(70,70,70)
-        L.OutdoorAmbient=Color3.fromRGB(127,127,127) L.FogEnd=100000
-    end
-    Notify({Title="Cloakware",Description="Night Mode "..(value and "ON" or "OFF"),Time=3})
-end)
-sec_lighting:CreateToggle("Retro / Sepia", false, function(value)
-    local L=game:GetService("Lighting")
-    if value then
-        L.Ambient=Color3.fromRGB(120,90,50) L.OutdoorAmbient=Color3.fromRGB(100,75,40)
-        L.ColorShift_Top=Color3.fromRGB(180,140,80) L.ColorShift_Bottom=Color3.fromRGB(80,55,20) L.Brightness=1.5
-    else
-        L.Ambient=Color3.fromRGB(70,70,70) L.OutdoorAmbient=Color3.fromRGB(127,127,127)
-        L.ColorShift_Top=Color3.fromRGB(0,0,0) L.ColorShift_Bottom=Color3.fromRGB(0,0,0) L.Brightness=2
-    end
-    Notify({Title="Cloakware",Description="Retro Mode "..(value and "ON" or "OFF"),Time=3})
-end)
-local rainbowLightingEnabled = false
-sec_lighting:CreateToggle("Rainbow Lighting", false, function(value)
-    rainbowLightingEnabled = value
-    if not value then Notify({Title="Cloakware",Description="Rejoin to restore lighting",Time=3}) return end
-    local L=game:GetService("Lighting") local hue=0
-    game:GetService("RunService").Heartbeat:Connect(function(dt)
-        if not rainbowLightingEnabled then return end
-        hue=(hue+dt*0.08)%1
-        local col=Color3.fromHSV(hue,0.7,1)
-        L.Ambient=col L.OutdoorAmbient=Color3.fromHSV((hue+0.5)%1,0.7,1) L.ColorShift_Top=col
-    end)
-    Notify({Title="Cloakware",Description="Rainbow Lighting ON",Time=3})
-end)
-
--- ---- Post Processing ----
-local blurEnabled = false
-local function getCloakCC()
-    local L=game:GetService("Lighting")
-    local cc=L:FindFirstChild("CloakCC")
-    if not cc then cc=Instance.new("ColorCorrectionEffect",L) cc.Name="CloakCC" end
-    return cc
-end
-sec_post:CreateToggle("Dense Fog", false, function(value)
-    local L=game:GetService("Lighting")
-    if value then L.FogStart=0 L.FogEnd=60 L.FogColor=Color3.fromRGB(200,200,200) else L.FogEnd=100000 end
-    Notify({Title="Cloakware",Description="Dense Fog "..(value and "ON" or "OFF"),Time=3})
-end)
-sec_post:CreateSlider("Fog Distance", 10, 2000, 60, true, function(v)
-    local L=game:GetService("Lighting") L.FogStart=0 L.FogEnd=v
-end)
-sec_post:CreateToggle("Blur Effect", false, function(value)
-    blurEnabled = value
-    local L=game:GetService("Lighting")
-    if value then
-        local b=L:FindFirstChild("CloakBlur") or Instance.new("BlurEffect",L)
-        b.Name="CloakBlur" b.Size=20
-    else local b=L:FindFirstChild("CloakBlur") if b then b:Destroy() end end
-    Notify({Title="Cloakware",Description="Blur "..(value and "ON" or "OFF"),Time=3})
-end)
-sec_post:CreateSlider("Blur Amount",       1,   56,  20, true, function(v)
-    local b=game:GetService("Lighting"):FindFirstChild("CloakBlur") if b then b.Size=v end
-end)
-sec_post:CreateSlider("Saturation",       -100, 100, 0,  true, function(v) getCloakCC().Saturation=v/100 end)
-sec_post:CreateSlider("Contrast",         -100, 100, 0,  true, function(v) getCloakCC().Contrast=v/100 end)
-sec_post:CreateSlider("Brightness Offset",-100, 100, 0,  true, function(v) getCloakCC().Brightness=v/100 end)
-sec_post:CreateToggle("Grayscale", false, function(value)
-    getCloakCC().Saturation = value and -1 or 0
-    Notify({Title="Cloakware",Description="Grayscale "..(value and "ON" or "OFF"),Time=3})
-end)
-
--- ============================================================
--- ESP TAB
--- ============================================================
-local sec_esp_main    = tabs.esp:CreateSection("Player ESP")
-local sec_esp_overlay = tabs.esp:CreateSection("Overlay & Chams", "right")
-
-local espTeamCheck = false
-
-sec_esp_main:CreateLabel("Team Check applies to all ESP features")
-sec_esp_main:CreateToggle("Team Check", false, function(value)
-    espTeamCheck = value
-    Notify({Title="Cloakware", Description="Team Check "..(value and "ON" or "OFF"), Time=3})
-end)
-
--- BOX ESP
-local boxESPEnabled = false
-local boxESPConns = {}
-local boxESPDrawings = {}
-local boxESPColor = Color3.fromRGB(255, 255, 255)
-local boxESPThickness = 2
-
-local function createBoxDrawing()
-    local box = {}
-    for i = 1, 4 do
-        local line = Drawing.new("Line")
-        line.Visible = false
-        line.Color = boxESPColor
-        line.Thickness = boxESPThickness
-        line.Transparency = 1
-        box[i] = line
-    end
-    return box
-end
-
-local function removeBoxESP()
-    for _, conn in pairs(boxESPConns) do pcall(function() conn:Disconnect() end) end
-    boxESPConns = {}
-    for _, playerBox in pairs(boxESPDrawings) do
-        for _, line in pairs(playerBox) do pcall(function() line:Remove() end) end
-    end
-    boxESPDrawings = {}
-end
-
-sec_esp_main:CreateLabel("── Box ESP ──")
-sec_esp_main:CreateToggle("Box ESP", false, function(value)
-    boxESPEnabled = value
-    if not value then removeBoxESP() Notify({Title="Cloakware", Description="Box ESP OFF", Time=3}) return end
-    local Players = game:GetService("Players")
-    local RunService = game:GetService("RunService")
-    local LP = Players.LocalPlayer
-    local Camera = workspace.CurrentCamera
-    local conn = RunService.RenderStepped:Connect(function()
-        if not boxESPEnabled then return end
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player == LP then continue end
-            if espTeamCheck and IsTeamMate(player) then
-                if boxESPDrawings[player] then for _, line in pairs(boxESPDrawings[player]) do line.Visible = false end end
-                continue
-            end
-            if player.Character and player.Character:FindFirstChild("Humanoid") and player.Character:FindFirstChild("Head") and player.Character:FindFirstChild("HumanoidRootPart") then
-                local char = player.Character
-                local head = char.Head
-                local hrp = char.HumanoidRootPart
-                if not boxESPDrawings[player] then boxESPDrawings[player] = createBoxDrawing() end
-                local box = boxESPDrawings[player]
-                local headPos = head.Position + Vector3.new(0, 0.5, 0)
-                local feetPos = hrp.Position - Vector3.new(0, 3, 0)
-                local headScreen, headVisible = Camera:WorldToViewportPoint(headPos)
-                local feetScreen, feetVisible = Camera:WorldToViewportPoint(feetPos)
-                if headVisible or feetVisible then
-                    local height = math.abs(headScreen.Y - feetScreen.Y)
-                    local width = height * 0.65
-                    box[1].From = Vector2.new(headScreen.X - width/2, headScreen.Y)
-                    box[1].To = Vector2.new(headScreen.X + width/2, headScreen.Y)
-                    box[2].From = Vector2.new(headScreen.X + width/2, headScreen.Y)
-                    box[2].To = Vector2.new(feetScreen.X + width/2, feetScreen.Y)
-                    box[3].From = Vector2.new(feetScreen.X + width/2, feetScreen.Y)
-                    box[3].To = Vector2.new(feetScreen.X - width/2, feetScreen.Y)
-                    box[4].From = Vector2.new(feetScreen.X - width/2, feetScreen.Y)
-                    box[4].To = Vector2.new(headScreen.X - width/2, headScreen.Y)
-                    for _, line in pairs(box) do line.Color = boxESPColor line.Thickness = boxESPThickness line.Visible = true end
-                else for _, line in pairs(box) do line.Visible = false end end
-            elseif boxESPDrawings[player] then for _, line in pairs(boxESPDrawings[player]) do line.Visible = false end end
-        end
-    end)
-    table.insert(boxESPConns, conn)
-    table.insert(boxESPConns, Players.PlayerRemoving:Connect(function(player)
-        if boxESPDrawings[player] then for _, line in pairs(boxESPDrawings[player]) do pcall(function() line:Remove() end) end boxESPDrawings[player] = nil end
-    end))
-    Notify({Title="Cloakware", Description="Box ESP ON", Time=3})
-end)
-sec_esp_main:CreateLabel("Box ESP Color")
-sec_esp_main:CreateColorpicker("Box Color", function(color, transparency) boxESPColor = color end, false, false, nil)
-sec_esp_main:CreateSlider("Box Thickness", 1, 5, 2, true, function(v) boxESPThickness = v end)
-
--- DISTANCE ESP
-local distanceESPEnabled = false
-local distanceESPConns = {}
-local distanceESPDrawings = {}
-local distanceESPColor = Color3.fromRGB(255, 255, 255)
-
-local function removeDistanceESP()
-    for _, conn in pairs(distanceESPConns) do pcall(function() conn:Disconnect() end) end
-    distanceESPConns = {}
-    for _, text in pairs(distanceESPDrawings) do pcall(function() text:Remove() end) end
-    distanceESPDrawings = {}
-end
-
-sec_esp_main:CreateLabel("── Distance ESP ──")
-sec_esp_main:CreateToggle("Distance ESP", false, function(value)
-    distanceESPEnabled = value
-    if not value then removeDistanceESP() Notify({Title="Cloakware", Description="Distance ESP OFF", Time=3}) return end
-    local Players = game:GetService("Players")
-    local RunService = game:GetService("RunService")
-    local LP = Players.LocalPlayer
-    local Camera = workspace.CurrentCamera
-    local conn = RunService.RenderStepped:Connect(function()
-        if not distanceESPEnabled then return end
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player == LP then continue end
-            if espTeamCheck and IsTeamMate(player) then if distanceESPDrawings[player] then distanceESPDrawings[player].Visible = false end continue end
-            if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Head") then
-                local char = player.Character
-                if not distanceESPDrawings[player] then
-                    local text = Drawing.new("Text")
-                    text.Size = 16 text.Center = true text.Outline = true text.Color = distanceESPColor text.Visible = false
-                    distanceESPDrawings[player] = text
-                end
-                local text = distanceESPDrawings[player]
-                local headScreen, headVisible = Camera:WorldToViewportPoint(char.Head.Position + Vector3.new(0, 1, 0))
-                if headVisible then
-                    local lpChar = LP.Character
-                    if lpChar and lpChar:FindFirstChild("HumanoidRootPart") then
-                        local distance = (lpChar.HumanoidRootPart.Position - char.HumanoidRootPart.Position).Magnitude
-                        text.Text = string.format("%.0fm", distance)
-                        text.Position = Vector2.new(headScreen.X, headScreen.Y - 30)
-                        text.Color = distanceESPColor text.Visible = true
-                    end
-                else text.Visible = false end
-            elseif distanceESPDrawings[player] then distanceESPDrawings[player].Visible = false end
-        end
-    end)
-    table.insert(distanceESPConns, conn)
-    table.insert(distanceESPConns, Players.PlayerRemoving:Connect(function(player)
-        if distanceESPDrawings[player] then pcall(function() distanceESPDrawings[player]:Remove() end) distanceESPDrawings[player] = nil end
-    end))
-    Notify({Title="Cloakware", Description="Distance ESP ON", Time=3})
-end)
-sec_esp_main:CreateLabel("Distance ESP Color")
-sec_esp_main:CreateColorpicker("Distance Color", function(color, transparency) distanceESPColor = color end, false, false, nil)
-
--- SKELETON ESP
-local skeletonEnabled = false
-local skeletonConnections = {}
-local skeletonDrawings = {}
-local skeletonColor = Color3.fromRGB(255, 255, 255)
-local skeletonThickness = 2
-local espBones = {
-    {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
-    {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
-    {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
-    {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
-    {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
-}
-
-local function createSkeletonLine()
-    local line = Drawing.new("Line")
-    line.Thickness = skeletonThickness line.Color = skeletonColor line.Transparency = 1
-    return line
-end
-
-local function removeSkeletonESP()
-    for _, conn in pairs(skeletonConnections) do pcall(function() conn:Disconnect() end) end
-    skeletonConnections = {}
-    for _, playerLines in pairs(skeletonDrawings) do for _, line in pairs(playerLines) do pcall(function() line:Remove() end) end end
-    skeletonDrawings = {}
-end
-
-sec_esp_main:CreateLabel("── Skeleton ESP ──")
-sec_esp_main:CreateToggle("Skeleton", false, function(value)
-    skeletonEnabled = value
-    if not value then removeSkeletonESP() Notify({Title="Cloakware", Description="Skeleton OFF", Time=3}) return end
-    local Players = game:GetService("Players")
-    local RunService = game:GetService("RunService")
-    local Camera = workspace.CurrentCamera
-    local LP = Players.LocalPlayer
-    local conn = RunService.RenderStepped:Connect(function()
-        if not skeletonEnabled then return end
-        for _, pl in pairs(skeletonDrawings) do for _, l in pairs(pl) do l.Visible = false end end
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LP and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character:FindFirstChild("HumanoidRootPart") then
-                if espTeamCheck and IsTeamMate(player) then continue end
-                local char = player.Character
-                if not skeletonDrawings[player] then
-                    skeletonDrawings[player] = {}
-                    for _ = 1, #espBones do table.insert(skeletonDrawings[player], createSkeletonLine()) end
-                end
-                for i, bone in pairs(espBones) do
-                    local p1 = char:FindFirstChild(bone[1])
-                    local p2 = char:FindFirstChild(bone[2])
-                    if p1 and p2 then
-                        local v1, on1 = Camera:WorldToViewportPoint(p1.Position)
-                        local v2, on2 = Camera:WorldToViewportPoint(p2.Position)
-                        local line = skeletonDrawings[player][i]
-                        line.Color = skeletonColor line.Thickness = skeletonThickness
-                        if on1 and on2 then line.From = Vector2.new(v1.X, v1.Y) line.To = Vector2.new(v2.X, v2.Y) line.Visible = true
-                        else line.Visible = false end
-                    end
-                end
-            end
-        end
-    end)
-    table.insert(skeletonConnections, conn)
-    table.insert(skeletonConnections, Players.PlayerRemoving:Connect(function(p)
-        if skeletonDrawings[p] then for _, line in pairs(skeletonDrawings[p]) do pcall(function() line:Remove() end) end skeletonDrawings[p] = nil end
-    end))
-    Notify({Title="Cloakware", Description="Skeleton ON", Time=3})
-end)
-sec_esp_main:CreateLabel("Skeleton Color")
-sec_esp_main:CreateColorpicker("Skeleton Color", function(color, transparency) skeletonColor = color end, false, false, nil)
-sec_esp_main:CreateSlider("Skeleton Thickness", 1, 10, 2, true, function(v) skeletonThickness = v end)
-
--- TRACERS
-local tracersEnabled = false
-local tracerConnections = {}
-local tracerDrawings = {}
-local tracerColor = Color3.fromRGB(255, 255, 255)
-local tracerThickness = 1
-
-local function removeTracers()
-    for _, conn in pairs(tracerConnections) do pcall(function() conn:Disconnect() end) end
-    tracerConnections = {}
-    for _, line in pairs(tracerDrawings) do pcall(function() line.Visible = false end) end
-    tracerDrawings = {}
-end
-
-local function setupTracerForPlayer(player)
-    local Players = game:GetService("Players")
-    local LP = Players.LocalPlayer
-    if player == LP then return end
-    local Camera = workspace.CurrentCamera
-    local line = Drawing.new("Line")
-    line.Visible = false line.Color = tracerColor line.Thickness = tracerThickness line.Transparency = 1
-    tracerDrawings[player] = line
-    local conn = game:GetService("RunService").RenderStepped:Connect(function()
-        if not tracersEnabled then line.Visible = false return end
-        if espTeamCheck and IsTeamMate(player) then line.Visible = false return end
-        if player.Character and player.Character:FindFirstChild("Humanoid") and player.Character:FindFirstChild("HumanoidRootPart") and player.Character.Humanoid.Health > 0 then
-            local vec, onScreen = Camera:WorldToViewportPoint(player.Character.HumanoidRootPart.Position)
-            if onScreen then
-                line.Color = tracerColor line.Thickness = tracerThickness
-                line.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
-                line.To = Vector2.new(vec.X, vec.Y) line.Visible = true
-            else line.Visible = false end
-        else line.Visible = false end
-    end)
-    table.insert(tracerConnections, conn)
-end
-
-sec_esp_main:CreateLabel("── Tracers ──")
-sec_esp_main:CreateToggle("Tracers", false, function(value)
-    tracersEnabled = value
-    if not value then removeTracers() Notify({Title="Cloakware", Description="Tracers OFF", Time=3}) return end
-    local Players = game:GetService("Players")
-    for _, player in ipairs(Players:GetPlayers()) do setupTracerForPlayer(player) end
-    table.insert(tracerConnections, Players.PlayerAdded:Connect(function(player) if tracersEnabled then setupTracerForPlayer(player) end end))
-    table.insert(tracerConnections, Players.PlayerRemoving:Connect(function(player)
-        if tracerDrawings[player] then pcall(function() tracerDrawings[player].Visible = false end) tracerDrawings[player] = nil end
-    end))
-    Notify({Title="Cloakware", Description="Tracers ON", Time=3})
-end)
-sec_esp_main:CreateLabel("Tracer Color")
-sec_esp_main:CreateColorpicker("Tracer Color", function(color, transparency) tracerColor = color end, false, false, nil)
-sec_esp_main:CreateSlider("Tracer Thickness", 1, 10, 1, true, function(v) tracerThickness = v end)
-
--- CHAMS
-local chamsEnabled = false
-local chamsConnections = {}
-local chamsColor = Color3.fromRGB(255, 0, 0)
-local chamsOriginals = {}
-local chamsWallhack = false
-
-local function applyChamsToChar(character, player)
-    local LP = game:GetService("Players").LocalPlayer
-    if player == LP then return end
-    if espTeamCheck and IsTeamMate(player) then return end
-    for _, part in pairs(character:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-            if not chamsOriginals[part] then
-                chamsOriginals[part] = {Color = part.Color, Material = part.Material, CastShadow = part.CastShadow, Transparency = part.Transparency}
-            end
-            pcall(function() part.Color = chamsColor part.Material = Enum.Material.Neon part.CastShadow = false end)
-        end
-    end
-    if chamsWallhack then
-        pcall(function()
-            local highlight = Instance.new("Highlight")
-            highlight.Name = "ChamsHighlight" highlight.Adornee = character
-            highlight.FillColor = chamsColor highlight.FillTransparency = 0.7
-            highlight.OutlineColor = chamsColor highlight.OutlineTransparency = 0
-            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop highlight.Parent = character
-        end)
-    end
-end
-
-local function removeChams()
-    for _, conn in pairs(chamsConnections) do pcall(function() conn:Disconnect() end) end
-    chamsConnections = {}
-    local Players = game:GetService("Players")
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then local hl = player.Character:FindFirstChild("ChamsHighlight") if hl then hl:Destroy() end end
-    end
-    for part, orig in pairs(chamsOriginals) do
-        pcall(function() part.Color = orig.Color part.Material = orig.Material part.CastShadow = orig.CastShadow part.Transparency = orig.Transparency end)
-    end
-    chamsOriginals = {}
-end
-
-sec_esp_overlay:CreateLabel("── Chams ──")
-sec_esp_overlay:CreateToggle("Chams", false, function(value)
-    chamsEnabled = value
-    if not value then removeChams() Notify({Title="Cloakware", Description="Chams OFF", Time=3}) return end
-    local Players = game:GetService("Players")
-    local LP = Players.LocalPlayer
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LP and player.Character then task.spawn(applyChamsToChar, player.Character, player) end
-        if player ~= LP then
-            table.insert(chamsConnections, player.CharacterAdded:Connect(function(char) if chamsEnabled then task.spawn(applyChamsToChar, char, player) end end))
-        end
-    end
-    table.insert(chamsConnections, Players.PlayerAdded:Connect(function(player)
-        if player == LP then return end
-        if player.Character and chamsEnabled then task.spawn(applyChamsToChar, player.Character, player) end
-        table.insert(chamsConnections, player.CharacterAdded:Connect(function(char) if chamsEnabled then task.spawn(applyChamsToChar, char, player) end end))
-    end))
-    table.insert(chamsConnections, game:GetService("RunService").Heartbeat:Connect(function()
-        if not chamsEnabled then return end
-        for part, _ in pairs(chamsOriginals) do pcall(function() if part and part.Parent then part.Color = chamsColor end end) end
-    end))
-    Notify({Title="Cloakware", Description="Chams ON", Time=3})
-end)
-sec_esp_overlay:CreateToggle("Chams Wallhack (See Through Walls)", false, function(value)
-    chamsWallhack = value
-    if chamsEnabled then
-        local Players = game:GetService("Players")
-        local LP = Players.LocalPlayer
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player.Character then local hl = player.Character:FindFirstChild("ChamsHighlight") if hl then hl:Destroy() end end
-        end
-        if value then
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LP and player.Character then
-                    if not (espTeamCheck and IsTeamMate(player)) then
-                        pcall(function()
-                            local highlight = Instance.new("Highlight")
-                            highlight.Name = "ChamsHighlight" highlight.Adornee = player.Character
-                            highlight.FillColor = chamsColor highlight.FillTransparency = 0.7
-                            highlight.OutlineColor = chamsColor highlight.OutlineTransparency = 0
-                            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop highlight.Parent = player.Character
-                        end)
-                    end
-                end
-            end
-        end
-    end
-    Notify({Title="Cloakware", Description="Chams Wallhack "..(value and "ON" or "OFF"), Time=3})
-end)
-sec_esp_overlay:CreateLabel("Chams Color")
-sec_esp_overlay:CreateColorpicker("Chams Color", function(color, transparency) chamsColor = color end, false, false, nil)
-
--- CAT ESP
-local catESPEnabled = false
-local catESPConnections = {}
-
-local function removeCatESP()
-    for _, conn in pairs(catESPConnections) do pcall(function() conn:Disconnect() end) end
-    catESPConnections = {}
-    local Players = game:GetService("Players")
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= Players.LocalPlayer and player.Character then
-            local root = player.Character:FindFirstChild("HumanoidRootPart")
-            if root then local e = root:FindFirstChild("ESP_Overlay") if e then e:Destroy() end end
-        end
-    end
-end
-
-local function applyCatESPOverlay(character, player)
-    local LP = game:GetService("Players").LocalPlayer
-    if player == LP then return end
-    if espTeamCheck and IsTeamMate(player) then return end
-    local root = character:WaitForChild("HumanoidRootPart", 10)
-    if not root then return end
-    if root:FindFirstChild("ESP_Overlay") then root.ESP_Overlay:Destroy() end
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "ESP_Overlay" billboard.Adornee = root billboard.AlwaysOnTop = true
-    billboard.ResetOnSpawn = false billboard.StudsOffset = Vector3.new(0, 0.5, 0)
-    billboard.MaxDistance = 1000 billboard.Size = UDim2.fromScale(7.5, 10.5) billboard.Parent = root
-    local img = Instance.new("ImageLabel")
-    img.Size = UDim2.fromScale(1, 1) img.BackgroundTransparency = 1
-    img.Image = "rbxassetid://99323528512964" img.ScaleType = Enum.ScaleType.Fit img.Parent = billboard
-end
-
-sec_esp_overlay:CreateLabel("── Cat ESP ──")
-sec_esp_overlay:CreateToggle("Cat ESP", false, function(value)
-    catESPEnabled = value
-    if value then
-        local Players = game:GetService("Players")
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= Players.LocalPlayer then
-                if player.Character then task.spawn(applyCatESPOverlay, player.Character, player) end
-                table.insert(catESPConnections, player.CharacterAdded:Connect(function(char) if catESPEnabled then task.spawn(applyCatESPOverlay, char, player) end end))
-            end
-        end
-        table.insert(catESPConnections, Players.PlayerAdded:Connect(function(player)
-            if player ~= Players.LocalPlayer then
-                if player.Character then task.spawn(applyCatESPOverlay, player.Character, player) end
-                table.insert(catESPConnections, player.CharacterAdded:Connect(function(char) if catESPEnabled then task.spawn(applyCatESPOverlay, char, player) end end))
-            end
-        end))
-        Notify({Title="Cloakware", Description="Cat ESP ON", Time=3})
-    else removeCatESP() Notify({Title="Cloakware", Description="Cat ESP OFF", Time=3}) end
-end)
-
--- ============================================================
--- AIM TAB (FIRST PERSON FIX - ROTATES CAMERA/GUN)
--- ============================================================
-local sec_aim_target  = tabs.aim:CreateSection("Target Selection")
-local sec_aim_settings = tabs.aim:CreateSection("Aim Settings", "right")
-local sec_aim_fov     = tabs.aim:CreateSection("FOV Settings")
-local sec_aim_silent  = tabs.aim:CreateSection("Silent Aim", "right")
-
-local AimConfig = {
-    Enabled = false,
-    ToggleKey = Enum.KeyCode.L,
-    LockDistance = 500,
-    SmoothFactor = 15,
-    FOVRadius = 120,
-    ShowFOVCircle = true,
-    FOVColor = Color3.fromRGB(255, 50, 50),
-    FOVThickness = 2,
-    FOVTransparency = 20,
-    TeamCheck = true,
-    WallCheck = true,
-    AimParts = {"Head", "UpperTorso", "HumanoidRootPart"},
-    AimOffset = Vector3.new(0, 0, 0),
-    CycleInterval = 0.6,
-}
-
-local AIM_PARTS_LIST = {
-    "Head","UpperTorso","HumanoidRootPart","LowerTorso","Torso","LeftUpperArm","RightUpperArm",
-    "LeftLowerArm","RightLowerArm","LeftHand","RightHand","LeftUpperLeg","RightUpperLeg",
-    "LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot","LeftArm","RightArm","LeftLeg","RightLeg",
-}
-local aimPartsSelected = {Head = true, UpperTorso = true, HumanoidRootPart = true}
-
-local function rebuildAimParts()
-    AimConfig.AimParts = {}
-    for _, name in ipairs(AIM_PARTS_LIST) do if aimPartsSelected[name] then table.insert(AimConfig.AimParts, name) end end
-    if #AimConfig.AimParts == 0 then AimConfig.AimParts = {"HumanoidRootPart"} end
-end
-
-local aimRunning = false
-local aimLocked = false
-local aimTarget = nil
-local aimRenderConn = nil
-local aimInputConn = nil
-local aimFovGui = nil
-local aimFovStroke = nil
-local aimFovCircle = nil
-local aimPartCycleIdx = 1
-local aimPartCycleTimer = 0
-local isMobileDevice = false
-
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-
-local function setCircleColor(state)
-    if not aimFovStroke then return end
-    if state == "locked" then aimFovStroke.Color = Color3.fromRGB(0, 255, 80)
-    elseif state == "search" then aimFovStroke.Color = Color3.fromRGB(255, 165, 0)
-    else aimFovStroke.Color = AimConfig.FOVColor end
-end
-
-local function buildFovCircle()
-    local LP = Players.LocalPlayer
-    if aimFovGui then aimFovGui:Destroy() aimFovGui=nil aimFovStroke=nil aimFovCircle=nil end
-    if not AimConfig.ShowFOVCircle then return end
-    local sg = Instance.new("ScreenGui")
-    sg.Name="CloakAimFOV" sg.ResetOnSpawn=false sg.IgnoreGuiInset=true sg.Parent = LP:WaitForChild("PlayerGui")
-    aimFovGui = sg
-    local f = Instance.new("Frame")
-    f.AnchorPoint=Vector2.new(0.5,0.5) f.Position=UDim2.new(0.5,0,0.5,0)
-    f.Size=UDim2.new(0,AimConfig.FOVRadius*2,0,AimConfig.FOVRadius*2)
-    f.BackgroundTransparency=1 f.BorderSizePixel=0 f.Parent=sg
-    aimFovCircle = f
-    local corner = Instance.new("UICorner") corner.CornerRadius=UDim.new(1,0) corner.Parent=f
-    local stroke = Instance.new("UIStroke")
-    stroke.Color=AimConfig.FOVColor stroke.Thickness=AimConfig.FOVThickness stroke.Transparency=AimConfig.FOVTransparency/100 stroke.Parent=f
-    aimFovStroke = stroke
-end
-
-local function removeFovCircle()
-    if aimFovGui then aimFovGui:Destroy() aimFovGui=nil aimFovStroke=nil aimFovCircle=nil end
-end
-
-local function updateFovSize()
-    if aimFovCircle then aimFovCircle.Size = UDim2.new(0,AimConfig.FOVRadius*2,0,AimConfig.FOVRadius*2) end
-end
-
-local function getAimPos(char)
-    local parts = AimConfig.AimParts
-    if #parts == 0 then return nil end
-    local idx = ((aimPartCycleIdx - 1) % #parts) + 1
-    for i = 0, #parts - 1 do
-        local name = parts[((idx - 1 + i) % #parts) + 1]
-        local p = char:FindFirstChild(name)
-        if p and p:IsA("BasePart") then return p.Position + AimConfig.AimOffset end
-    end
-    for _, p in pairs(char:GetChildren()) do
-        if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then return p.Position + AimConfig.AimOffset end
-    end
-    return nil
-end
-
-local function isInFovAim(worldPos)
-    local Camera = workspace.CurrentCamera
-    local sp, onScreen = Camera:WorldToScreenPoint(worldPos)
-    if not onScreen then return false end
-    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-    return (Vector2.new(sp.X,sp.Y) - center).Magnitude <= AimConfig.FOVRadius
-end
-
-local function findBestAimTarget()
-    local LP = Players.LocalPlayer
-    local selfChar = LP.Character
-    local selfRoot = selfChar and selfChar:FindFirstChild("HumanoidRootPart")
-    if not selfRoot then return nil end
-    local best, bestDist = nil, math.huge
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LP and player.Character then
-            if AimConfig.TeamCheck and IsTeamMate(player) then continue end
-            local char = player.Character
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChildWhichIsA("BasePart")
-                if root then
-                    local worldDist = (root.Position - selfRoot.Position).Magnitude
-                    if worldDist <= AimConfig.LockDistance then
-                        local aimPos = getAimPos(char)
-                        if aimPos then
-                            if not isInFovAim(aimPos) then continue end
-                            if AimConfig.WallCheck and IsWallBetween(selfRoot.Position, aimPos) then continue end
-                            if worldDist < bestDist then bestDist = worldDist best = player end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
--- THIS ROTATES THE CAMERA (AND GUN IN FIRST PERSON) TOWARD TARGET
-local function aimCameraAtPosition(targetPos)
-    local Camera = workspace.CurrentCamera
-    if not Camera then return end
-    
-    local camPos = Camera.CFrame.Position
-    local direction = (targetPos - camPos).Unit
-    local targetCF = CFrame.lookAt(camPos, camPos + direction)
-    
-    local dt = math.min(RunService.RenderStepped:Wait() or 0.016, 0.1)
-    local alpha = math.clamp(1 - (1 - AimConfig.SmoothFactor/100)^(dt * 60), 0.01, 1)
-    
-    Camera.CFrame = Camera.CFrame:Lerp(targetCF, alpha)
-    
-    -- Also rotate character body
-    local LP = Players.LocalPlayer
-    local char = LP.Character
-    if char then
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        local rootPart = char:FindFirstChild("HumanoidRootPart")
-        if humanoid and rootPart then
-            local flatDir = Vector3.new(direction.X, 0, direction.Z)
-            if flatDir.Magnitude > 0.1 then
-                humanoid.AutoRotate = false
-                rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + flatDir.Unit)
-            end
-        end
-    end
-end
-
-local function stopAim()
-    aimRunning=false aimLocked=false aimTarget=nil aimPartCycleIdx=1 aimPartCycleTimer=0
-    if aimRenderConn then aimRenderConn:Disconnect() aimRenderConn=nil end
-    if aimInputConn then aimInputConn:Disconnect() aimInputConn=nil end
-    removeFovCircle()
-end
-
-local function startAim()
-    aimRunning=true aimPartCycleIdx=1 aimPartCycleTimer=0
-    local UIS = UserInputService
-    
-    isMobileDevice = (UIS.TouchEnabled and not UIS.KeyboardEnabled)
-    
-    buildFovCircle()
-    aimLocked = isMobileDevice
-    setCircleColor(aimLocked and "search" or "idle")
-    
-    if not isMobileDevice then
-        aimInputConn = UIS.InputBegan:Connect(function(input, processed)
-            if processed then return end
-            if input.KeyCode == AimConfig.ToggleKey then
-                aimLocked = not aimLocked
-                if not aimLocked then aimTarget=nil end
-                setCircleColor(aimLocked and "search" or "idle")
-            end
-        end)
-    end
-    
-    aimRenderConn = RunService.RenderStepped:Connect(function(dt)
-        if not aimRunning or not aimLocked then return end
-        
-        aimTarget = findBestAimTarget()
-        setCircleColor(aimTarget and "locked" or "search")
-        
-        if not aimTarget then return end
-        
-        local char = aimTarget.Character
-        if not char then return end
-        
-        if #AimConfig.AimParts > 1 then
-            aimPartCycleTimer = aimPartCycleTimer + dt
-            if aimPartCycleTimer >= AimConfig.CycleInterval then 
-                aimPartCycleTimer = 0 
-                aimPartCycleIdx = (aimPartCycleIdx % #AimConfig.AimParts) + 1 
-            end
-        end
-        
-        local aimPos = getAimPos(char)
-        if not aimPos then return end
-        
-        -- Rotate camera (and gun in first person) toward target
-        aimCameraAtPosition(aimPos)
-    end)
-end
-
-sec_aim_target:CreateLabel("── Main Controls ──")
-sec_aim_target:CreateToggle("Aim Assist", false, function(value)
-    AimConfig.Enabled = value
-    if value then startAim() Notify({Title="Cloakware",Description="Aim Assist ON",Time=3})
-    else stopAim() Notify({Title="Cloakware",Description="Aim Assist OFF",Time=3}) end
-end)
-sec_aim_target:CreateToggle("Team Check", true, function(value) AimConfig.TeamCheck = value end)
-sec_aim_target:CreateToggle("Wall Check", true, function(value) AimConfig.WallCheck = value end)
-sec_aim_target:CreateLabel("── Aim Body Parts ──")
-sec_aim_target:CreateLabel("Select which body parts to aim at")
-for _, partName in ipairs(AIM_PARTS_LIST) do
-    local pn = partName
-    local default = (pn=="Head" or pn=="UpperTorso" or pn=="HumanoidRootPart")
-    sec_aim_target:CreateToggle("Aim at "..pn, default, function(value) aimPartsSelected[pn] = value rebuildAimParts() aimPartCycleIdx=1 aimPartCycleTimer=0 end)
-end
-
-sec_aim_settings:CreateLabel("── Aim Settings ──")
-sec_aim_settings:CreateSlider("Lock Distance", 50, 2000, 500, true, function(v) AimConfig.LockDistance = v end)
-sec_aim_settings:CreateSlider("Smooth Factor", 1, 100, 15, true, function(v) AimConfig.SmoothFactor = v end)
-sec_aim_settings:CreateSlider("Cycle Interval", 1, 50, 6, true, function(v) AimConfig.CycleInterval = v/10 end)
-sec_aim_settings:CreateLabel("Seconds between part switches")
-sec_aim_settings:CreateLabel("── Offset ──")
-sec_aim_settings:CreateSlider("Aim Y Offset", -5, 5, 0, true, function(v) AimConfig.AimOffset=Vector3.new(0,v,0) end)
-
-sec_aim_fov:CreateLabel("── FOV Settings ──")
-sec_aim_fov:CreateToggle("Show FOV Circle", true, function(value)
-    AimConfig.ShowFOVCircle = value
-    if aimRunning then if value then buildFovCircle() else removeFovCircle() end end
-end)
-sec_aim_fov:CreateSlider("FOV Radius", 20, 600, 120, true, function(v) AimConfig.FOVRadius=v updateFovSize() end)
-sec_aim_fov:CreateSlider("FOV Thickness", 1, 10, 2, true, function(v) AimConfig.FOVThickness=v if aimFovStroke then aimFovStroke.Thickness=v end end)
-sec_aim_fov:CreateSlider("FOV Transparency", 0, 100, 20, true, function(v) AimConfig.FOVTransparency=v if aimFovStroke then aimFovStroke.Transparency=v/100 end end)
-sec_aim_fov:CreateLabel("FOV Color")
-sec_aim_fov:CreateColorpicker("FOV Color", function(color, transparency) AimConfig.FOVColor = color if aimFovStroke then aimFovStroke.Color = color end end, false, false, nil)
-
-getgenv().Settings = getgenv().Settings or {Enabled = true, HitChance = 100, HitPart = "Head", WallCheck = true}
-sec_aim_silent:CreateLabel("── Silent Aim ──")
-sec_aim_silent:CreateToggle("Silent Aim", getgenv().Settings.Enabled, function(value)
-    getgenv().Settings.Enabled = value
-    if value then pcall(function() loadstring(game:HttpGet("https://pastebin.com/raw/91tkwTDY"))() end) Notify({Title="Cloakware",Description="Silent Aim ON",Time=3})
-    else Notify({Title="Cloakware",Description="Silent Aim OFF",Time=3}) end
-end)
-sec_aim_silent:CreateSlider("Hit Chance", 0, 100, getgenv().Settings.HitChance, true, function(value) getgenv().Settings.HitChance = value end)
-local hitParts = {"Head", "UpperTorso", "HumanoidRootPart", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
-sec_aim_silent:CreateDropdown("Hit Part", hitParts, function(value) getgenv().Settings.HitPart = value end, getgenv().Settings.HitPart, false)
-sec_aim_silent:CreateToggle("Wall Check", getgenv().Settings.WallCheck, function(value) getgenv().Settings.WallCheck = value end)
-
--- ============================================================
--- GUN MODS TAB
--- ============================================================
-local sec_gunmods_left  = tabs.gunmods:CreateSection("Weapon Modifiers")
-local sec_gunmods_magic = tabs.gunmods:CreateSection("Magic Bullet")
-local sec_gunmods_right = tabs.gunmods:CreateSection("Melee Modifiers", "right")
-
-sec_gunmods_left:CreateToggle("Rapid Fire", false, function(value)
-    if value then
-        pcall(function()
-            local RS = game:GetService("ReplicatedStorage")
-            local ItemLibrary = require(RS.Modules.ItemLibrary)
-            local function scan(tbl)
-                for _, v in pairs(tbl) do
-                    if typeof(v) == "table" and v.ShootCooldown ~= nil then v.ShootCooldown = 0.0000000000000001 end
-                    if typeof(v) == "table" then scan(v) end
-                end
-            end
-            scan(ItemLibrary)
-        end)
-        Notify({Title="Cloakware", Description="Rapid Fire ON", Time=3})
-    else Notify({Title="Cloakware", Description="Rejoin to restore fire rate", Time=3}) end
-end)
-
-sec_gunmods_left:CreateToggle("No Spread", false, function(value)
-    if value then
-        pcall(function()
-            local RS = game:GetService("ReplicatedStorage")
-            local ItemLibrary = require(RS.Modules.ItemLibrary)
-            local function setPerfect(tbl)
-                for _, v in pairs(tbl) do
-                    if typeof(v) == "table" then
-                        if v.ShootSpread then v.ShootSpread = 0 end
-                        if v.ShootAccuracy then v.ShootAccuracy = 0 end
-                        if v.ShootRecoil then v.ShootRecoil = 0 end
-                        setPerfect(v)
-                    end
-                end
-            end
-            setPerfect(ItemLibrary)
-        end)
-        Notify({Title="Cloakware", Description="No Spread ON", Time=3})
-    else Notify({Title="Cloakware", Description="Rejoin to restore spread", Time=3}) end
-end)
-
--- MAGIC BULLET
-sec_gunmods_magic:CreateLabel("── Magic Bullet ──")
-sec_gunmods_magic:CreateLabel("Basically Wallbanging")
-
-sec_gunmods_magic:CreateToggle("Magic Bullet", false, function(value)
-    if value then
-        local __a1b2c3 = setmetatable({}, {
-            __index = function(__d4e5f6, __g7h8i9)
-                local __j0k1l2, __m3n4o5 = pcall(function()
-                    return game:GetService(__g7h8i9)
-                end)
-                if __m3n4o5 then
-                    return cloneref(__m3n4o5)
-                end
-                return nil
-            end
+    if self._current then return self._current end
+
+    -- Find new target
+    local myHRP = lp.Character
+        and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+
+    local priority   = RagebotConfig.Weapons.Priority
+    local candidates = {}
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        if sameTm(p) then continue end
+        local chr = p.Character
+        if not isAlive(chr) then continue end
+        local hrp2 = chr:FindFirstChild("HumanoidRootPart")
+        if not hrp2 then continue end
+        local hm  = chr:FindFirstChildOfClass("Humanoid")
+        local dist = (myHRP.Position - hrp2.Position).Magnitude
+        table.insert(candidates, {
+            player     = p,
+            char       = chr,
+            hrp        = hrp2,
+            dist       = dist,
+            hp         = hm and hm.Health or 0,
+            suspicious = isSuspicious(p),
         })
-
-        local __p6q7r8 = getgenv()
-        if __p6q7r8.__s9t0u1 then
-            __p6q7r8.__s9t0u1:Shutdown()
-        end
-
-        local __v2w3x4 = __a1b2c3.Players
-        local __y5z6a7 = __a1b2c3.RunService
-        local __b8c9d0 = __a1b2c3.ReplicatedStorage
-        local __e1f2g3 = __a1b2c3.Workspace
-        local __h4i5j6 = __a1b2c3.UserInputService
-        local __k7l8m9 = __v2w3x4.LocalPlayer
-        local __n0o1p2 = __e1f2g3.CurrentCamera
-        local __q3r4s5 = __k7l8m9.PlayerScripts
-        local __t6u7v8 = require(__q3r4s5.Modules.ItemTypes.Gun)
-        local __w9x0y1 = require(__b8c9d0.Modules.Utility)
-
-        local __z2a3b4 = setmetatable({}, {
-            __index = function(_, __c5d6e7)
-                local __f8g9h0 = __k7l8m9.Character
-                if not __f8g9h0 then return nil end
-                if __c5d6e7 == "__root" then
-                    return __f8g9h0:FindFirstChild("HumanoidRootPart")
-                elseif __c5d6e7 == "__head" then
-                    return __f8g9h0:FindFirstChild("Head")
-                end
-                return nil
-            end
-        })
-
-        __p6q7r8.__s9t0u1 = {}
-
-        do
-            local __i1j2k3 = __p6q7r8.__s9t0u1
-
-            function __i1j2k3:__init()
-                self.__active = true
-                self.__target = nil
-                self.__desync = false
-                self.__conn1 = nil
-                self.__conn2 = nil
-                self.__task1 = nil
-                self.__oldfunc = nil
-                self:__setup()
-            end
-
-            function __i1j2k3:__setup()
-                self.__conn1 = __y5z6a7.Heartbeat:Connect(function()
-                    if not self.__active then return end
-                    self.__target = self:__find()
-                end)
-
-                local __l4m5n6 = __t6u7v8.StartShooting
-                self.__oldfunc = __l4m5n6
-                __t6u7v8.StartShooting = function(__o7p8q9, ...)
-                    local __r0s1t2 = {__l4m5n6(__o7p8q9, ...)}
-                    if not __o7p8q9.ClientFighter or not __o7p8q9.ClientFighter.IsLocalPlayer then
-                        return unpack(__r0s1t2)
-                    end
-
-                    local __u3v4w5 = __r0s1t2[3]
-                    if not __u3v4w5 or typeof(__u3v4w5) ~= "table" then
-                        return unpack(__r0s1t2)
-                    end
-
-                    __r0s1t2[4] = true
-                    local __x6y7z8 = self.__target
-
-                    if not self.__active or not __x6y7z8 or not __x6y7z8.Character then
-                        return unpack(__r0s1t2)
-                    end
-
-                    if not self.__desync or self.__curr ~= __x6y7z8 then
-                        self:__desync_start(__x6y7z8)
-                        task.wait(0.1)
-                    end
-
-                    if self.__task1 then
-                        task.cancel(self.__task1)
-                        self.__task1 = nil
-                    end
-
-                    local __a9b0c1 = __x6y7z8.Character:FindFirstChild("Head")
-                    if not __a9b0c1 then return unpack(__r0s1t2) end
-
-                    local __d2e3f4 = __a9b0c1.Position
-                    local __g5h6i7 = __a9b0c1.CFrame
-                    local __j8k9l0 = __d2e3f4 - Vector3.new(0, 5, 0)
-                    local __m1n2o3 = CFrame.lookAt(__j8k9l0, __d2e3f4)
-                    local __p4q5r6 = __g5h6i7:ToObjectSpace(CFrame.new(__d2e3f4 + Vector3.new(math.random(), math.random(), math.random())))
-
-                    __u3v4w5[utf8.char(0)] = __w9x0y1:EncodeCFrame(CFrame.new(__j8k9l0, __d2e3f4) * CFrame.Angles(__m1n2o3:ToOrientation()))
-                    __u3v4w5[utf8.char(1)] = __w9x0y1:EncodeCFrame(CFrame.new(__d2e3f4) * CFrame.Angles(__m1n2o3:ToOrientation()))
-                    __u3v4w5[utf8.char(2)] = __a9b0c1
-                    __u3v4w5[utf8.char(3)] = __w9x0y1:EncodeCFrame(__p4q5r6)
-
-                    self.__task1 = task.delay(0.15, function()
-                        self:__desync_stop()
-                    end)
-
-                    return unpack(__r0s1t2)
-                end
-            end
-
-            function __i1j2k3:__find()
-                local myChar = __k7l8m9.Character
-                if not myChar then return nil end
-                local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-                if not myRoot then return nil end
-               
-                local closest = nil
-                local closestDist = math.huge
-                local MAX_DISTANCE = 200
-
-                for _, player in next, __v2w3x4:GetPlayers() do
-                    if player == __k7l8m9 then continue end
-                    if player:GetAttribute("TeamID") == __k7l8m9:GetAttribute("TeamID") then continue end
-                   
-                    local char = player.Character
-                    if not char then continue end
-
-                    local root = char:FindFirstChild("HumanoidRootPart")
-                    local head = char:FindFirstChild("Head")
-                    local hum = char:FindFirstChildWhichIsA("Humanoid")
-                    
-                    if not (root and head and hum and hum.Health > 0) then continue end
-                   
-                    local dist = (myRoot.Position - root.Position).Magnitude
-                    
-                    if dist > MAX_DISTANCE then continue end
-                    
-                    if dist < closestDist then
-                        closestDist = dist
-                        closest = player
-                    end
-                end
-                
-                return closest
-            end
-
-            function __i1j2k3:__desync_start(__c3d4e5)
-                if self.__conn2 then self.__conn2:Disconnect() end
-                self.__desync = true
-                self.__curr = __c3d4e5
-
-                self.__conn2 = __y5z6a7.Heartbeat:Connect(function()
-                    if not self.__desync then return end
-                    local __f6g7h8 = __z2a3b4.__root
-                    if not __f6g7h8 then return end
-
-                    local __i9j0k1 = __c3d4e5.Character and __c3d4e5.Character:FindFirstChild("HumanoidRootPart")
-                    if not __i9j0k1 then
-                        self:__desync_stop()
-                        return
-                    end
-
-                    local __l2m3n4 = __f6g7h8.CFrame
-                    local __o5p6q7 = __f6g7h8.Velocity
-                    local __r8s9t0 = __f6g7h8.RotVelocity
-
-                    __f6g7h8.CFrame = __i9j0k1.CFrame * CFrame.new(0, -5, 0)
-
-                    __y5z6a7:BindToRenderStep("__restore", 101, function()
-                        __f6g7h8.CFrame = __l2m3n4
-                        __f6g7h8.Velocity = __o5p6q7
-                        __f6g7h8.RotVelocity = __r8s9t0
-                        __y5z6a7:UnbindFromRenderStep("__restore")
-                    end)
-                end)
-            end
-
-            function __i1j2k3:__desync_stop()
-                self.__desync = false
-                self.__curr = nil
-                if self.__conn2 then
-                    self.__conn2:Disconnect()
-                    self.__conn2 = nil
-                end
-            end
-
-            function __i1j2k3:Shutdown()
-                self.__active = false
-                if self.__conn1 then self.__conn1:Disconnect() end
-                if self.__conn2 then self.__conn2:Disconnect() end
-                if self.__task1 then task.cancel(self.__task1) end
-                if self.__oldfunc then
-                    __t6u7v8.StartShooting = self.__oldfunc
-                end
-            end
-
-            __i1j2k3:__init()
-        end
-        
-        Notify({Title="Cloakware", Description="Magic Bullet ON", Time=3})
-    else
-        if getgenv().__s9t0u1 then
-            getgenv().__s9t0u1:Shutdown()
-            getgenv().__s9t0u1 = nil
-        end
-        Notify({Title="Cloakware", Description="Magic Bullet OFF", Time=3})
     end
-end)
 
-sec_gunmods_magic:CreateLabel("── Info ──")
-sec_gunmods_magic:CreateLabel("Lets you shoot people through walls")
-sec_gunmods_magic:CreateLabel("Works with any gun, any distance")
+    if #candidates == 0 then return nil end
 
--- Katana
-local katanaCooldownEnabled = false
-local katanaCooldownLoop = nil
+    --[[
+        FIX: PrioritizeHackers pre-sorts suspicious players
+        to front before applying main priority sort
+    ]]
+    if RagebotConfig.PrioritizeHackers then
+        table.sort(candidates, function(a, b)
+            if a.suspicious ~= b.suspicious then
+                return a.suspicious
+            end
+            return false
+        end)
+    end
 
-local function setFastKatanaDeflect()
-    task.wait(0.01)
-    for _, v in pairs(getgc(true)) do
-        if type(v) == "table" then
-            if rawget(v, "DeflectCooldown") then rawset(v, "DeflectCooldown", 0.01) end
-            if rawget(v, "DeflectDuration") then rawset(v, "DeflectDuration", 0.01) end
+    if     priority == "Closest" then
+        table.sort(candidates, function(a,b) return a.dist < b.dist end)
+    elseif priority == "LowHP"   then
+        table.sort(candidates, function(a,b) return a.hp   < b.hp   end)
+    elseif priority == "HighHP"  then
+        table.sort(candidates, function(a,b) return a.hp   > b.hp   end)
+    elseif priority == "Random"  then
+        for i = #candidates, 2, -1 do
+            local j = math.random(i)
+            candidates[i], candidates[j] = candidates[j], candidates[i]
         end
     end
-    task.wait(0.01)
-    pcall(function()
-        local RS = game:GetService("ReplicatedStorage")
-        local Modules = RS:FindFirstChild("Modules")
-        if Modules then
-            local lib = Modules:FindFirstChild("ItemLibrary") or Modules:FindFirstChild("ItemLibrary", true)
-            if lib then
-                local IL = require(lib)
-                if IL and IL.Items then
-                    for _, item in pairs(IL.Items) do
-                        if item.Name and string.find(item.Name:lower(), "katana") then
-                            item.DeflectCooldown = 0.01
-                            item.DeflectDuration = 0.01
-                        end
-                    end
-                end
-            end
-        end
-    end)
-    task.wait(0.01)
-    pcall(function()
-        local LP = game:GetService("Players").LocalPlayer
-        local MeleeModule = require(LP.PlayerScripts.Modules.ItemTypes.Melee)
-        local oldNew = MeleeModule.new
-        MeleeModule.new = function(...)
-            local self = oldNew(...)
-            if self and self.Info and self.Info.Name and string.find(self.Info.Name:lower(), "katana") then
-                self.Info.DeflectCooldown = 0.01
-                self.Info.DeflectDuration = 0.8
-            end
-            return self
-        end
-    end)
+
+    self._current = candidates[1].player
+    return self._current
 end
 
-sec_gunmods_right:CreateToggle("Remove Katana Cooldown", false, function(value)
-    katanaCooldownEnabled = value
-    if value then
-        task.wait(0.5)
-        setFastKatanaDeflect()
-        katanaCooldownLoop = task.spawn(function()
-            while katanaCooldownEnabled do task.wait(3) pcall(setFastKatanaDeflect) end
-        end)
-        Notify({Title="Cloakware", Description="Remove Katana Cooldown ON", Time=3})
-    else
-        if katanaCooldownLoop then task.cancel(katanaCooldownLoop) katanaCooldownLoop=nil end
-        Notify({Title="Cloakware", Description="Katana Cooldown restored", Time=3})
-    end
-end)
-
--- ============================================================
--- SETTINGS TAB
--- ============================================================
-local sec_settings_cos  = tabs.settings:CreateSection("Cosmetics")
-local sec_settings_auto = tabs.settings:CreateSection("Auto Execute")
-local sec_settings_menu = tabs.settings:CreateSection("Menu", "right")
-local sec_settings_font = tabs.settings:CreateSection("Font", "right")
-
-local unlockAllEnabled = false
-local unlockAllWeaponsEnabled = false
-local autoExecEnabled = false
-local autoExecScript = ""
-
-sec_settings_cos:CreateToggle("Unlock All Cosmetics", false, function(v) unlockAllEnabled = v end)
-sec_settings_cos:CreateLabel("Client-side only. UI appears fully unlocked.")
-sec_settings_cos:CreateToggle("Unlock All Weapons", false, function(value)
-    unlockAllWeaponsEnabled = value
-    if value then pcall(function() loadstring(game:HttpGet("https://pastefy.app/7wVhe3Ef/raw"))() end) Notify({Title="Cloakware",Description="Unlock All Weapons ON",Time=3})
-    else Notify({Title="Cloakware",Description="Rejoin to re-lock weapons",Time=3}) end
-end)
-
-sec_settings_auto:CreateLabel("Runs a script URL on teleport or place change.")
-sec_settings_auto:CreateTextBox("Script URL", "", false, function(v) autoExecScript = v end)
-sec_settings_auto:CreateToggle("Enable Auto Execute", false, function(v) autoExecEnabled = v end)
-sec_settings_auto:CreateButton("Test Execute Now", function()
-    if not autoExecScript or autoExecScript=="" then Notify({Title="Cloakware",Description="Enter a URL first!",Time=3}) return end
-    pcall(function() loadstring(game:HttpGet(autoExecScript))() end)
-    Notify({Title="Cloakware",Description="Executed!",Time=3})
-end)
-
-task.spawn(function()
-    local TS = game:GetService("TeleportService")
-    TS.LocalPlayerArrivedFromTeleport:Connect(function()
-        if autoExecEnabled and autoExecScript ~= "" then task.wait(2) pcall(function() loadstring(game:HttpGet(autoExecScript))() end) end
-    end)
-    local lastPlaceId = game.PlaceId
-    game:GetPropertyChangedSignal("PlaceId"):Connect(function()
-        if game.PlaceId ~= lastPlaceId then
-            lastPlaceId = game.PlaceId
-            if autoExecEnabled and autoExecScript ~= "" then task.wait(2) pcall(function() loadstring(game:HttpGet(autoExecScript))() end) end
-        end
-    end)
-end)
-
-sec_settings_menu:CreateToggle("No Notifications", false, function(v) end)
-sec_settings_menu:CreateButton("Copy Discord Invite", function()
-    pcall(function() setclipboard("https://discord.gg/cQ8KzKegWn") end)
-    Notify({Title="Cloakware",Description="Discord link copied!",Time=3})
-end)
-
-sec_settings_font:CreateDropdown("Change Font", stored_fonts, function(value) window:SetFont(value) end, "", false)
-
-local config_manager = loadstring(game:HttpGet("https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/ConfigManager.lua"))()
-config_manager:SetLibrary(library)
-config_manager:SetWindow(window)
-config_manager:SetFolder("Cloakware")
-config_manager:BuildConfigSection(tabs.settings)
-config_manager:LoadAutoloadConfig()
-
-window:SetBackgroundColor(Color3.fromRGB(40, 40, 40))
-window:SetBackgroundTransparency(0.5)
-
--- ============================================================
--- EMOTES
--- ============================================================
-local sec_emotes_left  = tabs.cosmetics:CreateSection("Emote Swaps")
-local sec_emotes_right = tabs.cosmetics:CreateSection("Emote Actions", "right")
-
-local _emoteSwaps = {}
-local _emoteModules = {}
-local _allEmoteNames = {"None"}
-local emoteSlotSources = {}
-local emoteSlotTargets = {}
-
-for i = 1, 8 do
-    emoteSlotSources[i] = "None"
-    emoteSlotTargets[i] = "None"
-    local idx = i
-    sec_emotes_left:CreateLabel("Slot "..i)
-    sec_emotes_left:CreateDropdown("Slot "..i.." Source", {"None"}, function(v) emoteSlotSources[idx]=v end, "None", false)
-    sec_emotes_left:CreateDropdown("Slot "..i.." Target", {"None"}, function(v) emoteSlotTargets[idx]=v end, "None", false)
-    sec_emotes_left:CreateButton("Apply Slot "..i.." Swap", function()
-        local src = emoteSlotSources[idx]
-        local tgt = emoteSlotTargets[idx]
-        if src=="None" or tgt=="None" then Notify({Title="Cloakware",Description="Select both emotes!",Time=3}) return end
-        _emoteSwaps[src] = tgt
-        Notify({Title="Cloakware",Description=src.." → "..tgt,Time=4})
-    end)
-    sec_emotes_left:CreateButton("Clear Slot "..i.." Swap", function()
-        local src = emoteSlotSources[idx]
-        if src ~= "None" then _emoteSwaps[src] = nil end
-        Notify({Title="Cloakware",Description="Slot "..idx.." swap cleared",Time=3})
-    end)
+function TargetSelection:Clear()
+    self._current = nil
 end
 
-local unlockAllEmotesEnabled = false
-sec_emotes_right:CreateLabel("Clear all active emote swaps")
-sec_emotes_right:CreateButton("Clear All Swaps", function()
-    _emoteSwaps = {}
-    Notify({Title="Cloakware",Description="All emote swaps cleared",Time=3})
-end)
-sec_emotes_right:CreateToggle("Unlock All Emotes", false, function(value)
-    unlockAllEmotesEnabled = value
-    Notify({Title="Cloakware",Description=value and "Unlock All Emotes ON" or "Unlock All Emotes OFF",Time=3})
-end)
-sec_emotes_right:CreateLabel("Unlocks all emotes client-side")
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: WeaponAction — FIXED (infinite OnEmpty swap loop)
+-- ═══════════════════════════════════════════════════════════════════════
+local WeaponAction = {}
+WeaponAction.__index = WeaponAction
 
--- ============================================================
--- GAME LOGIC (Cosmetics)
--- ============================================================
-task.spawn(function()
-    local Players           = game:GetService("Players")
-    local ReplicatedStorage = game:GetService("ReplicatedStorage")
-    local player            = Players.LocalPlayer
-    local playerScripts     = player.PlayerScripts
-    local controllers       = playerScripts:WaitForChild("Controllers", 15)
+function WeaponAction.new(mFig, mEnum, rUseItem)
+    return setmetatable({
+        _mFig     = mFig,
+        _mEnum    = mEnum,
+        _rUseItem = rUseItem,
+    }, WeaponAction)
+end
 
-    local EnumLibrary     = require(ReplicatedStorage.Modules:WaitForChild("EnumLibrary", 10))
-    if EnumLibrary then pcall(function() EnumLibrary:WaitForEnumBuilder() end) end
-    local CosmeticLibrary = require(ReplicatedStorage.Modules:WaitForChild("CosmeticLibrary", 10))
-    local ItemLibrary     = require(ReplicatedStorage.Modules:WaitForChild("ItemLibrary", 10))
-    local DataController  = require(controllers:WaitForChild("PlayerDataController", 10))
+--[[
+    Gets current equipped item from LocalFighter
+    Returns: item, objectID, type ("Gun"|"Melee"|"Other")
+]]
+function WeaponAction:GetItem()
+    local lf = nil
+    pcall(function()
+        if self._mFig then lf = self._mFig.LocalFighter end
+    end)
+    if not lf then return nil, nil, nil end
 
-    if not CosmeticLibrary or not DataController then
-        Notify({Title="Cloakware", Description="Failed — wrong game?", Time=5}) return
-    end
+    local item = lf.EquippedItem
+    if not item then return nil, nil, nil end
 
-    local EmotesFolder = ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Emotes", 10)
-    if EmotesFolder then
-        for _,child in pairs(EmotesFolder:GetChildren()) do
-            if child:IsA("ModuleScript") then
-                _emoteModules[child.Name] = child
-                table.insert(_allEmoteNames, child.Name)
-            end
-        end
-        table.sort(_allEmoteNames, function(a,b)
-            if a=="None" then return true end if b=="None" then return false end return a<b
-        end)
-        if not getgenv()._CloakEmoteHookInstalled then
-            getgenv()._CloakEmoteHookInstalled = true
-            local oldRequire
-            oldRequire = hookfunction(require, newcclosure(function(module)
-                if typeof(module)=="Instance" and module:IsA("ModuleScript")
-                    and module.Parent==EmotesFolder then
-                    local swapTarget = _emoteSwaps[module.Name]
-                    if swapTarget and _emoteModules[swapTarget] then
-                        return oldRequire(_emoteModules[swapTarget])
-                    end
-                end
-                return oldRequire(module)
-            end))
-        end
-    end
+    local oid  = nil
+    local itype = "Other"
 
-    local equipped = {} local favorites = {} local constructingWeapon = nil
-    local viewingProfile = nil local lastUsedWeapon = nil
+    pcall(function() oid = item:Get("ObjectID") end)
 
-    local CONFIG_FOLDER = "Cloakware"
-    local CONFIG_FILE   = CONFIG_FOLDER.."/equipped_config.json"
-    local function ensureFolder()
-        if not isfolder(CONFIG_FOLDER) then makefolder(CONFIG_FOLDER) end
-    end
-    local function saveEquippedConfig(eq)
+    -- Determine type from item properties
+    local ok, isGun = pcall(function()
+        return item:Get("IsGun") or item.IsGun
+    end)
+    if ok and isGun then itype = "Gun" end
+
+    local ok2, isMelee = pcall(function()
+        return item:Get("IsMelee") or item.IsMelee
+    end)
+    if ok2 and isMelee then itype = "Melee" end
+
+    return item, oid, itype
+end
+
+--[[
+    FIX: OnEmpty Swap tracked with attempt counter
+    to prevent infinite loop when all weapons empty
+]]
+function WeaponAction:HandleOnEmpty(lf, oid)
+    local onEmpty = RagebotConfig.Weapons.OnEmpty
+    if onEmpty == "None" then return false end
+
+    if onEmpty == "Reload" then
         pcall(function()
-            ensureFolder()
-            local out = {}
-            for wKey, slots2 in pairs(eq) do
-                out[tostring(wKey)] = {}
-                for slotName, cd in pairs(slots2) do
-                    if not tostring(slotName):find("^__multi_") then
-                        out[tostring(wKey)][tostring(slotName)] = tostring(cd.Name or "")
-                    end
-                end
-            end
-            writefile(CONFIG_FILE, game:GetService("HttpService"):JSONEncode(out))
+            self._rUseItem:FireServer(
+                oid,
+                self._mEnum:ToEnum("Reload"),
+                {}, nil
+            )
         end)
+        return true
     end
-    local function loadEquippedConfig()
-        local data = {}
+
+    if onEmpty == "Swap" then
+        local items = {}
         pcall(function()
-            if isfile(CONFIG_FILE) then
-                data = game:GetService("HttpService"):JSONDecode(readfile(CONFIG_FILE))
+            if lf.Items then
+                for _, it in pairs(lf.Items) do
+                    table.insert(items, it)
+                end
             end
         end)
-        return data
-    end
 
-    local function cloneCosmetic(name, cosmeticType, options)
-        local base = CosmeticLibrary.Cosmetics[name]
-        if not base then return nil end
-        local data = {} for k,v in pairs(base) do data[k]=v end
-        data.Name=name data.Type=data.Type or cosmeticType data.Seed=data.Seed or math.random(1,1000000)
-        if EnumLibrary then
-            local ok,enumId=pcall(EnumLibrary.ToEnum,EnumLibrary,name)
-            if ok and enumId then data.Enum=enumId data.ObjectID=data.ObjectID or enumId end
-        end
-        if options then
-            if options.inverted~=nil then data.Inverted=options.inverted end
-            if options.favoritesOnly~=nil then data.OnlyUseFavorites=options.favoritesOnly end
-        end
-        return data
-    end
+        --[[
+            FIX: Track attempts — if all items empty
+            give up instead of infinite swap
+        ]]
+        local attempts = 0
+        local maxAttempts = #items
 
-    local origOwnsNormally    = CosmeticLibrary.OwnsCosmeticNormally
-    local origOwnsUniversally = CosmeticLibrary.OwnsCosmeticUniversally
-    local origOwnsForWeapon   = CosmeticLibrary.OwnsCosmeticForWeapon
-    local origOwnsCosmetic    = CosmeticLibrary.OwnsCosmetic
-    local origGet             = DataController.Get
-    local origGetWeaponData   = DataController.GetWeaponData
-
-    DataController.GetWeaponData = function(self, weaponName)
-        local data = origGetWeaponData(self, weaponName)
-        if not data then return nil end
-        local merged = {} for k,v in pairs(data) do merged[k]=v end merged.Name=weaponName
-        if equipped[weaponName] then
-            for ct,cd in pairs(equipped[weaponName]) do
-                if not tostring(ct):find("^__multi_") then merged[ct]=cd end
+        for _, it in ipairs(items) do
+            attempts += 1
+            if attempts > maxAttempts then
+                return false -- all empty, give up
             end
-        end
-        return merged
-    end
-
-    local function makeUnlockProxy(data)
-        local proxy = {}
-        if type(data)=="table" then for k,v in pairs(data) do proxy[k]=v end end
-        return setmetatable(proxy, {__index=function(_,k)
-            if type(k)=="string" and k~="" then return true end return nil
-        end})
-    end
-
-    local function buildGetFn(unlockCosmetics, unlockEmotes)
-        return function(self, key)
-            local data   = origGet(self, key)
-            local keyStr = tostring(key):lower()
-            if unlockCosmetics and keyStr=="cosmeticinventory" then return makeUnlockProxy(data) end
-            if unlockEmotes and (keyStr:find("emote") and keyStr:find("inventor")) then return makeUnlockProxy(data) end
-            if unlockEmotes and (keyStr=="ownedemotes" or keyStr=="emotes") then return makeUnlockProxy(data) end
-            if key=="FavoritedCosmetics" then
-                local result = data and table.clone(data) or {}
-                for w,favs in pairs(favorites) do
-                    result[w]=result[w] or {}
-                    for n,v in pairs(favs) do result[w][n]=v end
-                end
-                return result
-            end
-            return data
-        end
-    end
-
-    local function refreshDataGet()
-        DataController.Get = buildGetFn(unlockAllEnabled, unlockAllEmotesEnabled)
-    end
-    DataController.Get = buildGetFn(false, false)
-
-    local prevUnlockAll       = false
-    local prevUnlockAllEmotes = false
-    game:GetService("RunService").Heartbeat:Connect(function()
-        if unlockAllEnabled ~= prevUnlockAll then
-            prevUnlockAll = unlockAllEnabled
-            if unlockAllEnabled then
-                CosmeticLibrary.OwnsCosmeticNormally    = function() return true end
-                CosmeticLibrary.OwnsCosmeticUniversally = function() return true end
-                CosmeticLibrary.OwnsCosmeticForWeapon   = function() return true end
-                CosmeticLibrary.OwnsCosmetic = function(self, inv, name, weapon)
-                    if name and tostring(name):find("MISSING_") then
-                        return pcall(origOwnsCosmetic,self,inv,name,weapon) and origOwnsCosmetic(self,inv,name,weapon)
-                    end
+            local ammo = nil
+            pcall(function() ammo = it:Get("CurrentAmmo") end)
+            if ammo == nil or ammo > 0 then
+                -- This item has ammo — equip it
+                local swapOid = nil
+                pcall(function() swapOid = it:Get("ObjectID") end)
+                if swapOid then
+                    pcall(function()
+                        self._rUseItem:FireServer(
+                            swapOid,
+                            self._mEnum:ToEnum("Equip"),
+                            {}, nil
+                        )
+                    end)
                     return true
                 end
-                Notify({Title="Cloakware",Description="Unlock All ON",Time=3})
-            else
-                CosmeticLibrary.OwnsCosmeticNormally    = origOwnsNormally
-                CosmeticLibrary.OwnsCosmeticUniversally = origOwnsUniversally
-                CosmeticLibrary.OwnsCosmeticForWeapon   = origOwnsForWeapon
-                CosmeticLibrary.OwnsCosmetic            = origOwnsCosmetic
-                Notify({Title="Cloakware",Description="Unlock All OFF",Time=3})
-            end
-            refreshDataGet()
-            task.defer(function() saveEquippedConfig(equipped) end)
-        end
-        if unlockAllEmotesEnabled ~= prevUnlockAllEmotes then
-            prevUnlockAllEmotes = unlockAllEmotesEnabled
-            refreshDataGet()
-        end
-    end)
-
-    local allWeapons = {} local weaponKeyMap = {}
-    local function resolveWeaponName(key)
-        if type(key)=="string" and not key:match("^%d+$") then return key end
-        if EnumLibrary then
-            local ok,name=pcall(function() return EnumLibrary:FromEnum(key) end)
-            if ok and name and type(name)=="string" and not name:match("^%d+$") then return name end
-        end
-        if ItemLibrary and ItemLibrary.Items then
-            for itemName,itemData in pairs(ItemLibrary.Items) do
-                if type(itemName)=="string" and not itemName:match("^%d+$") then
-                    if tostring(itemData and itemData.ObjectID or "")==tostring(key) then return itemName end
-                    if EnumLibrary then
-                        local ok2,eid=pcall(function() return EnumLibrary:ToEnum(itemName) end)
-                        if ok2 and tostring(eid)==tostring(key) then return itemName end
-                    end
-                end
             end
         end
-        return nil
+        return false -- nothing to swap to
     end
 
-    if CosmeticLibrary.Cosmetics then
-        local seen = {}
-        for _,cd in pairs(CosmeticLibrary.Cosmetics) do
-            local rawKey = cd.WeaponType or cd.Weapon or cd.ForWeapon or cd.ItemType or cd.AppliesTo
-            if rawKey then
-                local name = resolveWeaponName(rawKey)
-                if name and not seen[name] then seen[name]=true weaponKeyMap[name]=rawKey table.insert(allWeapons,name) end
-            end
-        end
-    end
-    if ItemLibrary and ItemLibrary.Items then
-        for itemName,_ in pairs(ItemLibrary.Items) do
-            if type(itemName)=="string" and not itemName:match("^%d+$") and not weaponKeyMap[itemName] then
-                weaponKeyMap[itemName]=itemName table.insert(allWeapons,itemName)
-            end
-        end
-    end
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: EvasionSystem
+-- ═══════════════════════════════════════════════════════════════════════
+local EvasionSystem = {}
+EvasionSystem.__index = EvasionSystem
+
+function EvasionSystem.new(oobKiller)
+    return setmetatable({
+        _oobKiller        = oobKiller,
+        _lastReposition   = 0,
+        _anchorPos        = nil,
+    }, EvasionSystem)
+end
+
+function EvasionSystem:_GetEnvironmentID()
+    local id = nil
     pcall(function()
-        local inv = origGet(DataController,"WeaponInventory")
-        if type(inv)=="table" then
-            for key,_ in pairs(inv) do
-                local name=resolveWeaponName(key)
-                if name and not weaponKeyMap[name] then weaponKeyMap[name]=key table.insert(allWeapons,name) end
-            end
-        end
+        id = lp:GetAttribute("EnvironmentID")
     end)
-    table.sort(allWeapons)
-    if #allWeapons==0 then table.insert(allWeapons,"None") weaponKeyMap["None"]="None" end
+    return id
+end
 
-    local rarityOrder = {"Mythical","Legendary","Rare","Common","Unique","Unobtainable"}
-    local function getSlot(cd,cosName)
-        local s=tostring(cd.Type or cd.CosmeticType or cd.Category or ""):lower()
-        if s:find("skin") then return "Skin" end if s:find("wrap") then return "Wrap" end
-        if s:find("charm") then return "Charm" end if s:find("finish") then return "Finisher" end
-        local n=cosName:lower()
-        if n:find("wrap") then return "Wrap" end if n:find("charm") then return "Charm" end
-        if n:find("finish") then return "Finisher" end return "Skin"
-    end
-    local function getRarity(cd)
-        local s=tostring(cd.Rarity or cd.RarityType or cd.Tier or ""):lower()
-        if s:find("mythic") then return "Mythical" end if s:find("legend") then return "Legendary" end
-        if s:find("rare") then return "Rare" end if s:find("unique") then return "Unique" end
-        if s:find("unobtain") then return "Unobtainable" end return "Common"
+function EvasionSystem:ComputeEvasionCFrame(myHRP, targetHRP)
+    local mode = RagebotConfig.Evasion.Mode
+    local cfg  = RagebotConfig.Evasion
+
+    if mode == "Random" then
+        return self:_RandomEvasion(myHRP, cfg.Random)
+
+    elseif mode == "ProjectileBreaker" then
+        return self:_ProjectileBreakerEvasion(myHRP, targetHRP, cfg.ProjectileBreaker)
+
+    elseif mode == "Translocate" then
+        local envID = self:_GetEnvironmentID()
+        local killPos = self._oobKiller:GetKillPosition(
+            envID,
+            cfg.Translocate.Offset
+        )
+        return CFrame.new(killPos)
     end
 
-    local slots = {"Skin","Wrap","Charm","Finisher"}
-    local flat  = {} for _,slot in ipairs(slots) do flat[slot]={all={"None"}} for _,r in ipairs(rarityOrder) do flat[slot][r]={} end end
-    local perWeapon = {}
-    for _,slot in ipairs(slots) do
-        perWeapon[slot]={}
-        for _,w in ipairs(allWeapons) do
-            perWeapon[slot][w]={all={"None"}}
-            for _,r in ipairs(rarityOrder) do perWeapon[slot][w][r]={} end
+    -- Fallback: stay in place
+    return myHRP.CFrame
+end
+
+function EvasionSystem:_RandomEvasion(myHRP, cfg)
+    local now = os.clock()
+    local interval = RagebotConfig.Evasion.ProjectileBreaker.RepositionInterval
+
+    if now - self._lastReposition < interval then
+        -- Return last computed position
+        if self._anchorPos then
+            return CFrame.new(self._anchorPos)
         end
     end
-    local cosmeticsBySlot = {} for _,slot in ipairs(slots) do cosmeticsBySlot[slot]={} end
 
-    if CosmeticLibrary.Cosmetics then
-        for cosName,cd in pairs(CosmeticLibrary.Cosmetics) do
-            local slot=getSlot(cd,cosName) local rarity=getRarity(cd)
-            local rawKey=cd.WeaponType or cd.Weapon or cd.ForWeapon or cd.ItemType or cd.AppliesTo
-            local wd=rawKey and resolveWeaponName(rawKey) or nil
-            table.insert(flat[slot].all,cosName) table.insert(flat[slot][rarity],cosName)
-            if wd and perWeapon[slot][wd] then
-                table.insert(perWeapon[slot][wd].all,cosName) table.insert(perWeapon[slot][wd][rarity],cosName)
+    self._lastReposition = now
+
+    local anchor = cfg.AnchorFromCharacter
+        and myHRP.Position
+        or Vector3.zero
+
+    local radius = cfg.BaseRadius
+        * (1 + (math.random() - 0.5) * cfg.RadiusRandomFactor * 2)
+
+    local angle = math.random() * math.pi * 2
+    local offset = Vector3.new(
+        math.cos(angle) * radius,
+        0,
+        math.sin(angle) * radius
+    )
+
+    self._anchorPos = anchor + offset
+    return CFrame.new(self._anchorPos)
+end
+
+function EvasionSystem:_ProjectileBreakerEvasion(myHRP, targetHRP, cfg)
+    local now = os.clock()
+
+    if now - self._lastReposition < cfg.RepositionInterval then
+        if self._anchorPos then
+            return CFrame.new(self._anchorPos)
+        end
+    end
+
+    self._lastReposition = now
+
+    -- Try to position behind cover relative to target
+    local hasTarget = targetHRP ~= nil
+    if hasTarget then
+        local toTarget = (targetHRP.Position - myHRP.Position)
+        local dist = toTarget.Magnitude
+
+        if dist > 0.01 then
+            local dir     = toTarget.Unit
+            local upDir   = Vector3.new(0, 1, 0)
+            local sideDir = dir:Cross(upDir).Unit
+
+            -- Position above + forward relative to target direction
+            local newPos = myHRP.Position
+                + upDir    * cfg.DepthUp
+                + dir      * cfg.DepthForward
+
+            -- Raycast to check if position is valid
+            local rpParams = RaycastParams.new()
+            rpParams.FilterType = Enum.RaycastFilterType.Exclude
+            rpParams.FilterDescendantsInstances = {
+                lp.Character
+            }
+            local hit = Workspace:Raycast(
+                myHRP.Position,
+                (newPos - myHRP.Position),
+                rpParams
+            )
+
+            if not hit then
+                self._anchorPos = newPos
+                return CFrame.new(newPos)
             end
-            local cloned=cloneCosmetic(cosName,slot) if cloned then cosmeticsBySlot[slot][cosName]=cloned end
         end
     end
-    for _,slot in ipairs(slots) do
-        table.sort(flat[slot].all) for _,r in ipairs(rarityOrder) do table.sort(flat[slot][r]) end
-        for _,wd in pairs(perWeapon[slot]) do table.sort(wd.all) for _,r in ipairs(rarityOrder) do table.sort(wd[r]) end end
+
+    -- Fallback: random position in radius at height
+    local angle  = math.random() * math.pi * 2
+    local radius = cfg.FallbackRadius
+    local pos    = myHRP.Position + Vector3.new(
+        math.cos(angle) * radius,
+        cfg.FallbackHeight,
+        math.sin(angle) * radius
+    )
+
+    self._anchorPos = pos
+    return CFrame.new(pos)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: AttackEncoder — Gun + Melee
+-- ═══════════════════════════════════════════════════════════════════════
+local AttackEncoder = {}
+AttackEncoder.__index = AttackEncoder
+
+function AttackEncoder.new(mUtil, mEnum, rUseItem)
+    return setmetatable({
+        _mUtil    = mUtil,
+        _mEnum    = mEnum,
+        _rUseItem = rUseItem,
+        _shootLock            = ShootLock.new(),
+        _hitboxWindowUntil    = 0,
+        _attackCooldown       = 0,
+        _BACKSTAB_WINDOW      = 0.625,
+        _ATTACK_COOLDOWN      = 1.25,
+    }, AttackEncoder)
+end
+
+function AttackEncoder:Reset()
+    self._shootLock:Reset()
+    self._hitboxWindowUntil = 0
+    self._attackCooldown    = 0
+end
+
+function AttackEncoder:_RecordBackstab()
+    local now = os.clock()
+    self._hitboxWindowUntil = now + self._BACKSTAB_WINDOW
+    self._attackCooldown    = now + self._ATTACK_COOLDOWN
+end
+
+--[[
+    Builds shot data table for FireServer
+    Matches Rivals internal format
+]]
+function AttackEncoder:_BuildShotData(aimCF, hitPart)
+    local sd = {}
+    pcall(function()
+        sd[utf8.char(1)] = {
+            [utf8.char(0)] = self._mUtil:EncodeCFrame(aimCF),
+            [utf8.char(1)] = self._mUtil:EncodeCFrame(hitPart.CFrame),
+            [utf8.char(2)] = hitPart,
+            [utf8.char(3)] = self._mUtil:EncodeCFrame(
+                hitPart.CFrame:ToObjectSpace(CFrame.new(hitPart.Position))
+            ),
+        }
+    end)
+    return sd
+end
+
+--[[
+    GUN: Plan returns (cframe, weaponAction)
+    FIX: ShootLock now receives proper lockDuration (3rd param)
+    FIX: nil weapon guard added
+    FIX: type fallback returns safe CFrame instead of nil
+]]
+function AttackEncoder:PlanGun(dt, targetState, item, oid, myHRP)
+    -- Guard: nil weapon
+    if not item or not oid then
+        return CFrame.new(math.huge, math.huge, math.huge), nil
     end
 
-    local savedConfig = loadEquippedConfig()
-    for wKeyStr,slots2 in pairs(savedConfig) do
-        for slotName,cosName in pairs(slots2) do
-            if cosName and cosName~="" then
-                local cloned=cosmeticsBySlot[slotName] and cosmeticsBySlot[slotName][cosName]
-                if cloned then equipped[wKeyStr]=equipped[wKeyStr] or {} equipped[wKeyStr][slotName]=cloned end
-            end
-        end
-    end
-    if next(savedConfig) then
-        task.defer(function() pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end) end)
-        Notify({Title="Cloakware",Description="Loaded saved skin config!",Time=4})
+    local hitboxHead = targetState and targetState.hitboxHead
+    if not hitboxHead or not hitboxHead.Parent then
+        return myHRP.CFrame, nil
     end
 
-    local function applyCosmetic(wDisplay,cosName,slot)
-        if not wDisplay or wDisplay=="None" then Notify({Title="Cloakware",Description="Select a weapon first!",Time=3}) return end
-        local wKey=weaponKeyMap[wDisplay] or wDisplay local wKeyStr=tostring(wKey)
-        equipped[wKeyStr]=equipped[wKeyStr] or {}
-        if not cosName or cosName=="None" or cosName=="" then
-            equipped[wKeyStr][slot]=nil equipped[wKeyStr]["__multi_"..slot]=nil
-            if not next(equipped[wKeyStr]) then equipped[wKeyStr]=nil end
-            Notify({Title="Cloakware",Description=slot.." removed!",Time=3})
-        else
-            local cloned=cosmeticsBySlot[slot][cosName] or cloneCosmetic(cosName,slot)
-            if cloned then
-                equipped[wKeyStr][slot]=cloned equipped[wKeyStr]["__multi_"..slot]=nil
-                Notify({Title="Cloakware",Description=slot..": "..cosName,Time=3})
-            else Notify({Title="Cloakware",Description="Not found: "..cosName,Time=3}) return end
-        end
-        task.defer(function() pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end) end)
-        task.defer(function() saveEquippedConfig(equipped) end)
+    local now = os.clock()
+
+    -- ShootLock gate (FIXED: passing lockDuration as 3rd arg)
+    local lockDuration = dt * RagebotConfig.ShootFrames
+    if not self._shootLock:ShouldFire(true, lockDuration) then
+        -- Return random far miss instead of dangerous random pos
+        return CFrame.new(0, -999999, 0), nil
     end
 
-    local function applyMultiCosmetics(wDisplay,list,slot)
-        if not wDisplay or wDisplay=="None" then Notify({Title="Cloakware",Description="Select a weapon first!",Time=3}) return end
-        local wKey=weaponKeyMap[wDisplay] or wDisplay local wKeyStr=tostring(wKey)
-        equipped[wKeyStr]=equipped[wKeyStr] or {}
-        equipped[wKeyStr][slot]=nil equipped[wKeyStr]["__multi_"..slot]=nil
-        local allCloned={} local count=0
-        for _,cosName in ipairs(list) do
-            if cosName~="None" and cosName~="" then
-                local cloned=cosmeticsBySlot[slot][cosName] or cloneCosmetic(cosName,slot)
-                if cloned then
-                    count+=1 table.insert(allCloned,cloned)
-                    local tempKey=wKeyStr.."__rarity_"..slot.."_"..count
-                    equipped[tempKey]=equipped[tempKey] or {} equipped[tempKey][slot]=cloned
-                end
-            end
-        end
-        if count==0 then Notify({Title="Cloakware",Description="No "..slot.."s found!",Time=3}) return end
-        equipped[wKeyStr][slot]=allCloned[1] equipped[wKeyStr]["__multi_"..slot]=allCloned
-        task.defer(function() pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end) end)
-        task.defer(function() saveEquippedConfig(equipped) end)
-        Notify({Title="Cloakware",Description=("Unlocked %d %ss! (%s...)"):format(count,slot,allCloned[1].Name),Time=4})
+    -- Attack cooldown check
+    if now < self._attackCooldown then
+        return myHRP.CFrame, nil
     end
 
-    local function getList(slot,wDisplay)
-        if wDisplay and wDisplay~="None" and perWeapon[slot][wDisplay] and #perWeapon[slot][wDisplay].all>1 then
-            return perWeapon[slot][wDisplay]
-        end
-        return flat[slot]
+    local origin  = myHRP.Position + Vector3.new(0, 1.5, 0)
+    local aimCF   = CFrame.lookAt(origin, hitboxHead.Position)
+    local sd      = self:_BuildShotData(aimCF, hitboxHead)
+
+    local function weaponAction()
+        pcall(function()
+            self._rUseItem:FireServer(
+                oid,
+                self._mEnum:ToEnum("StartShooting"),
+                sd, nil
+            )
+        end)
+        task.delay(0.07, function()
+            pcall(function()
+                self._rUseItem:FireServer(
+                    oid,
+                    self._mEnum:ToEnum("StopShooting"),
+                    {}, nil
+                )
+            end)
+        end)
     end
 
-    local cosLeftSec  = tabs.cosmetics:CreateSection("Unlock by Rarity")
-    local cosRightSec = tabs.cosmetics:CreateSection("Browse & Apply", "right")
+    return aimCF, weaponAction
+end
 
-    local selectedWeapon = {}
-    for _, slot in ipairs(slots) do selectedWeapon[slot] = allWeapons[1] or "None" end
+--[[
+    MELEE: Plan returns (cframe, viewAngles, weaponAction)
+    Knife gets backstab with window + cooldown
+]]
+function AttackEncoder:PlanMelee(dt, targetState, item, oid, myHRP, isKnife)
+    if not item or not oid then
+        return myHRP.CFrame, nil, nil
+    end
 
-    for _, slot in ipairs(slots) do
-        local slotLabel = slot
-        cosLeftSec:CreateLabel("── "..slotLabel.." ──")
-        cosLeftSec:CreateDropdown("Weapon ("..slotLabel..")", allWeapons, function(v) selectedWeapon[slotLabel]=v end, allWeapons[1], false)
-        for _,r in ipairs(rarityOrder) do
-            local rc = r
-            cosLeftSec:CreateButton("Unlock "..r.." "..slotLabel.."s", function()
-                local wn = selectedWeapon[slotLabel]
-                local list = getList(slotLabel,wn)
-                local rl = list[rc] or {}
-                if #rl==0 then rl=flat[slotLabel][rc] or {} end
-                if #rl==0 then Notify({Title="Cloakware",Description="No "..rc.." "..slotLabel.."s found",Time=3}) return end
-                applyMultiCosmetics(wn,rl,slotLabel)
+    local hitboxHead = targetState and targetState.hitboxHead
+    if not hitboxHead or not hitboxHead.Parent then
+        return myHRP.CFrame, nil, nil
+    end
+
+    local now = os.clock()
+
+    -- Backstab heavy-attack window still active
+    if now < self._hitboxWindowUntil then
+        local origin = myHRP.Position + Vector3.new(0, 1.5, 0)
+        local aimCF  = CFrame.lookAt(origin, hitboxHead.Position)
+        local sd     = self:_BuildShotData(aimCF, hitboxHead)
+        local function heavyAction()
+            pcall(function()
+                self._rUseItem:FireServer(
+                    oid,
+                    self._mEnum:ToEnum("HeavyAttack"),
+                    sd, nil
+                )
             end)
         end
-        cosLeftSec:CreateButton("Unlock ALL "..slotLabel.." Rarities", function()
-            local wn = selectedWeapon[slotLabel]
-            local list = getList(slotLabel,wn)
-            local fullList = {}
-            for _,r in ipairs(rarityOrder) do for _,cn in ipairs(list[r] or {}) do table.insert(fullList,cn) end end
-            if #fullList==0 then fullList=list.all end
-            applyMultiCosmetics(wn,fullList,slotLabel)
-        end)
+        return aimCF, aimCF, heavyAction
     end
 
-    for _, slot in ipairs(slots) do
-        local slotLabel = slot
-        local specInput = ""
-        cosRightSec:CreateLabel("── "..slotLabel.." ──")
-        cosRightSec:CreateTextBox(slotLabel.." Name", "", false, function(v) specInput=v end)
-        cosRightSec:CreateButton("Unlock Specific "..slotLabel, function()
-            if specInput~="" then applyCosmetic(selectedWeapon[slotLabel],specInput,slotLabel)
-            else Notify({Title="Cloakware",Description="Enter a name!",Time=3}) end
-        end)
-        cosRightSec:CreateButton("Lock "..slotLabel, function() applyCosmetic(selectedWeapon[slotLabel],"None",slotLabel) end)
-        cosRightSec:CreateButton("Lock All "..slotLabel.."s", function()
-            local wn = selectedWeapon[slotLabel]
-            local wKey = tostring(weaponKeyMap[wn] or wn)
-            local toRemove = {}
-            for k,_ in pairs(equipped) do if k:find(wKey.."__rarity_"..slotLabel) then table.insert(toRemove,k) end end
-            for _,k in ipairs(toRemove) do equipped[k]=nil end
-            if equipped[wKey] then
-                equipped[wKey][slotLabel]=nil equipped[wKey]["__multi_"..slotLabel]=nil
-                if not next(equipped[wKey]) then equipped[wKey]=nil end
-            end
-            task.defer(function() pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end) end)
-            task.defer(function() saveEquippedConfig(equipped) end)
-            Notify({Title="Cloakware",Description="Locked all "..slotLabel.."s",Time=3})
-        end)
-        cosRightSec:CreateButton("Random "..slotLabel, function()
-            local wn = selectedWeapon[slotLabel]
-            local list = getList(slotLabel,wn).all
-            local valid = {}
-            for _,n in ipairs(list) do if n~="None" then table.insert(valid,n) end end
-            if #valid>0 then applyCosmetic(wn,valid[math.random(1,#valid)],slotLabel) end
-        end)
-        local selectedCos = "None"
-        cosRightSec:CreateDropdown("Browse "..slotLabel.."s", getList(slotLabel,allWeapons[1] or "None").all, function(v) selectedCos=v end, "None", false)
-        cosRightSec:CreateButton("Apply Selected "..slotLabel, function() applyCosmetic(selectedWeapon[slotLabel],selectedCos,slotLabel) end)
-        cosRightSec:CreateButton("Save "..slotLabel.." Config", function()
-            saveEquippedConfig(equipped) Notify({Title="Cloakware",Description=slotLabel.." config saved!",Time=3})
-        end)
-        cosRightSec:CreateButton("Clear "..slotLabel.." Config", function()
-            local wn = selectedWeapon[slotLabel]
-            local wKey = tostring(weaponKeyMap[wn] or wn)
-            local toRemove = {}
-            for k,_ in pairs(equipped) do if k:find(wKey.."__rarity_"..slotLabel) then table.insert(toRemove,k) end end
-            for _,k in ipairs(toRemove) do equipped[k]=nil end
-            if equipped[wKey] then
-                equipped[wKey][slotLabel]=nil equipped[wKey]["__multi_"..slotLabel]=nil
-                if not next(equipped[wKey]) then equipped[wKey]=nil end
-            end
-            saveEquippedConfig(equipped)
-            task.defer(function() pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end) end)
-            Notify({Title="Cloakware",Description=slotLabel.." config cleared!",Time=3})
-        end)
+    -- ShootLock gate (FIXED)
+    local lockDuration = dt * RagebotConfig.ShootFrames
+    if not self._shootLock:ShouldFire(true, lockDuration) then
+        return myHRP.CFrame, nil, nil
     end
 
-    local FighterController
-    pcall(function() FighterController=require(controllers:WaitForChild("FighterController",10)) end)
-    if hookmetamethod then
-        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-        local dataRemotes = remotes and remotes:FindFirstChild("Data")
-        local equipRemote = dataRemotes and dataRemotes:FindFirstChild("EquipCosmetic")
-        local favoriteRemote = dataRemotes and dataRemotes:FindFirstChild("FavoriteCosmetic")
-        local repRemotes = remotes and remotes:FindFirstChild("Replication")
-        local fighterRemotes = repRemotes and repRemotes:FindFirstChild("Fighter")
-        local useItemRemote = fighterRemotes and fighterRemotes:FindFirstChild("UseItem")
-        if equipRemote then
-            local oldNC
-            oldNC = hookmetamethod(game,"__namecall",function(self,...)
-                if getnamecallmethod()~="FireServer" then return oldNC(self,...) end
-                local args = {...}
-                if useItemRemote and self==useItemRemote then
-                    local objectID = args[1]
-                    if FighterController then
-                        pcall(function()
-                            local fighter=FighterController:GetFighter(player)
-                            if fighter and fighter.Items then
-                                for _,item in pairs(fighter.Items) do
-                                    if item:Get("ObjectID")==objectID then lastUsedWeapon=item.Name break end
-                                end
-                            end
-                        end)
-                    end
-                end
-                if self==equipRemote then
-                    local wn,ct,cn,opts=args[1],args[2],args[3],args[4] or {}
-                    if cn and cn~="None" and cn~="" then
-                        local inv=DataController:Get("CosmeticInventory")
-                        if inv and rawget(inv,cn) then return oldNC(self,...) end
-                    end
-                    local ws=tostring(wn) equipped[ws]=equipped[ws] or {}
-                    if not cn or cn=="None" or cn=="" then
-                        equipped[ws][ct]=nil equipped[ws]["__multi_"..ct]=nil
-                        if not next(equipped[ws]) then equipped[ws]=nil end
-                    else
-                        local cloned=(cosmeticsBySlot[ct] and cosmeticsBySlot[ct][cn])
-                            or cloneCosmetic(cn,ct,{inverted=opts.IsInverted,favoritesOnly=opts.OnlyUseFavorites})
-                        if cloned then equipped[ws][ct]=cloned end
-                    end
-                    task.defer(function() pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end) end)
-                    task.defer(function() saveEquippedConfig(equipped) end)
-                    return
-                end
-                if self==favoriteRemote then
-                    favorites[args[1]]=favorites[args[1]] or {}
-                    favorites[args[1]][args[2]]=args[3] or nil
-                    task.spawn(function() pcall(function() DataController.CurrentData:Replicate("FavoritedCosmetics") end) end)
-                    return
-                end
-                return oldNC(self,...)
+    if now < self._attackCooldown then
+        return myHRP.CFrame, nil, nil
+    end
+
+    local origin = myHRP.Position + Vector3.new(0, 1.5, 0)
+    local aimCF  = CFrame.lookAt(origin, hitboxHead.Position)
+    local sd     = self:_BuildShotData(aimCF, hitboxHead)
+
+    if isKnife then
+        -- Record backstab before firing
+        self:_RecordBackstab()
+        local function knifeAction()
+            pcall(function()
+                self._rUseItem:FireServer(
+                    oid,
+                    self._mEnum:ToEnum("HeavyAttack"),
+                    sd, nil
+                )
             end)
         end
+        return aimCF, aimCF, knifeAction
     end
 
-    local ClientItem
-    pcall(function() ClientItem=require(playerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem) end)
-    if ClientItem and ClientItem._CreateViewModel then
-        local origCVM = ClientItem._CreateViewModel
-        ClientItem._CreateViewModel = function(self, viewmodelRef)
-            local wn=self.Name local wp=self.ClientFighter and self.ClientFighter.Player
-            constructingWeapon=(wp==player) and wn or nil
-            if wp==player and equipped[wn] and equipped[wn].Skin and viewmodelRef then
-                pcall(function()
-                    local dk,sk,nk=self:ToEnum("Data"),self:ToEnum("Skin"),self:ToEnum("Name")
-                    if viewmodelRef[dk] then viewmodelRef[dk][sk]=equipped[wn].Skin viewmodelRef[dk][nk]=equipped[wn].Skin.Name
-                    elseif viewmodelRef.Data then viewmodelRef.Data.Skin=equipped[wn].Skin viewmodelRef.Data.Name=equipped[wn].Skin.Name end
-                end)
+    -- Normal melee
+    local function meleeAction()
+        pcall(function()
+            self._rUseItem:FireServer(
+                oid,
+                self._mEnum:ToEnum("Attack"),
+                sd, nil
+            )
+        end)
+    end
+
+    return aimCF, aimCF, meleeAction
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MODULE: RagebotController — Main Controller
+-- ═══════════════════════════════════════════════════════════════════════
+local RagebotController = {}
+RagebotController.__index = RagebotController
+
+function RagebotController.new(mFig, mEnum, mUtil, rUseItem, stateHook)
+    local oobKiller = OOBKiller.new()
+    local self = setmetatable({
+        -- Sub-systems
+        _shootLock        = ShootLock.new(),
+        _partGlue         = PartGlue.new(),
+        _spatialGate      = SpatialLimitGate.new(),
+        _targetSelection  = TargetSelection.new(),
+        _evasion          = EvasionSystem.new(oobKiller),
+        _attackEncoder    = AttackEncoder.new(mUtil, mEnum, rUseItem),
+        _weaponAction     = WeaponAction.new(mFig, mEnum, rUseItem),
+        _oobKiller        = oobKiller,
+
+        -- References
+        _mFig             = mFig,
+        _mEnum            = mEnum,
+        _mUtil            = mUtil,
+        _rUseItem         = rUseItem,
+        _stateHook        = stateHook,
+
+        -- State
+        _enabled          = false,
+        _running          = false,
+        _connections      = {},
+        _originalFPDH     = Workspace.FallenPartsDestroyHeight,
+    }, RagebotController)
+
+    return self
+end
+
+--[[
+    SetEnabled: NaN trick — PRESERVED from original
+    Prevents OOB parts from killing target while ragebot active
+]]
+function RagebotController:SetEnabled(state)
+    if self._enabled == state then return end
+    self._enabled = state
+
+    if state then
+        -- NaN disables fallen parts destroy height check
+        pcall(function()
+            Workspace.FallenPartsDestroyHeight = 0/0
+        end)
+    else
+        -- Restore original value
+        pcall(function()
+            Workspace.FallenPartsDestroyHeight = self._originalFPDH
+        end)
+    end
+end
+
+function RagebotController:_Reset()
+    self._targetSelection:Clear()
+    self._attackEncoder:Reset()
+    self._spatialGate:Reset()
+    self._partGlue:ReleaseAll()
+    self._running = false
+    if self._stateHook then
+        pcall(function()
+            self._stateHook:ClearForced("IsCrouching")
+        end)
+    end
+end
+
+--[[
+    _GetTargetState: builds aliveState table for target
+    Contains hitboxHead reference for attack encoder
+]]
+function RagebotController:_GetTargetState(targetChar)
+    if not targetChar then return nil end
+    local head = targetChar:FindFirstChild("Head")
+    local hrp  = targetChar:FindFirstChild("HumanoidRootPart")
+    local hm   = targetChar:FindFirstChildOfClass("Humanoid")
+
+    if not hrp then return nil end
+
+    return {
+        hitboxHead   = head or hrp,
+        hitboxHRP    = hrp,
+        humanoid     = hm,
+        hp           = hm and hm.Health or 0,
+        character    = targetChar,
+    }
+end
+
+--[[
+    _Plan: Routes to correct strategy based on weapon type
+    FIX: Added "Other"/nil type fallback
+    FIX: Validates item not nil before calling encoder
+]]
+function RagebotController:_Plan(dt, item, oid, itemType, targetState, myHRP, evadeMode)
+    -- No target → evade plan
+    if not targetState then
+        return self:_EvadePlan(myHRP, evadeMode)
+    end
+
+    if itemType == "Gun" then
+        -- Check if reloading → evade while reloading
+        local isReloading = false
+        pcall(function()
+            isReloading = item:IsReloading() or item:Get("IsReloading")
+        end)
+
+        if isReloading then
+            return self:_EvadePlan(myHRP, evadeMode)
+        end
+
+        local cframe, weaponAction = self._attackEncoder:PlanGun(
+            dt, targetState, item, oid, myHRP
+        )
+        return { cframe = cframe, weaponAction = weaponAction }
+
+    elseif itemType == "Melee" then
+        local isKnife = false
+        pcall(function() isKnife = (item.Name == "Knife") end)
+
+        local cframe, viewAngles, weaponAction = self._attackEncoder:PlanMelee(
+            dt, targetState, item, oid, myHRP, isKnife
+        )
+        return {
+            cframe       = cframe,
+            viewAngles   = viewAngles,
+            weaponAction = weaponAction,
+        }
+
+    else
+        --[[
+            FIX: Unknown type (Grenade/Shield/Other)
+            Return safe no-op plan instead of nil
+            Prevents f14093 indexing nil error
+        ]]
+        return {
+            cframe       = myHRP.CFrame,
+            viewAngles   = nil,
+            weaponAction = nil,
+        }
+    end
+end
+
+function RagebotController:_EvadePlan(myHRP, mode)
+    local targetHRP = nil
+    local targetPlayer = self._targetSelection:GetTarget()
+    if targetPlayer and targetPlayer.Character then
+        targetHRP = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+    end
+
+    local evasionCF = self._evasion:ComputeEvasionCFrame(myHRP, targetHRP)
+    return {
+        cframe       = evasionCF,
+        viewAngles   = nil,
+        weaponAction = nil,
+    }
+end
+
+--[[
+    _ApplyPlan: Applies computed plan to character controller
+    Sets CFrame and view angles
+]]
+function RagebotController:_ApplyPlan(plan, myHRP)
+    if not plan then return end
+
+    if plan.cframe then
+        pcall(function()
+            myHRP.CFrame = plan.cframe
+        end)
+    end
+
+    if plan.viewAngles then
+        pcall(function()
+            myHRP.CFrame = plan.viewAngles
+        end)
+    end
+end
+
+--[[
+    Update: Main tick — called every Heartbeat
+    FIX: p4858 (dt) now properly received from Heartbeat
+    FIX: race condition guard on target validation
+    FIX: _Plan never receives nil without fallback
+]]
+function RagebotController:Update(dt)
+    if not self._enabled then return end
+    if self._running then return end
+
+    local myChar = lp.Character
+    if not myChar then return end
+
+    local myHRP  = myChar:FindFirstChild("HumanoidRootPart")
+    local myHum  = myChar:FindFirstChildOfClass("Humanoid")
+    if not myHRP or not myHum or myHum.Health <= 0 then
+        self:_Reset(); return
+    end
+
+    -- Spatial gate check
+    if not self._spatialGate:Check(myChar) then return end
+
+    -- Get weapon
+    local item, oid, itemType = self._weaponAction:GetItem()
+
+    -- Handle empty ammo
+    if item and oid then
+        local ammo = nil
+        pcall(function() ammo = item:Get("CurrentAmmo") end)
+        if ammo ~= nil and ammo <= 0 then
+            local lf = nil
+            pcall(function()
+                if self._mFig then lf = self._mFig.LocalFighter end
+            end)
+            if lf then
+                local handled = self._weaponAction:HandleOnEmpty(lf, oid)
+                if handled then return end
             end
-            local result=origCVM(self,viewmodelRef) constructingWeapon=nil return result
         end
     end
 
-    local vmMod = playerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem:FindFirstChild("ClientViewModel")
-    if vmMod then
-        local CVM pcall(function() CVM=require(vmMod) end)
-        if CVM then
-            if CVM.GetWrap then
-                local origGW=CVM.GetWrap
-                CVM.GetWrap=function(self)
-                    local wn=self.ClientItem and self.ClientItem.Name
-                    local wp=self.ClientItem and self.ClientItem.ClientFighter and self.ClientItem.ClientFighter.Player
-                    if wn and wp==player and equipped[wn] and equipped[wn].Wrap then return equipped[wn].Wrap end
-                    return origGW(self)
-                end
-            end
-            local origNew=CVM.new
-            CVM.new=function(replicatedData,clientItem)
-                local wp=clientItem.ClientFighter and clientItem.ClientFighter.Player
-                local wn=constructingWeapon or clientItem.Name
-                if wp==player and equipped[wn] then
-                    pcall(function()
-                        local RC=require(ReplicatedStorage.Modules.ReplicatedClass) local dk=RC:ToEnum("Data")
-                        replicatedData[dk]=replicatedData[dk] or {} local c=equipped[wn]
-                        if c.Skin  then replicatedData[dk][RC:ToEnum("Skin")] =c.Skin  end
-                        if c.Wrap  then replicatedData[dk][RC:ToEnum("Wrap")] =c.Wrap  end
-                        if c.Charm then replicatedData[dk][RC:ToEnum("Charm")]=c.Charm end
-                    end)
-                end
-                local result=origNew(replicatedData,clientItem)
-                if wp==player and equipped[wn] and equipped[wn].Wrap and result._UpdateWrap then
-                    result:_UpdateWrap()
-                    task.delay(0.1,function() if not result._destroyed then result:_UpdateWrap() end end)
-                end
-                return result
-            end
-        end
+    -- Get target (validated inside GetTarget)
+    local targetPlayer = self._targetSelection:GetTarget()
+    local targetChar   = targetPlayer and targetPlayer.Character
+    local targetState  = self:_GetTargetState(targetChar)
+
+    --[[
+        FIX: Re-validate target after GetTargetState
+        Target could die between GetTarget() and _GetTargetState()
+    ]]
+    if targetState and targetState.hp <= 0 then
+        self._targetSelection:Clear()
+        targetState = nil
     end
 
-    if ItemLibrary and ItemLibrary.GetViewModelImageFromWeaponData then
-        local origGVI=ItemLibrary.GetViewModelImageFromWeaponData
-        ItemLibrary.GetViewModelImageFromWeaponData=function(self,wd,highRes)
-            if not wd then return origGVI(self,wd,highRes) end
-            local wn=wd.Name
-            local show=(wd.Skin and equipped[wn] and wd.Skin==equipped[wn].Skin)
-                or (viewingProfile==player and equipped[wn] and equipped[wn].Skin)
-            if show and equipped[wn] and equipped[wn].Skin then
-                local si=self.ViewModels[equipped[wn].Skin.Name]
-                if si then return si[highRes and "ImageHighResolution" or "Image"] or si.Image end
-            end
-            return origGVI(self,wd,highRes)
-        end
-    end
+    -- Compute plan
+    local evadeMode = RagebotConfig.Evasion.Mode
+    local plan = self:_Plan(
+        dt, item, oid, itemType,
+        targetState, myHRP, evadeMode
+    )
 
-    pcall(function()
-        local VP=require(playerScripts.Modules.Pages.ViewProfile)
-        if VP and VP.Fetch then local origF=VP.Fetch VP.Fetch=function(self,tp) viewingProfile=tp return origF(self,tp) end end
+    -- Apply position
+    self:_ApplyPlan(plan, myHRP)
+
+    -- Execute weapon action
+    if plan.weaponAction then
+        self._running = true
+        task.spawn(function()
+            local ok = pcall(plan.weaponAction)
+            if not ok then
+                -- Weapon action failed — not fatal
+            end
+            self._running = false
+        end)
+    end
+end
+
+--[[
+    Start/Stop: Clean enable/disable with connection management
+    FIX: Reset called BEFORE SetEnabled (not after)
+    to prevent wiping freshly set state
+]]
+function RagebotController:Start()
+    self:_Reset()        -- reset first
+    self:SetEnabled(true) -- then enable
+
+    -- Disconnect old connections
+    self:Stop(true) -- silent stop (keep enabled)
+
+    -- Heartbeat connection
+    local conn = RunService.Heartbeat:Connect(function(dt)
+        if not self._enabled then return end
+        self:Update(dt)
     end)
+    table.insert(self._connections, conn)
+end
 
-    local CE pcall(function() CE=require(playerScripts.Modules.ClientReplicatedClasses.ClientEntity) end)
-    if CE and CE.ReplicateFromServer then
-        local origRFS=CE.ReplicateFromServer
-        CE.ReplicateFromServer=function(self,action,...)
-            if action=="FinisherEffect" then
-                local args={...} local kn=args[3] local dk=kn
-                if type(kn)=="userdata" and EnumLibrary and EnumLibrary.FromEnum then
-                    local ok2,dec=pcall(EnumLibrary.FromEnum,EnumLibrary,kn) if ok2 and dec then dk=dec end
-                end
-                local isOurs=tostring(dk)==player.Name or tostring(dk):lower()==player.Name:lower()
-                if isOurs and lastUsedWeapon and equipped[lastUsedWeapon] and equipped[lastUsedWeapon].Finisher then
-                    local fd=equipped[lastUsedWeapon].Finisher local fe=fd.Enum
-                    if not fe and EnumLibrary then
-                        local ok2,res=pcall(EnumLibrary.ToEnum,EnumLibrary,fd.Name) if ok2 and res then fe=res end
-                    end
-                    if fe then args[1]=fe return origRFS(self,action,unpack(args)) end
-                end
-            end
-            return origRFS(self,action,...)
-        end
+function RagebotController:Stop(silent)
+    for _, conn in ipairs(self._connections) do
+        conn:Disconnect()
     end
+    table.clear(self._connections)
 
-    Notify({Title="Cloakware", Description="Ready!", Time=4})
+    if not silent then
+        self:_Reset()
+        self:SetEnabled(false)
+        self._partGlue:ReleaseAll()
+    end
+end
+
+function RagebotController:Destroy()
+    self:Stop()
+    self._partGlue:ReleaseAll()
+    self._spatialGate:Reset()
+    self._targetSelection:Clear()
+    self._attackEncoder:Reset()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- INTEGRATION INTO RIVALS TOOL v3 UI
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Replace old RG system with new controller
+-- (Assumes mFig, mEnum, mUtil, rUseItem already loaded from main script)
+
+local rgController = nil
+
+local function initRGController()
+    if rgController then return end
+    if not (mFig and mEnum and mUtil and rUseItem) then return end
+    rgController = RagebotController.new(
+        mFig, mEnum, mUtil, rUseItem, nil
+    )
+end
+
+-- Try init now, retry if modules not ready
+pcall(initRGController)
+task.spawn(function()
+    while not rgController do
+        task.wait(2)
+        pcall(initRGController)
+    end
 end)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — Ragebot v2 Tab (replaces old RgL/RgR groupboxes)
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Left groupbox: Core
+G.RgL:AddToggle("RGV2On", {
+    Text    = "Ragebot Enabled",
+    Default = false,
+    Callback = function(v)
+        RagebotConfig.Enabled = v
+        pcall(initRGController)
+        if not rgController then
+            Lib:Notify("Ragebot: Enter a match first", 3)
+            return
+        end
+        if v then
+            rgController:Start()
+            Lib:Notify("Ragebot: Started", 2)
+        else
+            rgController:Stop()
+            Lib:Notify("Ragebot: Stopped", 2)
+        end
+    end,
+})
+
+G.RgL:AddSlider("RGV2ShootFrames", {
+    Text     = "Shoot Frames",
+    Default  = 1,
+    Min      = 1,
+    Max      = 10,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.ShootFrames = v
+    end,
+})
+
+G.RgL:AddSlider("RGV2Stability", {
+    Text     = "Stability (ms)",
+    Default  = 50,
+    Min      = 0,
+    Max      = 500,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Stability = v / 1000
+    end,
+})
+
+G.RgL:AddToggle("RGV2Hackers", {
+    Text     = "Prioritize Hackers",
+    Default  = false,
+    Callback = function(v)
+        RagebotConfig.PrioritizeHackers = v
+    end,
+})
+
+G.RgL:AddDropdown("RGV2Priority", {
+    Text    = "Target Priority",
+    Default = "Closest",
+    Values  = { "Closest", "LowHP", "HighHP", "Random" },
+    Callback = function(v)
+        RagebotConfig.Weapons.Priority = v
+        -- Clear current target so new priority applies
+        if rgController then
+            rgController._targetSelection:Clear()
+        end
+    end,
+})
+
+G.RgL:AddDropdown("RGV2OnEmpty", {
+    Text    = "On Empty",
+    Default = "Reload",
+    Values  = { "Reload", "Swap", "None" },
+    Callback = function(v)
+        RagebotConfig.Weapons.OnEmpty = v
+    end,
+})
+
+G.RgL:AddButton({
+    Text = "Force Reload",
+    Func = function()
+        if not rgController then
+            Lib:Notify("Ragebot not initialized", 2)
+            return
+        end
+        local item, oid, _ = rgController._weaponAction:GetItem()
+        if item and oid then
+            pcall(function()
+                rUseItem:FireServer(
+                    oid,
+                    mEnum:ToEnum("Reload"),
+                    {}, nil
+                )
+            end)
+            Lib:Notify("Reload sent", 2)
+        end
+    end,
+})
+
+-- Right groupbox: Evasion
+G.RgR:AddDropdown("RGV2EvasionMode", {
+    Text    = "Evasion Mode",
+    Default = "Translocate",
+    Values  = { "Translocate", "ProjectileBreaker", "Random" },
+    Callback = function(v)
+        RagebotConfig.Evasion.Mode = v
+    end,
+})
+
+G.RgR:AddSlider("RGV2TpOffsetY", {
+    Text     = "Translocate Y Offset",
+    Default  = 2,
+    Min      = -20,
+    Max      = 50,
+    Rounding = 0,
+    Callback = function(v)
+        local c = RagebotConfig.Evasion.Translocate.Offset
+        RagebotConfig.Evasion.Translocate.Offset = Vector3.new(c.X, v, c.Z)
+    end,
+})
+
+G.RgR:AddSlider("RGV2PBDepthUp", {
+    Text     = "ProjBreaker Depth Up",
+    Default  = 8,
+    Min      = 0,
+    Max      = 50,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Evasion.ProjectileBreaker.DepthUp = v
+    end,
+})
+
+G.RgR:AddSlider("RGV2PBDepthFwd", {
+    Text     = "ProjBreaker Depth Fwd",
+    Default  = 4,
+    Min      = 0,
+    Max      = 50,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Evasion.ProjectileBreaker.DepthForward = v
+    end,
+})
+
+G.RgR:AddSlider("RGV2PBFallbackRadius", {
+    Text     = "ProjBreaker Fallback Radius",
+    Default  = 12,
+    Min      = 1,
+    Max      = 100,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Evasion.ProjectileBreaker.FallbackRadius = v
+    end,
+})
+
+G.RgR:AddSlider("RGV2PBInterval", {
+    Text     = "Reposition Interval (ms)",
+    Default  = 350,
+    Min      = 50,
+    Max      = 2000,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Evasion.ProjectileBreaker.RepositionInterval = v / 1000
+    end,
+})
+
+G.RgR:AddSlider("RGV2RandRadius", {
+    Text     = "Random Base Radius",
+    Default  = 20,
+    Min      = 1,
+    Max      = 200,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Evasion.Random.BaseRadius = v
+    end,
+})
+
+G.RgR:AddSlider("RGV2RandFactor", {
+    Text     = "Random Radius Factor %",
+    Default  = 50,
+    Min      = 0,
+    Max      = 100,
+    Rounding = 0,
+    Callback = function(v)
+        RagebotConfig.Evasion.Random.RadiusRandomFactor = v / 100
+    end,
+})
+
+G.RgR:AddToggle("RGV2RandAnchor", {
+    Text     = "Anchor From Character",
+    Default  = true,
+    Callback = function(v)
+        RagebotConfig.Evasion.Random.AnchorFromCharacter = v
+    end,
+})
+
+G.RgR:AddButton({
+    Text = "Teleport to Nearest",
+    Func = function()
+        if not rgController then
+            Lib:Notify("Ragebot not initialized", 2)
+            return
+        end
+        local target = rgController._targetSelection:GetTarget()
+        local tChar  = target and target.Character
+        if not tChar then
+            Lib:Notify("No target found", 2)
+            return
+        end
+        local myHRP = lp.Character
+            and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP then return end
+
+        local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+        if not tHRP then return end
+
+        local savedCF = myHRP.CFrame
+        pcall(function()
+            myHRP.CFrame = CFrame.new(
+                tHRP.Position + Vector3.new(0, 3, 0)
+            )
+        end)
+        task.delay(0.15, function()
+            pcall(function() myHRP.CFrame = savedCF end)
+        end)
+        Lib:Notify("Teleported to " .. target.DisplayName, 2)
+    end,
+})
+
+-- ═══════════════════════════════════════════
+-- CLEANUP ON UNLOAD
+-- ═══════════════════════════════════════════
+Lib.OnUnload = (function(oldUnload)
+    return function(self)
+        if rgController then
+            rgController:Destroy()
+        end
+        if oldUnload then oldUnload(self) end
+    end
+end)(Lib.OnUnload)
+
+Lib:Notify("Ragebot v2 Loaded — All bugs fixed", 4)
