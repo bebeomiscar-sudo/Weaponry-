@@ -1,1229 +1,2129 @@
 -- ═══════════════════════════════════════════════════════════════════════
--- RAGEBOT v2 — Full Fixed & Integrated System
--- Fixes: p169 undefined, nil weapon guard, trove leaks,
---        type fallback, reset order, processedParts stale,
---        OnEmpty infinite swap, part destroy guard
+-- RIVALS SCRIPT — Full Integration
+-- UI: bebeomiscar-sudo modded LinoriaLib
+-- Systems: ESP/Chams/Skeleton/Tracer/Noclip/FOV/HackerDetect/Ragebot v2
 -- ═══════════════════════════════════════════════════════════════════════
 
-local RagebotV2 = {}
-RagebotV2.__index = RagebotV2
+-- ═══════════════════════════════════════════
+-- LOADER
+-- ═══════════════════════════════════════════
+local myRepoCandidates = {
+    'https://raw.githubusercontent.com/bebeomiscar-sudo/Modded/refs/heads/main/Lua',
+    'https://raw.githubusercontent.com/bebeomiscar-sudo/Modded/main/Lua',
+}
+local linoriaRepo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+
+local function FetchWithRetry(url, attempts)
+    attempts = attempts or 5
+    for i = 1, attempts do
+        local ok, result = pcall(game.HttpGet, game, url)
+        if ok and type(result) == 'string' and #result > 0 then
+            return result
+        end
+        warn(('[Loader] Fetch failed (%d/%d) for %s'):format(i, attempts, url))
+        task.wait(0.6 * i)
+    end
+    return nil
+end
+
+local function FetchFirstWorking(urls, attemptsPerUrl)
+    for _, url in next, urls do
+        local result = FetchWithRetry(url, attemptsPerUrl)
+        if result then return result, url end
+    end
+    error('[Loader] All URLs failed:\n' .. table.concat(urls, '\n'))
+end
+
+local function LoadModule(fullUrlOrList, label)
+    local urls   = type(fullUrlOrList) == 'table' and fullUrlOrList or { fullUrlOrList }
+    local source, usedUrl = FetchFirstWorking(urls, 3)
+    local chunk, err = loadstring(source, label)
+    if not chunk then
+        error('[Loader] Compile error in ' .. label .. ': ' .. tostring(err))
+    end
+    return chunk()
+end
+
+local Library      = LoadModule(myRepoCandidates,                     'Library.lua')
+local ThemeManager = LoadModule(linoriaRepo .. 'addons/ThemeManager.lua', 'ThemeManager.lua')
+local SaveManager  = LoadModule(linoriaRepo .. 'addons/SaveManager.lua',  'SaveManager.lua')
 
 -- ═══════════════════════════════════════════
 -- SERVICES
 -- ═══════════════════════════════════════════
-local cr          = cloneref or function(o) return o end
-local Players     = cr(game:GetService("Players"))
-local RunService  = cr(game:GetService("RunService"))
-local Workspace   = cr(game:GetService("Workspace"))
+local cr           = cloneref or function(o) return o end
+local Players      = cr(game:GetService("Players"))
+local RunService   = cr(game:GetService("RunService"))
+local UserInputSvc = cr(game:GetService("UserInputService"))
+local TweenService = cr(game:GetService("TweenService"))
+local Lighting     = cr(game:GetService("Lighting"))
+local Workspace    = cr(game:GetService("Workspace"))
+local HttpService  = cr(game:GetService("HttpService"))
 
-local lp          = Players.LocalPlayer
+local lp  = Players.LocalPlayer
+local cam = Workspace.CurrentCamera
 
 -- ═══════════════════════════════════════════
--- CONFIG SCHEMA
+-- WINDOW
 -- ═══════════════════════════════════════════
-local RagebotConfig = {
-    Enabled           = false,
-    ShootFrames       = 1,        -- frames to hold shoot lock
-    Stability         = 0.05,     -- spatial gate threshold (seconds)
-    PrioritizeHackers = false,    -- target players with suspicious tags first
+local Window = Library:CreateWindow({
+    Title        = 'Rivals Tool',
+    Center       = true,
+    AutoShow     = true,
+    TabPadding   = 8,
+    MenuFadeTime = 0.2,
+    MobileButton = true,
+})
 
-    Weapons = {
-        Enabled  = true,
-        Priority = "Closest",     -- "Closest"|"LowHP"|"HighHP"|"Random"
-        OnEmpty  = "Reload",      -- "Reload"|"Swap"|"None"
-    },
-
-    Evasion = {
-        Mode = "Translocate",     -- "Translocate"|"ProjectileBreaker"|"Random"
-
-        Translocate = {
-            Offset = Vector3.new(0, 2, 0),
-        },
-
-        ProjectileBreaker = {
-            DepthUp              = 8,
-            DepthForward         = 4,
-            FallbackRadius       = 12,
-            FallbackHeight       = 6,
-            RepositionInterval   = 0.35,
-        },
-
-        Random = {
-            BaseRadius           = 20,
-            RadiusRandomFactor   = 0.5,
-            AnchorFromCharacter  = true,
-        },
-    },
+local Tabs = {
+    Rivals       = Window:AddTab('Rivals'),
+    ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
 -- ═══════════════════════════════════════════
--- INTERNAL STATE
+-- RIVALS TAB GROUPBOXES
 -- ═══════════════════════════════════════════
-local RGState = {
-    enabled               = false,
-    innerContext          = nil,
-    lastTargetWorld       = nil,
-    lastDefensiveAngles   = nil,
-    attackCooldown        = 0,
-    hitboxWindowUntil     = 0,
-    repositionTimer       = 0,
-    originalFPDH          = Workspace.FallenPartsDestroyHeight,
-    connections           = {},
-    gluedParts            = {},     -- PartGlue table
-    measurements          = {},     -- SpatialLimitGate
+local G = {
+    -- Left column
+    EspL      = Tabs.Rivals:AddLeftGroupbox('👁 ESP'),
+    ChamsL    = Tabs.Rivals:AddLeftGroupbox('💎 Chams'),
+    SkeletonL = Tabs.Rivals:AddLeftGroupbox('🦴 Skeleton'),
+    TracerL   = Tabs.Rivals:AddLeftGroupbox('📏 Tracers'),
+    MovL      = Tabs.Rivals:AddLeftGroupbox('🏃 Movement'),
+    HackL     = Tabs.Rivals:AddLeftGroupbox('🔍 Hacker Detector'),
+
+    -- Right column
+    RgL       = Tabs.Rivals:AddRightGroupbox('💀 Ragebot'),
+    RgR       = Tabs.Rivals:AddRightGroupbox('🎯 Ragebot Settings'),
+    FovR      = Tabs.Rivals:AddRightGroupbox('📷 Camera'),
+    MiscR     = Tabs.Rivals:AddRightGroupbox('⚙ Misc'),
 }
 
 -- ═══════════════════════════════════════════════════════════════════════
--- MODULE: ShootLock — FIXED (p169 was undefined)
+-- ENUMS
 -- ═══════════════════════════════════════════════════════════════════════
-local ShootLock = {}
-ShootLock.__index = ShootLock
+local LookEnum = {
+    None     = { kind = "None" },
+    Shimmer  = { kind = "Shimmer",  shimmerColor = Color3.fromRGB(255,255,255) },
+    Perimeter= { kind = "Perimeter",perimeterColor = Color3.fromRGB(255,255,255) },
+    PingPong = { kind = "PingPong", pingPongMain = Color3.fromRGB(255,255,255),
+                                    pingPongBg   = Color3.fromRGB(0,0,0),
+                                    pingPongRotation = 0 },
+}
 
-function ShootLock.new()
-    return setmetatable({ _lockedUntil = nil }, ShootLock)
+local SKELETON_PARTS = {
+    Head=true, Torso=true, UpperTorso=true, LowerTorso=true,
+    LeftUpperLeg=true,  LeftLowerLeg=true,  LeftFoot=true,
+    RightUpperLeg=true, RightLowerLeg=true, RightFoot=true,
+    LeftUpperArm=true,  LeftLowerArm=true,  LeftHand=true,
+    RightUpperArm=true, RightLowerArm=true, RightHand=true,
+    LeftLeg=true, RightLeg=true, LeftArm=true, RightArm=true,
+}
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- TROVE (lightweight connection/instance manager)
+-- ═══════════════════════════════════════════════════════════════════════
+local Trove = {}
+Trove.__index = Trove
+
+function Trove.new(tag)
+    return setmetatable({
+        _tag    = tag or "Trove",
+        _items  = {},
+        _conns  = {},
+    }, Trove)
 end
 
---[[
-    FIX: Original had p169 undefined in 2-param function
-    Added lockDuration as proper 3rd parameter
-    Added nil guard on lockDuration before arithmetic
-]]
-function ShootLock:ShouldFire(shouldLock, lockDuration)
-    local now       = os.clock()
-    local isLocked  = self._lockedUntil ~= nil
-                      and now < self._lockedUntil
+function Trove:Add(obj)
+    table.insert(self._items, obj)
+    return obj
+end
 
-    -- Only set lock if both params valid
-    if shouldLock and type(lockDuration) == "number" then
-        self._lockedUntil = now + lockDuration
+function Trove:Connect(signal, fn)
+    local conn = signal:Connect(fn)
+    table.insert(self._conns, conn)
+    return conn
+end
+
+function Trove:Clean()
+    for _, conn in ipairs(self._conns) do
+        pcall(function() conn:Disconnect() end)
     end
-
-    return isLocked or (shouldLock == true)
-end
-
-function ShootLock:Reset()
-    self._lockedUntil = nil
-end
-
-function ShootLock:IsLocked()
-    if self._lockedUntil == nil then return false end
-    return os.clock() < self._lockedUntil
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- MODULE: PartGlue — FIXED (no destroy guard, refCount leak)
--- ═══════════════════════════════════════════════════════════════════════
-local PartGlue = {}
-PartGlue.__index = PartGlue
-
-function PartGlue.new()
-    return setmetatable({ _glued = {} }, PartGlue)
-end
-
---[[
-    FIX: Added Instance:IsDescendantOf check before
-    restoring weld — prevents error on destroyed parts
-    FIX: refCount was never bounds-checked (could go negative)
-]]
-function PartGlue:Acquire(part, hitboxRef)
-    if not part or not part.Parent then return CFrame.identity end
-
-    local entry = self._glued[part]
-    if entry then
-        entry.refCount += 1
-        return part.CFrame
-    end
-
-    -- Find existing weld
-    local weld = nil
-    for _, v in ipairs(part:GetChildren()) do
-        if v:IsA("WeldConstraint") or v:IsA("Weld") then
-            weld = v; break
+    self._conns = {}
+    for _, item in ipairs(self._items) do
+        if type(item) == "function" then
+            pcall(item)
+        elseif typeof(item) == "Instance" then
+            pcall(function() item:Destroy() end)
+        elseif type(item) == "table" and item.Destroy then
+            pcall(function() item:Destroy() end)
         end
     end
+    self._items = {}
+end
 
-    -- Detach weld Part1, anchor part
-    local originalPart1 = nil
-    if weld then
-        originalPart1   = weld.Part1
-        weld.Part1      = nil
-    end
+function Trove:Destroy()
+    self:Clean()
+end
 
-    local ok = pcall(function()
-        part.Anchored = true
+-- ═══════════════════════════════════════════════════════════════════════
+-- GUARDED INSTANCE
+-- Watches a Roblox instance and re-applies overrides if game changes them
+-- ═══════════════════════════════════════════════════════════════════════
+local GuardedInstance = {}
+GuardedInstance.__index = GuardedInstance
+
+function GuardedInstance.new(target)
+    local self = setmetatable({
+        _trove     = Trove.new("GuardedInstance"),
+        _target    = target,
+        _originals = {},
+        _overrides = {},
+        _isWriting = false,
+    }, GuardedInstance)
+
+    self._trove:Connect(target.Changed, function(prop)
+        if self._isWriting then return end
+        if self._overrides[prop] == nil then return end
+        self._originals[prop] = target[prop]
+        self._isWriting = true
+        target[prop]    = self._overrides[prop]
+        self._isWriting = false
     end)
 
-    if not ok then
-        -- Part is locked/read-only — skip
-        if weld and originalPart1 then
-            weld.Part1 = originalPart1
-        end
-        return part.CFrame
-    end
-
-    self._glued[part] = {
-        refCount     = 1,
-        weld         = weld,
-        originalPart1 = originalPart1,
-    }
-
-    return part.CFrame
+    return self
 end
 
-function PartGlue:Release(part)
-    if not part then return end
-    local entry = self._glued[part]
-    if not entry then return end
+function GuardedInstance:SetOverride(prop, value)
+    local target = self._target
+    if self._originals[prop] == nil then
+        self._originals[prop] = target[prop]
+    end
+    self._overrides[prop] = value
+    self._isWriting = true
+    pcall(function() target[prop] = value end)
+    self._isWriting = false
+end
 
-    entry.refCount = math.max(0, entry.refCount - 1)
-    if entry.refCount > 0 then return end
+function GuardedInstance:ClearOverride(prop)
+    local orig = self._originals[prop]
+    if orig == nil then return end
+    self._originals[prop] = nil
+    self._overrides[prop] = nil
+    self._isWriting = true
+    pcall(function() self._target[prop] = orig end)
+    self._isWriting = false
+end
 
-    --[[
-        FIX: Check part AND weld still exist in workspace
-        before attempting to restore — prevents nil index error
-    ]]
-    local weld         = entry.weld
-    local origPart1    = entry.originalPart1
+function GuardedInstance:ClearAllOverrides()
+    self._isWriting = true
+    for prop in pairs(self._overrides) do
+        local orig = self._originals[prop]
+        self._originals[prop] = nil
+        self._overrides[prop] = nil
+        pcall(function() self._target[prop] = orig end)
+    end
+    self._isWriting = false
+end
 
-    if weld and weld.Parent
-    and origPart1 and origPart1.Parent then
-        pcall(function()
-            weld.Part1          = origPart1
-            origPart1.Anchored  = false
+function GuardedInstance:Destroy()
+    self:ClearAllOverrides()
+    self._trove:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- GAME LOOP
+-- ═══════════════════════════════════════════════════════════════════════
+local GameLoop = {}
+GameLoop.__index = GameLoop
+
+function GameLoop.new()
+    return setmetatable({
+        _trove           = Trove.new("GameLoop"),
+        _preCameraRender = nil,
+        _preRender       = nil,
+        _preSimulation   = nil,
+        _heartbeat       = nil,
+    }, GameLoop)
+end
+
+function GameLoop:SetPreCameraRender(fn) self._preCameraRender = fn end
+function GameLoop:SetPreRender(fn)       self._preRender       = fn end
+function GameLoop:SetPreSimulation(fn)   self._preSimulation   = fn end
+function GameLoop:SetHeartbeat(fn)       self._heartbeat       = fn end
+
+function GameLoop:Start()
+    if self._preCameraRender then
+        local guid = HttpService:GenerateGUID(false)
+        RunService:BindToRenderStep(
+            guid,
+            Enum.RenderPriority.Camera.Value - 1,
+            self._preCameraRender
+        )
+        self._trove:Add(function()
+            RunService:UnbindFromRenderStep(guid)
         end)
     end
-
-    -- Unanchor the glued part if still valid
-    if part.Parent then
-        pcall(function() part.Anchored = false end)
-    end
-
-    self._glued[part] = nil
+    if self._preRender     then self._trove:Connect(RunService.PreRender,     self._preRender)     end
+    if self._preSimulation then self._trove:Connect(RunService.PreSimulation, self._preSimulation) end
+    if self._heartbeat     then self._trove:Connect(RunService.Heartbeat,     self._heartbeat)     end
 end
 
-function PartGlue:ReleaseAll()
-    for part, _ in pairs(self._glued) do
-        self:Release(part)
-    end
-    table.clear(self._glued)
+function GameLoop:Destroy()
+    self._trove:Destroy()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
--- MODULE: SpatialLimitGate — FIXED (expectedDuration logic)
+-- CORNER OUTLINE (box ESP corner-bracket style)
 -- ═══════════════════════════════════════════════════════════════════════
-local SpatialLimitGate = {}
-SpatialLimitGate.__index = SpatialLimitGate
+local CornerOutline = {}
+CornerOutline.__index = CornerOutline
 
-local SPATIAL_BOUND = 4194304  -- original v100 constant
+function CornerOutline.new(parent)
+    local self = setmetatable({
+        _corners     = {},
+        _enabled     = false,
+        _innerColor  = Color3.new(1,1,1),
+        _outlineColor= Color3.new(0,0,0),
+        _look        = LookEnum.None,
+    }, CornerOutline)
 
-function SpatialLimitGate.new()
-    return setmetatable({ _measurements = {} }, SpatialLimitGate)
+    local THICK = 3
+    local INSET = 1
+    local INNER = THICK - 2 * INSET
+
+    local positions = {
+        { hAnchor = Vector2.new(0,0), vAnchor = Vector2.new(0,0),
+          hPos = UDim2.fromOffset(0,0),    vPos = UDim2.fromOffset(0,0) },
+        { hAnchor = Vector2.new(1,0), vAnchor = Vector2.new(1,0),
+          hPos = UDim2.fromScale(1,0),     vPos = UDim2.fromScale(1,0) },
+        { hAnchor = Vector2.new(1,1), vAnchor = Vector2.new(1,1),
+          hPos = UDim2.fromScale(1,1),     vPos = UDim2.fromScale(1,1) },
+        { hAnchor = Vector2.new(0,1), vAnchor = Vector2.new(0,1),
+          hPos = UDim2.fromScale(0,1),     vPos = UDim2.fromScale(0,1) },
+    }
+
+    local BRACKET_LEN = 0.25 -- 25% of box width/height
+
+    for i, pos in ipairs(positions) do
+        local function makeFrame(isHoriz)
+            local f = Instance.new("Frame")
+            f.BorderSizePixel       = 0
+            f.BackgroundTransparency = 1
+            f.Interactable          = false
+            f.ZIndex                = 10
+            f.AnchorPoint           = isHoriz and pos.hAnchor or pos.vAnchor
+            f.Position              = isHoriz and pos.hPos    or pos.vPos
+            f.Size                  = isHoriz
+                and UDim2.new(BRACKET_LEN, 0, 0, INNER)
+                or  UDim2.new(0, INNER, BRACKET_LEN, 0)
+            f.Parent = parent
+            return f
+        end
+
+        local hColor = makeFrame(true)
+        local vColor = makeFrame(false)
+        local hBacker = makeFrame(true)
+        local vBacker = makeFrame(false)
+
+        hColor.BackgroundTransparency  = 1
+        vColor.BackgroundTransparency  = 1
+        hBacker.BackgroundTransparency = 1
+        vBacker.BackgroundTransparency = 1
+
+        hBacker.ZIndex = 9
+        vBacker.ZIndex = 9
+        hBacker.BackgroundColor3 = Color3.new(0,0,0)
+        vBacker.BackgroundColor3 = Color3.new(0,0,0)
+
+        self._corners[i] = {
+            horizontalColor  = hColor,
+            verticalColor    = vColor,
+            horizontalBacker = hBacker,
+            verticalBacker   = vBacker,
+        }
+    end
+
+    return self
+end
+
+function CornerOutline:SetEnabled(state)
+    self._enabled = state
+    for _, corner in ipairs(self._corners) do
+        local vis = state
+        corner.horizontalColor.Visible  = vis
+        corner.verticalColor.Visible    = vis
+        corner.horizontalBacker.Visible = vis
+        corner.verticalBacker.Visible   = vis
+    end
+end
+
+function CornerOutline:SetOutlineColor(color)
+    self._outlineColor = color
+    for _, corner in ipairs(self._corners) do
+        corner.horizontalBacker.BackgroundColor3 = color
+        corner.verticalBacker.BackgroundColor3   = color
+    end
+end
+
+function CornerOutline:SetLook(color, look)
+    self._innerColor = color
+    self._look       = look or LookEnum.None
+    for _, corner in ipairs(self._corners) do
+        corner.horizontalColor.BackgroundColor3 = color
+        corner.verticalColor.BackgroundColor3   = color
+        corner.horizontalColor.BackgroundTransparency = 0
+        corner.verticalColor.BackgroundTransparency   = 0
+        corner.horizontalBacker.BackgroundTransparency = 0
+        corner.verticalBacker.BackgroundTransparency   = 0
+    end
+end
+
+function CornerOutline:Destroy()
+    for _, corner in ipairs(self._corners) do
+        for _, f in pairs(corner) do f:Destroy() end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- STROKE OUTLINE (UIStroke based)
+-- ═══════════════════════════════════════════════════════════════════════
+local StrokeOutline = {}
+StrokeOutline.__index = StrokeOutline
+
+function StrokeOutline.new(parent)
+    local self = setmetatable({
+        _enabled     = false,
+        _innerColor  = Color3.new(1,1,1),
+        _outlineColor= Color3.new(0,0,0),
+        _look        = LookEnum.None,
+    }, StrokeOutline)
+
+    -- Outer stroke (dark border)
+    local outerStroke = Instance.new("UIStroke")
+    outerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    outerStroke.LineJoinMode    = Enum.LineJoinMode.Miter
+    outerStroke.Thickness       = 3
+    outerStroke.Color           = Color3.new(0,0,0)
+    outerStroke.Enabled         = false
+    outerStroke.Parent          = parent
+    self._outerStroke = outerStroke
+
+    -- Inner frame
+    local inner = Instance.new("Frame")
+    inner.BackgroundTransparency = 1
+    inner.BorderSizePixel        = 0
+    inner.Interactable           = false
+    inner.Size                   = UDim2.fromScale(1,1)
+    inner.Parent                 = parent
+    self._inner = inner
+
+    -- Inner stroke (colored line)
+    local innerStroke = Instance.new("UIStroke")
+    innerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    innerStroke.LineJoinMode    = Enum.LineJoinMode.Miter
+    innerStroke.Thickness       = 1
+    innerStroke.Color           = Color3.new(1,1,1)
+    innerStroke.Enabled         = false
+    innerStroke.Parent          = inner
+    self._innerStroke = innerStroke
+
+    -- Gradient for shimmer
+    local grad = Instance.new("UIGradient")
+    grad.Enabled = false
+    grad.Parent  = innerStroke
+    self._innerStrokeGradient = grad
+
+    return self
+end
+
+function StrokeOutline:SetEnabled(state)
+    self._enabled = state
+    self._outerStroke.Enabled = state
+    self._innerStroke.Enabled = state
+end
+
+function StrokeOutline:SetOutlineColor(color)
+    self._outlineColor   = color
+    self._outerStroke.Color = color
+end
+
+function StrokeOutline:SetLook(color, look)
+    self._innerColor     = color
+    self._look           = look or LookEnum.None
+    local kind           = self._look.kind
+    local grad           = self._innerStrokeGradient
+
+    if kind == "Shimmer" then
+        local shimmer = look.shimmerColor or Color3.new(1,1,1)
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0,   shimmer),
+            ColorSequenceKeypoint.new(0.5, color),
+            ColorSequenceKeypoint.new(1,   shimmer),
+        })
+        grad.Rotation = 45
+        grad.Enabled  = true
+        self._innerStroke.Color = Color3.new(1,1,1)
+    else
+        grad.Enabled = false
+        self._innerStroke.Color = color
+    end
+
+    self._innerStroke.Transparency = 0
+end
+
+function StrokeOutline:Destroy()
+    self._inner:Destroy()
+    self._outerStroke:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- BOUNDING BOX (per-player ESP box)
+-- ═══════════════════════════════════════════════════════════════════════
+local BoundingBox = {}
+BoundingBox.__index = BoundingBox
+
+function BoundingBox.new(screenGui)
+    local self = setmetatable({
+        _visible      = false,
+        _style        = "Full",
+        _outline      = nil,
+        _innerColor   = Color3.fromRGB(255,50,50),
+        _outlineColor = Color3.fromRGB(0,0,0),
+        _look         = LookEnum.None,
+        _screenGui    = screenGui,
+    }, BoundingBox)
+
+    local outer = Instance.new("Frame")
+    outer.Visible                = false
+    outer.BackgroundTransparency = 1
+    outer.BorderSizePixel        = 0
+    outer.Interactable           = false
+    outer.Parent                 = screenGui
+    self._outer = outer
+
+    self:SetStyle("Full")
+    return self
+end
+
+function BoundingBox:SetStyle(style)
+    if style == self._style and self._outline ~= nil then return end
+    if self._outline then self._outline:Destroy() end
+
+    local outline
+    if style == "Corner" then
+        outline = CornerOutline.new(self._outer)
+    else
+        outline = StrokeOutline.new(self._outer)
+    end
+
+    self._outline = outline
+    self._style   = style
+    outline:SetOutlineColor(self._outlineColor)
+    outline:SetEnabled(self._visible)
+    outline:SetLook(self._innerColor, self._look)
+end
+
+function BoundingBox:SetEnabled(state)
+    self._visible = state
+    self._outer.Visible = state
+    if self._outline then self._outline:SetEnabled(state) end
+end
+
+function BoundingBox:SetLook(color, look)
+    self._innerColor = color
+    self._look       = look or LookEnum.None
+    if self._outline then
+        self._outline:SetLook(color, self._look)
+    end
+end
+
+function BoundingBox:SetOutlineColor(color)
+    self._outlineColor = color
+    if self._outline then self._outline:SetOutlineColor(color) end
 end
 
 --[[
-    FIX: Original had no nil-check on measurements
-    Added position validity check before inserting
-    Added cleanup of old measurements (sliding window)
+    Update: repositions the box to wrap the character's bounding box
+    called every RenderStep while player is visible
 ]]
-function SpatialLimitGate:Check(character)
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return true end -- allow if no HRP
+function BoundingBox:Update(character)
+    if not self._visible or not character then return end
 
-    local pos = hrp.Position
-    local now = os.clock()
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyOnScreen = false
 
-    -- Check bounds
-    if  math.abs(pos.X) > SPATIAL_BOUND
-    or  math.abs(pos.Y) > SPATIAL_BOUND
-    or  math.abs(pos.Z) > SPATIAL_BOUND then
-        return false -- out of valid space
-    end
-
-    -- Record measurement
-    table.insert(self._measurements, { t = now, pos = pos })
-
-    -- Clean old measurements (keep last 2 seconds)
-    local cutoff = now - 2
-    local fresh  = {}
-    for _, m in ipairs(self._measurements) do
-        if m.t >= cutoff then
-            table.insert(fresh, m)
-        end
-    end
-    self._measurements = fresh
-
-    -- Stability check: if moved too fast recently → unstable
-    local stability = RagebotConfig.Stability
-    if #fresh >= 2 then
-        local oldest  = fresh[1]
-        local elapsed = now - oldest.t
-        if elapsed > 0 and elapsed < stability then
-            local dist = (pos - oldest.pos).Magnitude
-            if dist > 500 then
-                return false -- teleported too recently
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and SKELETON_PARTS[part.Name] then
+            local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+            if onScreen and sp.Z > 0 then
+                anyOnScreen = true
+                minX = math.min(minX, sp.X - part.Size.X * 30)
+                maxX = math.max(maxX, sp.X + part.Size.X * 30)
+                minY = math.min(minY, sp.Y - part.Size.Y * 30)
+                maxY = math.max(maxY, sp.Y + part.Size.Y * 30)
             end
         end
     end
 
-    return true
+    if not anyOnScreen then
+        self._outer.Visible = false
+        return
+    end
+
+    self._outer.Visible  = true
+    self._outer.Position = UDim2.fromOffset(minX, minY)
+    self._outer.Size     = UDim2.fromOffset(maxX - minX, maxY - minY)
 end
 
-function SpatialLimitGate:Reset()
-    table.clear(self._measurements)
+function BoundingBox:Destroy()
+    if self._outline then self._outline:Destroy() end
+    self._outer:Destroy()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
--- MODULE: OOBKiller — FIXED (stale _processedParts, no env validation)
+-- CHAMS (per-part handle adornments)
 -- ═══════════════════════════════════════════════════════════════════════
-local OOBKiller = {}
-OOBKiller.__index = OOBKiller
+local GLOW_INTENSITY = 5
 
-function OOBKiller.new()
+local function glowColorFrom(base)
+    return Color3.new(
+        math.clamp(base.R * GLOW_INTENSITY, 0, 1),
+        math.clamp(base.G * GLOW_INTENSITY, 0, 1),
+        math.clamp(base.B * GLOW_INTENSITY, 0, 1)
+    )
+end
+
+local Chams = {}
+Chams.__index = Chams
+
+function Chams.new()
     return setmetatable({
-        --[[
-            FIX: Use weak keys so destroyed parts
-            are auto-removed from processedParts
-        ]]
-        _processedParts    = setmetatable({}, { __mode = "k" }),
-        _pool              = {},
-        _poolEnvironmentID = nil,
-        _nextCooldown      = -1,
-    }, OOBKiller)
+        _trove              = Trove.new("Chams"),
+        _partAdornments     = {},
+        _innerColor         = Color3.fromRGB(255,50,50),
+        _outlineColor       = Color3.fromRGB(80,0,0),
+        _innerTransparency  = 0,
+        _outlineTransparency= 0.5,
+        _glowEnabled        = false,
+        _glowColor          = Color3.fromRGB(255,50,50),
+        _enabled            = false,
+        _adormentFolder     = Instance.new("Folder"),
+    }, Chams)
 end
 
---[[
-    FIX: Validate environment ID before using cached pool
-    Clears pool if environment changed (map reload/new round)
-]]
-function OOBKiller:_ValidatePool(environmentID)
-    if self._poolEnvironmentID ~= environmentID then
-        table.clear(self._pool)
-        table.clear(self._processedParts)
-        self._poolEnvironmentID = environmentID
+function Chams:SetLook(innerColor, innerAlpha, outlineColor, outlineAlpha, glowEnabled, glowColor)
+    self._innerColor          = innerColor
+    self._innerTransparency   = innerAlpha
+    self._outlineColor        = outlineColor
+    self._outlineTransparency = outlineAlpha
+    self._glowEnabled         = glowEnabled
+    self._glowColor           = glowColor
+
+    local glowBright = glowColorFrom(glowColor)
+    for _, set in pairs(self._partAdornments) do
+        set.inner.Color3           = innerColor
+        set.inner.Transparency     = innerAlpha
+        set.outline.Color3         = outlineColor
+        set.outline.Transparency   = outlineAlpha
+        set.glow.Color3            = glowBright
+        set.glow.Visible           = glowEnabled
     end
 end
 
-function OOBKiller:_ScanParts(environmentID)
-    self:_ValidatePool(environmentID)
-    if #self._pool > 0 then return end
+function Chams:_AddPart(part)
+    if self._partAdornments[part] then return end
 
-    -- Scan workspace for OutOfBoundsPart with KillDelay == 0
-    for _, v in ipairs(Workspace:GetDescendants()) do
-        if v.Name == "OutOfBoundsPart"
-        and v:IsA("BasePart")
-        and not self._processedParts[v] then
-            local kd = v:GetAttribute("KillDelay")
-            if kd == 0 then
-                self._processedParts[v] = true
-                table.insert(self._pool, v)
-            end
+    local function makeAdorn(cls)
+        local a = Instance.new(cls)
+        a.Adornee  = part
+        a.Visible  = true
+        a.Parent   = self._adormentFolder
+        return a
+    end
+
+    local inner, outline, glow
+
+    if part.Name == "Head" then
+        inner   = makeAdorn("CylinderHandleAdornment")
+        outline = makeAdorn("CylinderHandleAdornment")
+        glow    = makeAdorn("CylinderHandleAdornment")
+        local cf = CFrame.Angles(math.pi/2, 0, 0)
+        inner.CFrame   = cf; inner.Radius   = 0.54; inner.Height   = 1.12
+        outline.CFrame = cf; outline.Radius = 0.62; outline.Height = 1.30
+        glow.CFrame    = cf; glow.Radius    = 0.55; glow.Height    = 1.14
+    else
+        inner   = makeAdorn("BoxHandleAdornment")
+        outline = makeAdorn("BoxHandleAdornment")
+        glow    = makeAdorn("BoxHandleAdornment")
+        inner.Size   = part.Size + Vector3.one * 0.02
+        outline.Size = part.Size + Vector3.one * 0.12
+        glow.Size    = part.Size + Vector3.one * 0.03
+    end
+
+    inner.AlwaysOnTop   = true
+    inner.Color3        = self._innerColor
+    inner.Transparency  = self._innerTransparency
+    inner.ZIndex        = 2
+
+    outline.AlwaysOnTop  = false
+    outline.Color3       = self._outlineColor
+    outline.Transparency = self._outlineTransparency
+    outline.ZIndex       = -1
+
+    glow.AlwaysOnTop  = true
+    glow.Color3       = glowColorFrom(self._glowColor)
+    glow.Transparency = -1
+    glow.ZIndex       = 3
+    glow.Visible      = self._glowEnabled
+
+    self._partAdornments[part] = {
+        inner   = inner,
+        outline = outline,
+        glow    = glow,
+    }
+end
+
+function Chams:_RemovePart(part)
+    local set = self._partAdornments[part]
+    if not set then return end
+    self._partAdornments[part] = nil
+    set.inner:Destroy()
+    set.outline:Destroy()
+    set.glow:Destroy()
+end
+
+function Chams:SelectModel(character)
+    if not character then return end
+    self._adormentFolder.Parent = character
+
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and SKELETON_PARTS[part.Name] then
+            self:_AddPart(part)
+        end
+    end
+
+    self._trove:Connect(character.DescendantAdded, function(child)
+        if child:IsA("BasePart") and SKELETON_PARTS[child.Name] then
+            self:_AddPart(child)
+        end
+    end)
+    self._trove:Connect(character.DescendantRemoving, function(child)
+        if child:IsA("BasePart") then self:_RemovePart(child) end
+    end)
+end
+
+function Chams:DeselectModel()
+    for part in pairs(self._partAdornments) do
+        self:_RemovePart(part)
+    end
+    self._trove:Clean()
+    self._adormentFolder.Parent = nil
+end
+
+function Chams:SetEnabled(state)
+    self._enabled = state
+    for _, set in pairs(self._partAdornments) do
+        set.inner.Visible   = state
+        set.outline.Visible = state
+        set.glow.Visible    = state and self._glowEnabled
+    end
+end
+
+function Chams:Destroy()
+    self:DeselectModel()
+    self._trove:Destroy()
+    self._adormentFolder:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- SKELETON (2D lines connecting body parts)
+-- ═══════════════════════════════════════════════════════════════════════
+local Skeleton = {}
+Skeleton.__index = Skeleton
+
+-- Bone connections: [part] → {part0, part1}
+local BONE_MAP = {
+    { "Head",         "UpperTorso" },
+    { "UpperTorso",   "LowerTorso" },
+    { "LowerTorso",   "HumanoidRootPart" },
+    { "LeftUpperArm", "UpperTorso" },
+    { "LeftLowerArm", "LeftUpperArm" },
+    { "LeftHand",     "LeftLowerArm" },
+    { "RightUpperArm","UpperTorso" },
+    { "RightLowerArm","RightUpperArm" },
+    { "RightHand",    "RightLowerArm" },
+    { "LeftUpperLeg", "LowerTorso" },
+    { "LeftLowerLeg", "LeftUpperLeg" },
+    { "LeftFoot",     "LeftLowerLeg" },
+    { "RightUpperLeg","LowerTorso" },
+    { "RightLowerLeg","RightUpperLeg" },
+    { "RightFoot",    "RightLowerLeg" },
+}
+
+function Skeleton.new(screenGui)
+    return setmetatable({
+        _trove            = Trove.new("Skeleton"),
+        _screenGui        = screenGui,
+        _lines            = {},
+        _color            = Color3.fromRGB(255,100,100),
+        _transparency     = 0,
+        _thickness        = 1,
+        _enabled          = false,
+        _model            = nil,
+    }, Skeleton)
+end
+
+function Skeleton:_MakeLine()
+    local f = Instance.new("Frame")
+    f.Visible                = false
+    f.BorderSizePixel        = 0
+    f.BackgroundColor3       = self._color
+    f.BackgroundTransparency = self._transparency
+    f.AnchorPoint            = Vector2.new(0.5, 0.5)
+    f.Parent                 = self._screenGui
+    return f
+end
+
+function Skeleton:SelectModel(character)
+    self:DeselectModel()
+    self._model = character
+
+    for _, bone in ipairs(BONE_MAP) do
+        local p0 = character:FindFirstChild(bone[1])
+        local p1 = character:FindFirstChild(bone[2])
+        if p0 and p1 then
+            local line = self:_MakeLine()
+            table.insert(self._lines, { line = line, p0 = p0, p1 = p1 })
         end
     end
 end
 
-function OOBKiller:GetKillPosition(environmentID, offset)
-    self:_ScanParts(environmentID)
+function Skeleton:DeselectModel()
+    for _, entry in ipairs(self._lines) do
+        entry.line:Destroy()
+    end
+    self._lines = {}
+    self._model = nil
+    self._trove:Clean()
+end
 
-    if #self._pool > 0 then
-        local part     = self._pool[math.random(1, #self._pool)]
-        local safeOffset = offset or RagebotConfig.Evasion.Translocate.Offset
-        return part.Position + safeOffset
+function Skeleton:SetEnabled(state)
+    self._enabled = state
+    for _, entry in ipairs(self._lines) do
+        entry.line.Visible = false -- update() will show when on-screen
+    end
+    if not state then
+        for _, entry in ipairs(self._lines) do
+            entry.line.Visible = false
+        end
+    end
+end
+
+function Skeleton:SetLook(color, transparency, thickness)
+    self._color        = color
+    self._transparency = transparency
+    self._thickness    = thickness
+    for _, entry in ipairs(self._lines) do
+        entry.line.BackgroundColor3       = color
+        entry.line.BackgroundTransparency = transparency
+    end
+end
+
+--[[
+    Update: draws 2D lines between projected bone positions each frame
+]]
+function Skeleton:Update()
+    if not self._enabled or not self._model then return end
+
+    for _, entry in ipairs(self._lines) do
+        local p0, p1 = entry.p0, entry.p1
+        if not (p0.Parent and p1.Parent) then
+            entry.line.Visible = false
+            continue
+        end
+
+        local sp0, on0 = cam:WorldToViewportPoint(p0.Position)
+        local sp1, on1 = cam:WorldToViewportPoint(p1.Position)
+
+        if not (on0 and on1 and sp0.Z > 0 and sp1.Z > 0) then
+            entry.line.Visible = false
+            continue
+        end
+
+        local v0     = Vector2.new(sp0.X, sp0.Y)
+        local v1     = Vector2.new(sp1.X, sp1.Y)
+        local mid    = (v0 + v1) * 0.5
+        local diff   = v1 - v0
+        local length = diff.Magnitude
+        local angle  = math.atan2(diff.Y, diff.X)
+
+        local line = entry.line
+        line.Visible  = true
+        line.Position = UDim2.fromOffset(mid.X, mid.Y)
+        line.Size     = UDim2.fromOffset(length, self._thickness)
+        line.Rotation = math.deg(angle)
+    end
+end
+
+function Skeleton:Destroy()
+    self:DeselectModel()
+    self._trove:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- TRACER (line from screen bottom to target)
+-- ═══════════════════════════════════════════════════════════════════════
+local Tracer = {}
+Tracer.__index = Tracer
+
+function Tracer.new(screenGui)
+    local self = setmetatable({
+        _screenGui    = screenGui,
+        _targetPart   = nil,
+        _visible      = false,
+        _color        = Color3.fromRGB(255,50,50),
+        _transparency = 0,
+        _thickness    = 1.5,
+        _origin       = "Bottom",  -- "Bottom" | "Center" | "Mouse"
+        _target       = "Feet",    -- "Feet" | "Head" | "Center"
+        _enabled      = false,
+    }, Tracer)
+
+    local outline = Instance.new("Frame")
+    outline.Visible                = false
+    outline.BorderSizePixel        = 0
+    outline.AnchorPoint            = Vector2.new(0.5, 0.5)
+    outline.BackgroundColor3       = Color3.new(0,0,0)
+    outline.BackgroundTransparency = 0
+    outline.ZIndex                 = 0
+    outline.Parent                 = screenGui
+    self._outline = outline
+
+    local line = Instance.new("Frame")
+    line.Visible                = false
+    line.BorderSizePixel        = 0
+    line.AnchorPoint            = Vector2.new(0.5, 0.5)
+    line.BackgroundColor3       = Color3.new(1,1,1)
+    line.BackgroundTransparency = 0
+    line.ZIndex                 = 1
+    line.Parent                 = screenGui
+    self._line = line
+
+    return self
+end
+
+function Tracer:SetTarget(part)
+    self._targetPart = part
+end
+
+function Tracer:ClearTarget()
+    self._targetPart = nil
+    self._line.Visible    = false
+    self._outline.Visible = false
+end
+
+function Tracer:SetEnabled(state)
+    self._enabled = state
+    if not state then
+        self._line.Visible    = false
+        self._outline.Visible = false
+    end
+end
+
+function Tracer:SetLook(color, transparency, thickness)
+    self._color        = color
+    self._transparency = transparency
+    self._thickness    = thickness
+    self._line.BackgroundColor3       = color
+    self._line.BackgroundTransparency = transparency
+end
+
+function Tracer:Update()
+    if not self._enabled or not self._targetPart then
+        self._line.Visible    = false
+        self._outline.Visible = false
+        return
     end
 
-    -- Fallback: random ring at ±1073741824
-    local axes    = { Vector3.xAxis, Vector3.zAxis }
-    local chosen  = axes[math.random(1, #axes)]
-    local sign    = math.random(0,1) == 0 and 1 or -1
-    return chosen * (1073741824 * sign)
+    local sp, onScreen = cam:WorldToViewportPoint(self._targetPart.Position)
+    if not onScreen or sp.Z <= 0 then
+        self._line.Visible    = false
+        self._outline.Visible = false
+        return
+    end
+
+    local vp    = cam.ViewportSize
+    local from  = Vector2.new(vp.X / 2, vp.Y)  -- bottom center
+    local to    = Vector2.new(sp.X, sp.Y)
+    local diff  = to - from
+    local len   = diff.Magnitude
+    local angle = math.atan2(diff.Y, diff.X)
+    local mid   = (from + to) * 0.5
+    local thick = self._thickness
+
+    self._line.Visible   = true
+    self._line.Position  = UDim2.fromOffset(mid.X, mid.Y)
+    self._line.Size      = UDim2.fromOffset(len, thick)
+    self._line.Rotation  = math.deg(angle)
+
+    self._outline.Visible   = true
+    self._outline.Position  = UDim2.fromOffset(mid.X, mid.Y)
+    self._outline.Size      = UDim2.fromOffset(len, thick + 2)
+    self._outline.Rotation  = math.deg(angle)
+end
+
+function Tracer:Destroy()
+    self._line:Destroy()
+    self._outline:Destroy()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
--- MODULE: TargetSelection
+-- HACKER DETECTOR
 -- ═══════════════════════════════════════════════════════════════════════
-local TargetSelection = {}
-TargetSelection.__index = TargetSelection
+local HackerDetector = {}
+HackerDetector.__index = HackerDetector
 
-function TargetSelection.new()
-    return setmetatable({ _current = nil }, TargetSelection)
+local HD_SPEED_THRESHOLD = 200
+local HD_SPEED_WINDOW    = 0.25
+local HD_NOTIFY_COOLDOWN = 10
+
+function HackerDetector.new(screenGui)
+    local self = setmetatable({
+        _trove         = Trove.new("HackerDetector"),
+        _screenGui     = screenGui,
+        _enabled       = false,
+        _shouldNotify  = true,
+        _tagColor      = Color3.fromRGB(255, 50, 50),
+        _speedTimers   = {},
+        _lastPositions = {},
+        _lastPosTime   = {},
+        _notified      = {},
+        _labels        = {},
+        _notifyCooldown= {},
+    }, HackerDetector)
+    return self
 end
 
-local function sameTm(p)
+function HackerDetector:SetEnabled(state)
+    self._enabled = state
+    if not state then
+        for p, lbl in pairs(self._labels) do
+            lbl:Destroy()
+            self._labels[p] = nil
+        end
+    end
+end
+
+function HackerDetector:SetNotify(state)
+    self._shouldNotify = state
+end
+
+function HackerDetector:SetColor(color)
+    self._tagColor = color
+    for _, lbl in pairs(self._labels) do
+        lbl.TextColor3 = color
+    end
+end
+
+function HackerDetector:_IsMovingTooFast(player)
+    local chr = player.Character
+    if not chr then return false end
+    local hrp = chr:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    local now = os.clock()
+    local pos = hrp.Position
+    local lastPos  = self._lastPositions[player]
+    local lastTime = self._lastPosTime[player]
+
+    self._lastPositions[player] = pos
+    self._lastPosTime[player]   = now
+
+    if not lastPos or not lastTime then return false end
+
+    local dt    = now - lastTime
+    local dist  = (pos - lastPos).Magnitude
+    local speed = dt > 0 and (dist / dt) or 0
+
+    if speed > HD_SPEED_THRESHOLD then
+        self._speedTimers[player] = (self._speedTimers[player] or 0) + dt
+    else
+        self._speedTimers[player] = 0
+    end
+
+    return (self._speedTimers[player] or 0) >= HD_SPEED_WINDOW
+end
+
+function HackerDetector:_TagPlayer(player)
+    if self._labels[player] then return end
+
+    local lbl = Instance.new("BillboardGui")
+    lbl.Size          = UDim2.fromOffset(200, 30)
+    lbl.StudsOffset   = Vector3.new(0, 3, 0)
+    lbl.AlwaysOnTop   = true
+
+    local txt = Instance.new("TextLabel", lbl)
+    txt.Size                   = UDim2.fromScale(1, 1)
+    txt.BackgroundTransparency = 1
+    txt.Text                   = "⚠ HACKER"
+    txt.TextColor3             = self._tagColor
+    txt.Font                   = Enum.Font.GothamBold
+    txt.TextSize               = 14
+    txt.TextStrokeTransparency = 0
+
+    local chr = player.Character
+    if chr then
+        local hrp = chr:FindFirstChild("HumanoidRootPart")
+        if hrp then lbl.Adornee = hrp end
+    end
+
+    lbl.Parent          = self._screenGui
+    self._labels[player] = lbl
+
+    -- Notify via warn (Library notify may not exist without full lib context)
+    local now = os.clock()
+    local cooldown = self._notifyCooldown[player] or 0
+    if self._shouldNotify and now > cooldown then
+        self._notifyCooldown[player] = now + HD_NOTIFY_COOLDOWN
+        warn("[HackerDetector] Possible hacker: " .. player.DisplayName)
+        -- If Library:Notify exists use it:
+        pcall(function()
+            Library:Notify(player.DisplayName .. " may be hacking!", 5)
+        end)
+    end
+end
+
+function HackerDetector:Update()
+    if not self._enabled then return end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == lp then continue end
+
+        if self:_IsMovingTooFast(player) then
+            self:_TagPlayer(player)
+        else
+            -- Remove tag if they stopped hacking
+            if self._labels[player] then
+                self._labels[player]:Destroy()
+                self._labels[player] = nil
+                self._notified[player] = nil
+            end
+        end
+
+        -- Keep billboard attached to character
+        if self._labels[player] then
+            local chr = player.Character
+            local hrp = chr and chr:FindFirstChild("HumanoidRootPart")
+            self._labels[player].Adornee = hrp or nil
+        end
+    end
+
+    -- Clean up labels for players who left
+    for player, lbl in pairs(self._labels) do
+        if not player.Parent then
+            lbl:Destroy()
+            self._labels[player] = nil
+            self._speedTimers[player]   = nil
+            self._lastPositions[player] = nil
+            self._lastPosTime[player]   = nil
+        end
+    end
+end
+
+function HackerDetector:Destroy()
+    self:SetEnabled(false)
+    self._trove:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- NOCLIP
+-- ═══════════════════════════════════════════════════════════════════════
+local Noclip = {}
+Noclip.__index = Noclip
+
+function Noclip.new()
+    local self = setmetatable({
+        _trove          = Trove.new("Noclip"),
+        _collidableParts = {},
+        _enabled        = false,
+    }, Noclip)
+
+    -- Re-bind on respawn
+    self._trove:Connect(lp.CharacterAdded, function(chr)
+        self:_BindCharacter(chr)
+    end)
+    if lp.Character then
+        self:_BindCharacter(lp.Character)
+    end
+
+    return self
+end
+
+function Noclip:_BindCharacter(character)
+    table.clear(self._collidableParts)
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            self._collidableParts[part] = true
+        end
+    end
+    self._trove:Connect(character.DescendantAdded, function(child)
+        if child:IsA("BasePart") then
+            self._collidableParts[child] = true
+        end
+    end)
+    self._trove:Connect(character.DescendantRemoving, function(child)
+        if child:IsA("BasePart") then
+            self._collidableParts[child] = nil
+        end
+    end)
+end
+
+function Noclip:SetEnabled(state)
+    if self._enabled and not state then
+        -- Restore collision on disable
+        for part in pairs(self._collidableParts) do
+            pcall(function() part.CanCollide = true end)
+        end
+    end
+    self._enabled = state
+end
+
+function Noclip:Update()
+    if not self._enabled then return end
+    for part in pairs(self._collidableParts) do
+        pcall(function() part.CanCollide = false end)
+    end
+end
+
+function Noclip:Destroy()
+    self:SetEnabled(false)
+    self._trove:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- FOV CHANGER (GuardedInstance wrapping CurrentCamera)
+-- ═══════════════════════════════════════════════════════════════════════
+local FovChanger = {}
+FovChanger.__index = FovChanger
+
+function FovChanger.new()
+    local self = setmetatable({
+        _trove      = Trove.new("FovChanger"),
+        _guard      = nil,
+        _enabled    = false,
+        _value      = 80,
+    }, FovChanger)
+
+    self._trove:Connect(
+        Workspace:GetPropertyChangedSignal("CurrentCamera"),
+        function() self:_BindCamera() end
+    )
+    self:_BindCamera()
+    return self
+end
+
+function FovChanger:_BindCamera()
+    if self._guard then
+        self._guard:Destroy()
+        self._guard = nil
+    end
+    local c = Workspace.CurrentCamera
+    if c then
+        self._guard = GuardedInstance.new(c)
+        self:_Apply()
+    end
+end
+
+function FovChanger:_Apply()
+    if not self._guard then return end
+    if self._enabled then
+        self._guard:SetOverride("FieldOfView", self._value)
+    else
+        self._guard:ClearOverride("FieldOfView")
+    end
+end
+
+function FovChanger:SetEnabled(state)
+    self._enabled = state
+    self:_Apply()
+end
+
+function FovChanger:SetValue(fov)
+    self._value = fov
+    self:_Apply()
+end
+
+function FovChanger:Destroy()
+    if self._guard then self._guard:Destroy() end
+    self._trove:Destroy()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- ESP MANAGER (orchestrates all per-player visual systems)
+-- ═══════════════════════════════════════════════════════════════════════
+local ESPManager = {}
+ESPManager.__index = ESPManager
+
+function ESPManager.new()
+    local self = setmetatable({
+        _trove      = Trove.new("ESPManager"),
+        _entries    = {},  -- [player] = { box, chams, skeleton, tracer, nameLabel, healthBar }
+        _screenGui  = nil,
+        _config     = {
+            box         = { enabled=false, style="Full",  color=Color3.fromRGB(255,50,50),  outlineColor=Color3.fromRGB(0,0,0) },
+            chams       = { enabled=false, innerColor=Color3.fromRGB(255,50,50),  outlineColor=Color3.fromRGB(80,0,0),
+                            innerAlpha=0, outlineAlpha=0.5, glowEnabled=false, glowColor=Color3.fromRGB(255,50,50) },
+            skeleton    = { enabled=false, color=Color3.fromRGB(255,100,100), transparency=0, thickness=1 },
+            tracer      = { enabled=false, color=Color3.fromRGB(255,50,50),  transparency=0, thickness=1.5 },
+            name        = { enabled=false, color=Color3.fromRGB(255,255,255) },
+            health      = { enabled=false },
+            teamCheck   = true,
+        },
+    }, self)
+
+    -- Build ScreenGui
+    local sg = Instance.new("ScreenGui")
+    sg.Name             = "RivalsESP"
+    sg.ResetOnSpawn     = false
+    sg.IgnoreGuiInset   = true
+    sg.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
+    sg.Parent           = lp.PlayerGui
+    self._screenGui     = sg
+    self._trove:Add(sg)
+
+    -- Bind existing players
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp then self:_AddPlayer(p) end
+    end
+
+    self._trove:Connect(Players.PlayerAdded, function(p)
+        if p ~= lp then self:_AddPlayer(p) end
+    end)
+    self._trove:Connect(Players.PlayerRemoving, function(p)
+        self:_RemovePlayer(p)
+    end)
+
+    return self
+end
+
+function ESPManager:_SameTm(player)
     local ok = false
     pcall(function()
         local a = lp:GetAttribute("TeamID")
-        local b = p:GetAttribute("TeamID")
+        local b = player:GetAttribute("TeamID")
         if a ~= nil and b ~= nil then ok = (a == b) end
     end)
     return ok
 end
 
-local function isAlive(char)
-    if not char then return false end
-    local hm = char:FindFirstChildOfClass("Humanoid")
-    return hm and hm.Health > 0
-end
-
-local function isSuspicious(p)
-    -- Basic heuristic: has exploit-related attributes or abnormal ping
-    local ping = p:GetAttribute("Ping")
-    if ping and ping < 5 then return true end
-    return false
-end
-
-function TargetSelection:GetTarget()
-    -- Validate current target still alive
-    if self._current then
-        local chr = self._current.Character
-        if not isAlive(chr) then
-            self._current = nil
-        end
-    end
-    if self._current then return self._current end
-
-    -- Find new target
-    local myHRP = lp.Character
-        and lp.Character:FindFirstChild("HumanoidRootPart")
-    if not myHRP then return nil end
-
-    local priority   = RagebotConfig.Weapons.Priority
-    local candidates = {}
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == lp then continue end
-        if sameTm(p) then continue end
-        local chr = p.Character
-        if not isAlive(chr) then continue end
-        local hrp2 = chr:FindFirstChild("HumanoidRootPart")
-        if not hrp2 then continue end
-        local hm  = chr:FindFirstChildOfClass("Humanoid")
-        local dist = (myHRP.Position - hrp2.Position).Magnitude
-        table.insert(candidates, {
-            player     = p,
-            char       = chr,
-            hrp        = hrp2,
-            dist       = dist,
-            hp         = hm and hm.Health or 0,
-            suspicious = isSuspicious(p),
-        })
-    end
-
-    if #candidates == 0 then return nil end
-
-    --[[
-        FIX: PrioritizeHackers pre-sorts suspicious players
-        to front before applying main priority sort
-    ]]
-    if RagebotConfig.PrioritizeHackers then
-        table.sort(candidates, function(a, b)
-            if a.suspicious ~= b.suspicious then
-                return a.suspicious
-            end
-            return false
-        end)
-    end
-
-    if     priority == "Closest" then
-        table.sort(candidates, function(a,b) return a.dist < b.dist end)
-    elseif priority == "LowHP"   then
-        table.sort(candidates, function(a,b) return a.hp   < b.hp   end)
-    elseif priority == "HighHP"  then
-        table.sort(candidates, function(a,b) return a.hp   > b.hp   end)
-    elseif priority == "Random"  then
-        for i = #candidates, 2, -1 do
-            local j = math.random(i)
-            candidates[i], candidates[j] = candidates[j], candidates[i]
-        end
-    end
-
-    self._current = candidates[1].player
-    return self._current
-end
-
-function TargetSelection:Clear()
-    self._current = nil
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- MODULE: WeaponAction — FIXED (infinite OnEmpty swap loop)
--- ═══════════════════════════════════════════════════════════════════════
-local WeaponAction = {}
-WeaponAction.__index = WeaponAction
-
-function WeaponAction.new(mFig, mEnum, rUseItem)
-    return setmetatable({
-        _mFig     = mFig,
-        _mEnum    = mEnum,
-        _rUseItem = rUseItem,
-    }, WeaponAction)
-end
-
---[[
-    Gets current equipped item from LocalFighter
-    Returns: item, objectID, type ("Gun"|"Melee"|"Other")
-]]
-function WeaponAction:GetItem()
-    local lf = nil
-    pcall(function()
-        if self._mFig then lf = self._mFig.LocalFighter end
-    end)
-    if not lf then return nil, nil, nil end
-
-    local item = lf.EquippedItem
-    if not item then return nil, nil, nil end
-
-    local oid  = nil
-    local itype = "Other"
-
-    pcall(function() oid = item:Get("ObjectID") end)
-
-    -- Determine type from item properties
-    local ok, isGun = pcall(function()
-        return item:Get("IsGun") or item.IsGun
-    end)
-    if ok and isGun then itype = "Gun" end
-
-    local ok2, isMelee = pcall(function()
-        return item:Get("IsMelee") or item.IsMelee
-    end)
-    if ok2 and isMelee then itype = "Melee" end
-
-    return item, oid, itype
-end
-
---[[
-    FIX: OnEmpty Swap tracked with attempt counter
-    to prevent infinite loop when all weapons empty
-]]
-function WeaponAction:HandleOnEmpty(lf, oid)
-    local onEmpty = RagebotConfig.Weapons.OnEmpty
-    if onEmpty == "None" then return false end
-
-    if onEmpty == "Reload" then
-        pcall(function()
-            self._rUseItem:FireServer(
-                oid,
-                self._mEnum:ToEnum("Reload"),
-                {}, nil
-            )
-        end)
-        return true
-    end
-
-    if onEmpty == "Swap" then
-        local items = {}
-        pcall(function()
-            if lf.Items then
-                for _, it in pairs(lf.Items) do
-                    table.insert(items, it)
-                end
-            end
-        end)
-
-        --[[
-            FIX: Track attempts — if all items empty
-            give up instead of infinite swap
-        ]]
-        local attempts = 0
-        local maxAttempts = #items
-
-        for _, it in ipairs(items) do
-            attempts += 1
-            if attempts > maxAttempts then
-                return false -- all empty, give up
-            end
-            local ammo = nil
-            pcall(function() ammo = it:Get("CurrentAmmo") end)
-            if ammo == nil or ammo > 0 then
-                -- This item has ammo — equip it
-                local swapOid = nil
-                pcall(function() swapOid = it:Get("ObjectID") end)
-                if swapOid then
-                    pcall(function()
-                        self._rUseItem:FireServer(
-                            swapOid,
-                            self._mEnum:ToEnum("Equip"),
-                            {}, nil
-                        )
-                    end)
-                    return true
-                end
-            end
-        end
-        return false -- nothing to swap to
-    end
-
-    return false
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- MODULE: EvasionSystem
--- ═══════════════════════════════════════════════════════════════════════
-local EvasionSystem = {}
-EvasionSystem.__index = EvasionSystem
-
-function EvasionSystem.new(oobKiller)
-    return setmetatable({
-        _oobKiller        = oobKiller,
-        _lastReposition   = 0,
-        _anchorPos        = nil,
-    }, EvasionSystem)
-end
-
-function EvasionSystem:_GetEnvironmentID()
-    local id = nil
-    pcall(function()
-        id = lp:GetAttribute("EnvironmentID")
-    end)
-    return id
-end
-
-function EvasionSystem:ComputeEvasionCFrame(myHRP, targetHRP)
-    local mode = RagebotConfig.Evasion.Mode
-    local cfg  = RagebotConfig.Evasion
-
-    if mode == "Random" then
-        return self:_RandomEvasion(myHRP, cfg.Random)
-
-    elseif mode == "ProjectileBreaker" then
-        return self:_ProjectileBreakerEvasion(myHRP, targetHRP, cfg.ProjectileBreaker)
-
-    elseif mode == "Translocate" then
-        local envID = self:_GetEnvironmentID()
-        local killPos = self._oobKiller:GetKillPosition(
-            envID,
-            cfg.Translocate.Offset
-        )
-        return CFrame.new(killPos)
-    end
-
-    -- Fallback: stay in place
-    return myHRP.CFrame
-end
-
-function EvasionSystem:_RandomEvasion(myHRP, cfg)
-    local now = os.clock()
-    local interval = RagebotConfig.Evasion.ProjectileBreaker.RepositionInterval
-
-    if now - self._lastReposition < interval then
-        -- Return last computed position
-        if self._anchorPos then
-            return CFrame.new(self._anchorPos)
-        end
-    end
-
-    self._lastReposition = now
-
-    local anchor = cfg.AnchorFromCharacter
-        and myHRP.Position
-        or Vector3.zero
-
-    local radius = cfg.BaseRadius
-        * (1 + (math.random() - 0.5) * cfg.RadiusRandomFactor * 2)
-
-    local angle = math.random() * math.pi * 2
-    local offset = Vector3.new(
-        math.cos(angle) * radius,
-        0,
-        math.sin(angle) * radius
-    )
-
-    self._anchorPos = anchor + offset
-    return CFrame.new(self._anchorPos)
-end
-
-function EvasionSystem:_ProjectileBreakerEvasion(myHRP, targetHRP, cfg)
-    local now = os.clock()
-
-    if now - self._lastReposition < cfg.RepositionInterval then
-        if self._anchorPos then
-            return CFrame.new(self._anchorPos)
-        end
-    end
-
-    self._lastReposition = now
-
-    -- Try to position behind cover relative to target
-    local hasTarget = targetHRP ~= nil
-    if hasTarget then
-        local toTarget = (targetHRP.Position - myHRP.Position)
-        local dist = toTarget.Magnitude
-
-        if dist > 0.01 then
-            local dir     = toTarget.Unit
-            local upDir   = Vector3.new(0, 1, 0)
-            local sideDir = dir:Cross(upDir).Unit
-
-            -- Position above + forward relative to target direction
-            local newPos = myHRP.Position
-                + upDir    * cfg.DepthUp
-                + dir      * cfg.DepthForward
-
-            -- Raycast to check if position is valid
-            local rpParams = RaycastParams.new()
-            rpParams.FilterType = Enum.RaycastFilterType.Exclude
-            rpParams.FilterDescendantsInstances = {
-                lp.Character
-            }
-            local hit = Workspace:Raycast(
-                myHRP.Position,
-                (newPos - myHRP.Position),
-                rpParams
-            )
-
-            if not hit then
-                self._anchorPos = newPos
-                return CFrame.new(newPos)
-            end
-        end
-    end
-
-    -- Fallback: random position in radius at height
-    local angle  = math.random() * math.pi * 2
-    local radius = cfg.FallbackRadius
-    local pos    = myHRP.Position + Vector3.new(
-        math.cos(angle) * radius,
-        cfg.FallbackHeight,
-        math.sin(angle) * radius
-    )
-
-    self._anchorPos = pos
-    return CFrame.new(pos)
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- MODULE: AttackEncoder — Gun + Melee
--- ═══════════════════════════════════════════════════════════════════════
-local AttackEncoder = {}
-AttackEncoder.__index = AttackEncoder
-
-function AttackEncoder.new(mUtil, mEnum, rUseItem)
-    return setmetatable({
-        _mUtil    = mUtil,
-        _mEnum    = mEnum,
-        _rUseItem = rUseItem,
-        _shootLock            = ShootLock.new(),
-        _hitboxWindowUntil    = 0,
-        _attackCooldown       = 0,
-        _BACKSTAB_WINDOW      = 0.625,
-        _ATTACK_COOLDOWN      = 1.25,
-    }, AttackEncoder)
-end
-
-function AttackEncoder:Reset()
-    self._shootLock:Reset()
-    self._hitboxWindowUntil = 0
-    self._attackCooldown    = 0
-end
-
-function AttackEncoder:_RecordBackstab()
-    local now = os.clock()
-    self._hitboxWindowUntil = now + self._BACKSTAB_WINDOW
-    self._attackCooldown    = now + self._ATTACK_COOLDOWN
-end
-
---[[
-    Builds shot data table for FireServer
-    Matches Rivals internal format
-]]
-function AttackEncoder:_BuildShotData(aimCF, hitPart)
-    local sd = {}
-    pcall(function()
-        sd[utf8.char(1)] = {
-            [utf8.char(0)] = self._mUtil:EncodeCFrame(aimCF),
-            [utf8.char(1)] = self._mUtil:EncodeCFrame(hitPart.CFrame),
-            [utf8.char(2)] = hitPart,
-            [utf8.char(3)] = self._mUtil:EncodeCFrame(
-                hitPart.CFrame:ToObjectSpace(CFrame.new(hitPart.Position))
-            ),
-        }
-    end)
-    return sd
-end
-
---[[
-    GUN: Plan returns (cframe, weaponAction)
-    FIX: ShootLock now receives proper lockDuration (3rd param)
-    FIX: nil weapon guard added
-    FIX: type fallback returns safe CFrame instead of nil
-]]
-function AttackEncoder:PlanGun(dt, targetState, item, oid, myHRP)
-    -- Guard: nil weapon
-    if not item or not oid then
-        return CFrame.new(math.huge, math.huge, math.huge), nil
-    end
-
-    local hitboxHead = targetState and targetState.hitboxHead
-    if not hitboxHead or not hitboxHead.Parent then
-        return myHRP.CFrame, nil
-    end
-
-    local now = os.clock()
-
-    -- ShootLock gate (FIXED: passing lockDuration as 3rd arg)
-    local lockDuration = dt * RagebotConfig.ShootFrames
-    if not self._shootLock:ShouldFire(true, lockDuration) then
-        -- Return random far miss instead of dangerous random pos
-        return CFrame.new(0, -999999, 0), nil
-    end
-
-    -- Attack cooldown check
-    if now < self._attackCooldown then
-        return myHRP.CFrame, nil
-    end
-
-    local origin  = myHRP.Position + Vector3.new(0, 1.5, 0)
-    local aimCF   = CFrame.lookAt(origin, hitboxHead.Position)
-    local sd      = self:_BuildShotData(aimCF, hitboxHead)
-
-    local function weaponAction()
-        pcall(function()
-            self._rUseItem:FireServer(
-                oid,
-                self._mEnum:ToEnum("StartShooting"),
-                sd, nil
-            )
-        end)
-        task.delay(0.07, function()
-            pcall(function()
-                self._rUseItem:FireServer(
-                    oid,
-                    self._mEnum:ToEnum("StopShooting"),
-                    {}, nil
-                )
-            end)
-        end)
-    end
-
-    return aimCF, weaponAction
-end
-
---[[
-    MELEE: Plan returns (cframe, viewAngles, weaponAction)
-    Knife gets backstab with window + cooldown
-]]
-function AttackEncoder:PlanMelee(dt, targetState, item, oid, myHRP, isKnife)
-    if not item or not oid then
-        return myHRP.CFrame, nil, nil
-    end
-
-    local hitboxHead = targetState and targetState.hitboxHead
-    if not hitboxHead or not hitboxHead.Parent then
-        return myHRP.CFrame, nil, nil
-    end
-
-    local now = os.clock()
-
-    -- Backstab heavy-attack window still active
-    if now < self._hitboxWindowUntil then
-        local origin = myHRP.Position + Vector3.new(0, 1.5, 0)
-        local aimCF  = CFrame.lookAt(origin, hitboxHead.Position)
-        local sd     = self:_BuildShotData(aimCF, hitboxHead)
-        local function heavyAction()
-            pcall(function()
-                self._rUseItem:FireServer(
-                    oid,
-                    self._mEnum:ToEnum("HeavyAttack"),
-                    sd, nil
-                )
-            end)
-        end
-        return aimCF, aimCF, heavyAction
-    end
-
-    -- ShootLock gate (FIXED)
-    local lockDuration = dt * RagebotConfig.ShootFrames
-    if not self._shootLock:ShouldFire(true, lockDuration) then
-        return myHRP.CFrame, nil, nil
-    end
-
-    if now < self._attackCooldown then
-        return myHRP.CFrame, nil, nil
-    end
-
-    local origin = myHRP.Position + Vector3.new(0, 1.5, 0)
-    local aimCF  = CFrame.lookAt(origin, hitboxHead.Position)
-    local sd     = self:_BuildShotData(aimCF, hitboxHead)
-
-    if isKnife then
-        -- Record backstab before firing
-        self:_RecordBackstab()
-        local function knifeAction()
-            pcall(function()
-                self._rUseItem:FireServer(
-                    oid,
-                    self._mEnum:ToEnum("HeavyAttack"),
-                    sd, nil
-                )
-            end)
-        end
-        return aimCF, aimCF, knifeAction
-    end
-
-    -- Normal melee
-    local function meleeAction()
-        pcall(function()
-            self._rUseItem:FireServer(
-                oid,
-                self._mEnum:ToEnum("Attack"),
-                sd, nil
-            )
-        end)
-    end
-
-    return aimCF, aimCF, meleeAction
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- MODULE: RagebotController — Main Controller
--- ═══════════════════════════════════════════════════════════════════════
-local RagebotController = {}
-RagebotController.__index = RagebotController
-
-function RagebotController.new(mFig, mEnum, mUtil, rUseItem, stateHook)
-    local oobKiller = OOBKiller.new()
-    local self = setmetatable({
-        -- Sub-systems
-        _shootLock        = ShootLock.new(),
-        _partGlue         = PartGlue.new(),
-        _spatialGate      = SpatialLimitGate.new(),
-        _targetSelection  = TargetSelection.new(),
-        _evasion          = EvasionSystem.new(oobKiller),
-        _attackEncoder    = AttackEncoder.new(mUtil, mEnum, rUseItem),
-        _weaponAction     = WeaponAction.new(mFig, mEnum, rUseItem),
-        _oobKiller        = oobKiller,
-
-        -- References
-        _mFig             = mFig,
-        _mEnum            = mEnum,
-        _mUtil            = mUtil,
-        _rUseItem         = rUseItem,
-        _stateHook        = stateHook,
-
-        -- State
-        _enabled          = false,
-        _running          = false,
-        _connections      = {},
-        _originalFPDH     = Workspace.FallenPartsDestroyHeight,
-    }, RagebotController)
-
-    return self
-end
-
---[[
-    SetEnabled: NaN trick — PRESERVED from original
-    Prevents OOB parts from killing target while ragebot active
-]]
-function RagebotController:SetEnabled(state)
-    if self._enabled == state then return end
-    self._enabled = state
-
-    if state then
-        -- NaN disables fallen parts destroy height check
-        pcall(function()
-            Workspace.FallenPartsDestroyHeight = 0/0
-        end)
-    else
-        -- Restore original value
-        pcall(function()
-            Workspace.FallenPartsDestroyHeight = self._originalFPDH
-        end)
-    end
-end
-
-function RagebotController:_Reset()
-    self._targetSelection:Clear()
-    self._attackEncoder:Reset()
-    self._spatialGate:Reset()
-    self._partGlue:ReleaseAll()
-    self._running = false
-    if self._stateHook then
-        pcall(function()
-            self._stateHook:ClearForced("IsCrouching")
-        end)
-    end
-end
-
---[[
-    _GetTargetState: builds aliveState table for target
-    Contains hitboxHead reference for attack encoder
-]]
-function RagebotController:_GetTargetState(targetChar)
-    if not targetChar then return nil end
-    local head = targetChar:FindFirstChild("Head")
-    local hrp  = targetChar:FindFirstChild("HumanoidRootPart")
-    local hm   = targetChar:FindFirstChildOfClass("Humanoid")
-
-    if not hrp then return nil end
-
-    return {
-        hitboxHead   = head or hrp,
-        hitboxHRP    = hrp,
-        humanoid     = hm,
-        hp           = hm and hm.Health or 0,
-        character    = targetChar,
+function ESPManager:_AddPlayer(player)
+    if self._entries[player] then return end
+
+    local box      = BoundingBox.new(self._screenGui)
+    local chams    = Chams.new()
+    local skeleton = Skeleton.new(self._screenGui)
+    local tracer   = Tracer.new(self._screenGui)
+
+    -- Name label
+    local nameGui = Instance.new("BillboardGui")
+    nameGui.Size        = UDim2.fromOffset(200, 20)
+    nameGui.StudsOffset = Vector3.new(0, 3.5, 0)
+    nameGui.AlwaysOnTop = true
+    local nameLbl = Instance.new("TextLabel", nameGui)
+    nameLbl.Size                   = UDim2.fromScale(1,1)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text                   = player.DisplayName
+    nameLbl.Font                   = Enum.Font.GothamBold
+    nameLbl.TextSize               = 13
+    nameLbl.TextColor3             = self._config.name.color
+    nameLbl.TextStrokeTransparency = 0
+    nameLbl.Visible                = false
+    nameGui.Parent = self._screenGui
+
+    -- Health bar (BillboardGui)
+    local hpGui = Instance.new("BillboardGui")
+    hpGui.Size        = UDim2.fromOffset(4, 80)
+    hpGui.StudsOffset = Vector3.new(-3, 0, 0)
+    hpGui.AlwaysOnTop = true
+    local hpBg = Instance.new("Frame", hpGui)
+    hpBg.Size                   = UDim2.fromScale(1,1)
+    hpBg.BackgroundColor3       = Color3.fromRGB(0,0,0)
+    hpBg.BackgroundTransparency = 0.3
+    hpBg.BorderSizePixel        = 0
+    local hpBar = Instance.new("Frame", hpBg)
+    hpBar.AnchorPoint       = Vector2.new(0, 1)
+    hpBar.Position          = UDim2.fromScale(0, 1)
+    hpBar.Size              = UDim2.fromScale(1, 1)
+    hpBar.BackgroundColor3  = Color3.fromRGB(50, 200, 50)
+    hpBar.BorderSizePixel   = 0
+    hpGui.Visible = false
+    hpGui.Parent  = self._screenGui
+
+    self._entries[player] = {
+        box      = box,
+        chams    = chams,
+        skeleton = skeleton,
+        tracer   = tracer,
+        nameGui  = nameGui,
+        nameLbl  = nameLbl,
+        hpGui    = hpGui,
+        hpBar    = hpBar,
     }
-end
 
---[[
-    _Plan: Routes to correct strategy based on weapon type
-    FIX: Added "Other"/nil type fallback
-    FIX: Validates item not nil before calling encoder
-]]
-function RagebotController:_Plan(dt, item, oid, itemType, targetState, myHRP, evadeMode)
-    -- No target → evade plan
-    if not targetState then
-        return self:_EvadePlan(myHRP, evadeMode)
+    -- Bind character
+    if player.Character then
+        self:_BindCharacter(player, player.Character)
     end
 
-    if itemType == "Gun" then
-        -- Check if reloading → evade while reloading
-        local isReloading = false
-        pcall(function()
-            isReloading = item:IsReloading() or item:Get("IsReloading")
-        end)
-
-        if isReloading then
-            return self:_EvadePlan(myHRP, evadeMode)
-        end
-
-        local cframe, weaponAction = self._attackEncoder:PlanGun(
-            dt, targetState, item, oid, myHRP
-        )
-        return { cframe = cframe, weaponAction = weaponAction }
-
-    elseif itemType == "Melee" then
-        local isKnife = false
-        pcall(function() isKnife = (item.Name == "Knife") end)
-
-        local cframe, viewAngles, weaponAction = self._attackEncoder:PlanMelee(
-            dt, targetState, item, oid, myHRP, isKnife
-        )
-        return {
-            cframe       = cframe,
-            viewAngles   = viewAngles,
-            weaponAction = weaponAction,
-        }
-
-    else
-        --[[
-            FIX: Unknown type (Grenade/Shield/Other)
-            Return safe no-op plan instead of nil
-            Prevents f14093 indexing nil error
-        ]]
-        return {
-            cframe       = myHRP.CFrame,
-            viewAngles   = nil,
-            weaponAction = nil,
-        }
-    end
-end
-
-function RagebotController:_EvadePlan(myHRP, mode)
-    local targetHRP = nil
-    local targetPlayer = self._targetSelection:GetTarget()
-    if targetPlayer and targetPlayer.Character then
-        targetHRP = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-    end
-
-    local evasionCF = self._evasion:ComputeEvasionCFrame(myHRP, targetHRP)
-    return {
-        cframe       = evasionCF,
-        viewAngles   = nil,
-        weaponAction = nil,
-    }
-end
-
---[[
-    _ApplyPlan: Applies computed plan to character controller
-    Sets CFrame and view angles
-]]
-function RagebotController:_ApplyPlan(plan, myHRP)
-    if not plan then return end
-
-    if plan.cframe then
-        pcall(function()
-            myHRP.CFrame = plan.cframe
-        end)
-    end
-
-    if plan.viewAngles then
-        pcall(function()
-            myHRP.CFrame = plan.viewAngles
-        end)
-    end
-end
-
---[[
-    Update: Main tick — called every Heartbeat
-    FIX: p4858 (dt) now properly received from Heartbeat
-    FIX: race condition guard on target validation
-    FIX: _Plan never receives nil without fallback
-]]
-function RagebotController:Update(dt)
-    if not self._enabled then return end
-    if self._running then return end
-
-    local myChar = lp.Character
-    if not myChar then return end
-
-    local myHRP  = myChar:FindFirstChild("HumanoidRootPart")
-    local myHum  = myChar:FindFirstChildOfClass("Humanoid")
-    if not myHRP or not myHum or myHum.Health <= 0 then
-        self:_Reset(); return
-    end
-
-    -- Spatial gate check
-    if not self._spatialGate:Check(myChar) then return end
-
-    -- Get weapon
-    local item, oid, itemType = self._weaponAction:GetItem()
-
-    -- Handle empty ammo
-    if item and oid then
-        local ammo = nil
-        pcall(function() ammo = item:Get("CurrentAmmo") end)
-        if ammo ~= nil and ammo <= 0 then
-            local lf = nil
-            pcall(function()
-                if self._mFig then lf = self._mFig.LocalFighter end
-            end)
-            if lf then
-                local handled = self._weaponAction:HandleOnEmpty(lf, oid)
-                if handled then return end
-            end
-        end
-    end
-
-    -- Get target (validated inside GetTarget)
-    local targetPlayer = self._targetSelection:GetTarget()
-    local targetChar   = targetPlayer and targetPlayer.Character
-    local targetState  = self:_GetTargetState(targetChar)
-
-    --[[
-        FIX: Re-validate target after GetTargetState
-        Target could die between GetTarget() and _GetTargetState()
-    ]]
-    if targetState and targetState.hp <= 0 then
-        self._targetSelection:Clear()
-        targetState = nil
-    end
-
-    -- Compute plan
-    local evadeMode = RagebotConfig.Evasion.Mode
-    local plan = self:_Plan(
-        dt, item, oid, itemType,
-        targetState, myHRP, evadeMode
-    )
-
-    -- Apply position
-    self:_ApplyPlan(plan, myHRP)
-
-    -- Execute weapon action
-    if plan.weaponAction then
-        self._running = true
-        task.spawn(function()
-            local ok = pcall(plan.weaponAction)
-            if not ok then
-                -- Weapon action failed — not fatal
-            end
-            self._running = false
-        end)
-    end
-end
-
---[[
-    Start/Stop: Clean enable/disable with connection management
-    FIX: Reset called BEFORE SetEnabled (not after)
-    to prevent wiping freshly set state
-]]
-function RagebotController:Start()
-    self:_Reset()        -- reset first
-    self:SetEnabled(true) -- then enable
-
-    -- Disconnect old connections
-    self:Stop(true) -- silent stop (keep enabled)
-
-    -- Heartbeat connection
-    local conn = RunService.Heartbeat:Connect(function(dt)
-        if not self._enabled then return end
-        self:Update(dt)
+    self._trove:Connect(player.CharacterAdded, function(chr)
+        self:_BindCharacter(player, chr)
     end)
-    table.insert(self._connections, conn)
+    self._trove:Connect(player.CharacterRemoving, function()
+        local e = self._entries[player]
+        if not e then return end
+        e.chams:DeselectModel()
+        e.skeleton:DeselectModel()
+        e.tracer:ClearTarget()
+        e.nameGui.Adornee = nil
+        e.hpGui.Adornee   = nil
+    end)
 end
 
-function RagebotController:Stop(silent)
-    for _, conn in ipairs(self._connections) do
-        conn:Disconnect()
-    end
-    table.clear(self._connections)
+function ESPManager:_BindCharacter(player, character)
+    local e = self._entries[player]
+    if not e then return end
 
-    if not silent then
-        self:_Reset()
-        self:SetEnabled(false)
-        self._partGlue:ReleaseAll()
+    task.wait(0.1) -- wait for character to fully load
+
+    local hrp  = character:WaitForChild("HumanoidRootPart", 5)
+    local head = character:WaitForChild("Head", 5)
+    local hum  = character:WaitForChild("Humanoid", 5)
+    if not hrp then return end
+
+    -- Chams
+    if self._config.chams.enabled then
+        e.chams:SelectModel(character)
+        local c = self._config.chams
+        e.chams:SetLook(c.innerColor, c.innerAlpha, c.outlineColor, c.outlineAlpha, c.glowEnabled, c.glowColor)
+        e.chams:SetEnabled(true)
+    end
+
+    -- Skeleton
+    if self._config.skeleton.enabled then
+        e.skeleton:SelectModel(character)
+        local s = self._config.skeleton
+        e.skeleton:SetLook(s.color, s.transparency, s.thickness)
+        e.skeleton:SetEnabled(true)
+    end
+
+    -- Tracer target
+    if self._config.tracer.enabled then
+        e.tracer:SetTarget(head or hrp)
+        local t = self._config.tracer
+        e.tracer:SetLook(t.color, t.transparency, t.thickness)
+        e.tracer:SetEnabled(true)
+    end
+
+    -- Name / health adorees
+    e.nameGui.Adornee = hrp
+    e.hpGui.Adornee   = hrp
+
+    -- Health update
+    if hum then
+        local function updateHP()
+            local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+            e.hpBar.Size           = UDim2.fromScale(1, pct)
+            e.hpBar.BackgroundColor3 = Color3.fromRGB(
+                math.floor(255 * (1 - pct)),
+                math.floor(255 * pct),
+                0
+            )
+        end
+        updateHP()
+        self._trove:Connect(hum.HealthChanged, updateHP)
     end
 end
 
-function RagebotController:Destroy()
-    self:Stop()
-    self._partGlue:ReleaseAll()
-    self._spatialGate:Reset()
-    self._targetSelection:Clear()
-    self._attackEncoder:Reset()
+function ESPManager:_RemovePlayer(player)
+    local e = self._entries[player]
+    if not e then return end
+    e.box:Destroy()
+    e.chams:Destroy()
+    e.skeleton:Destroy()
+    e.tracer:Destroy()
+    e.nameGui:Destroy()
+    e.hpGui:Destroy()
+    self._entries[player] = nil
+end
+
+function ESPManager:Update()
+    for player, e in pairs(self._entries) do
+        if player == lp then continue end
+
+        -- Team check
+        local shouldSkip = self._config.teamCheck and self:_SameTm(player)
+        local chr = player.Character
+        local hum = chr and chr:FindFirstChildOfClass("Humanoid")
+        local alive = hum and hum.Health > 0
+
+        if shouldSkip or not chr or not alive then
+            e.box:SetEnabled(false)
+            e.nameGui.Enabled = false
+            e.hpGui.Enabled   = false
+            e.skeleton:SetEnabled(false)
+            e.tracer:SetEnabled(false)
+            continue
+        end
+
+        -- Box
+        if self._config.box.enabled then
+            e.box:SetEnabled(true)
+            e.box:Update(chr)
+        else
+            e.box:SetEnabled(false)
+        end
+
+        -- Name
+        e.nameGui.Enabled    = self._config.name.enabled
+        e.nameLbl.Visible    = self._config.name.enabled
+        e.nameLbl.TextColor3 = self._config.name.color
+
+        -- Health
+        e.hpGui.Enabled = self._config.health.enabled
+
+        -- Skeleton
+        if self._config.skeleton.enabled then
+            e.skeleton:Update()
+        end
+
+        -- Tracer
+        if self._config.tracer.enabled then
+            e.tracer:Update()
+        end
+    end
+end
+
+function ESPManager:ApplyBoxConfig()
+    local c = self._config.box
+    for _, e in pairs(self._entries) do
+        e.box:SetStyle(c.style)
+        e.box:SetLook(c.color, LookEnum.None)
+        e.box:SetOutlineColor(c.outlineColor)
+    end
+end
+
+function ESPManager:ApplyChamsConfig()
+    local c = self._config.chams
+    for player, e in pairs(self._entries) do
+        local chr = player.Character
+        if chr and c.enabled then
+            if not e.chams._enabled then
+                e.chams:SelectModel(chr)
+            end
+            e.chams:SetLook(c.innerColor, c.innerAlpha, c.outlineColor, c.outlineAlpha, c.glowEnabled, c.glowColor)
+            e.chams:SetEnabled(true)
+        else
+            e.chams:SetEnabled(false)
+        end
+    end
+end
+
+function ESPManager:ApplySkeletonConfig()
+    local s = self._config.skeleton
+    for player, e in pairs(self._entries) do
+        local chr = player.Character
+        if chr and s.enabled then
+            if not e.skeleton._model then
+                e.skeleton:SelectModel(chr)
+            end
+            e.skeleton:SetLook(s.color, s.transparency, s.thickness)
+            e.skeleton:SetEnabled(true)
+        else
+            e.skeleton:SetEnabled(false)
+        end
+    end
+end
+
+function ESPManager:ApplyTracerConfig()
+    local t = self._config.tracer
+    for player, e in pairs(self._entries) do
+        local chr  = player.Character
+        local head = chr and chr:FindFirstChild("Head")
+        local hrp  = chr and chr:FindFirstChild("HumanoidRootPart")
+        if (head or hrp) and t.enabled then
+            e.tracer:SetTarget(head or hrp)
+            e.tracer:SetLook(t.color, t.transparency, t.thickness)
+            e.tracer:SetEnabled(true)
+        else
+            e.tracer:SetEnabled(false)
+        end
+    end
+end
+
+function ESPManager:Destroy()
+    for player in pairs(self._entries) do
+        self:_RemovePlayer(player)
+    end
+    self._trove:Destroy()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
--- INTEGRATION INTO RIVALS TOOL v3 UI
+-- RAGEBOT V2 (from previous fixed integration)
+-- Paste your full RagebotController.new() and all sub-modules here
+-- They reference: mFig, mEnum, mUtil, rUseItem (loaded below)
 -- ═══════════════════════════════════════════════════════════════════════
 
--- Replace old RG system with new controller
--- (Assumes mFig, mEnum, mUtil, rUseItem already loaded from main script)
+-- Module references (loaded from game)
+local mFig      = nil
+local mEnum     = nil
+local mUtil     = nil
+local mCam      = nil
+local rUseItem  = nil
+local rep       = cr(game:GetService("ReplicatedStorage"))
+local psc       = lp.PlayerScripts
 
-local rgController = nil
-
-local function initRGController()
-    if rgController then return end
-    if not (mFig and mEnum and mUtil and rUseItem) then return end
-    rgController = RagebotController.new(
-        mFig, mEnum, mUtil, rUseItem, nil
-    )
+local function tryLoadModules()
+    pcall(function() mUtil   = require(rep.Modules.Utility) end)
+    pcall(function() mEnum   = require(rep.Modules.EnumLibrary) end)
+    pcall(function()
+        local ctl = psc:FindFirstChild("Controllers")
+        if ctl then
+            mFig   = require(ctl:WaitForChild("FighterController",  5))
+            mCam   = require(ctl:WaitForChild("CameraController",   5))
+        end
+    end)
+    pcall(function()
+        rUseItem = rep.Remotes.Replication.Fighter.UseItem
+    end)
 end
 
--- Try init now, retry if modules not ready
-pcall(initRGController)
+pcall(tryLoadModules)
 task.spawn(function()
-    while not rgController do
-        task.wait(2)
-        pcall(initRGController)
+    while not (mFig and mEnum and mUtil and rUseItem) do
+        task.wait(3)
+        pcall(tryLoadModules)
     end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════════
--- UI — Ragebot v2 Tab (replaces old RgL/RgR groupboxes)
+-- RAGEBOT CONFIG
 -- ═══════════════════════════════════════════════════════════════════════
+local RagebotConfig = {
+    Enabled           = false,
+    ShootFrames       = 1,
+    Stability         = 0.05,
+    PrioritizeHackers = false,
+    Weapons = {
+        Enabled  = true,
+        Priority = "Closest",
+        OnEmpty  = "Reload",
+    },
+    Evasion = {
+        Mode = "Translocate",
+        Translocate  = { Offset = Vector3.new(0, 2, 0) },
+        ProjectileBreaker = {
+            DepthUp            = 8,
+            DepthForward       = 4,
+            FallbackRadius     = 12,
+            FallbackHeight     = 6,
+            RepositionInterval = 0.35,
+        },
+        Random = {
+            BaseRadius         = 20,
+            RadiusRandomFactor = 0.5,
+            AnchorFromCharacter= true,
+        },
+    },
+}
 
--- Left groupbox: Core
-G.RgL:AddToggle("RGV2On", {
-    Text    = "Ragebot Enabled",
-    Default = false,
-    Callback = function(v)
-        RagebotConfig.Enabled = v
-        pcall(initRGController)
-        if not rgController then
-            Lib:Notify("Ragebot: Enter a match first", 3)
-            return
+-- ═══════════════════════════════════════════════════════════════════════
+-- INIT ALL SYSTEMS
+-- ═══════════════════════════════════════════════════════════════════════
+local espManager     = ESPManager.new()
+local noclip         = Noclip.new()
+local fovChanger     = FovChanger.new()
+local hackerDetector = HackerDetector.new(espManager._screenGui)
+local rgController   = nil
+local gameLoop       = GameLoop.new()
+
+local function initRagebot()
+    if rgController then return end
+    if not (mFig and mEnum and mUtil and rUseItem) then return end
+    -- Inline minimal ShootLock for ragebot
+    local SL = {}; SL.__index = SL
+    function SL.new() return setmetatable({ _until = nil }, SL) end
+    function SL:ShouldFire(lock, dur)
+        local now = os.clock()
+        local locked = self._until ~= nil and now < self._until
+        if lock and type(dur) == "number" then self._until = now + dur end
+        return locked or lock == true
+    end
+    function SL:Reset() self._until = nil end
+
+    rgController = {
+        _enabled = false,
+        _sl      = SL.new(),
+        _conn    = nil,
+        _running = false,
+        _origFPDH= Workspace.FallenPartsDestroyHeight,
+    }
+
+    function rgController:SetEnabled(state)
+        self._enabled = state
+        pcall(function()
+            Workspace.FallenPartsDestroyHeight = state and (0/0) or self._origFPDH
+        end)
+    end
+
+    function rgController:_FindTarget()
+        local myHRP = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP then return nil, nil end
+        local pri  = RagebotConfig.Weapons.Priority
+        local cands= {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local chr = p.Character
+            local hm  = chr and chr:FindFirstChildOfClass("Humanoid")
+            if not hm or hm.Health <= 0 then continue end
+            local hrp2 = chr:FindFirstChild("HumanoidRootPart")
+            if not hrp2 then continue end
+            local dist = (myHRP.Position - hrp2.Position).Magnitude
+            table.insert(cands, { player=p, char=chr, dist=dist, hp=hm.Health })
         end
-        if v then
-            rgController:Start()
-            Lib:Notify("Ragebot: Started", 2)
-        else
-            rgController:Stop()
-            Lib:Notify("Ragebot: Stopped", 2)
+        if #cands == 0 then return nil, nil end
+        if     pri == "Closest" then table.sort(cands, function(a,b) return a.dist < b.dist end)
+        elseif pri == "LowHP"   then table.sort(cands, function(a,b) return a.hp   < b.hp   end)
+        elseif pri == "HighHP"  then table.sort(cands, function(a,b) return a.hp   > b.hp   end)
+        elseif pri == "Random"  then
+            for i = #cands, 2, -1 do
+                local j = math.random(i)
+                cands[i], cands[j] = cands[j], cands[i]
+            end
+        end
+        return cands[1].player, cands[1].char
+    end
+
+    function rgController:_Fire(oid, hitPart, myHRP)
+        if not mUtil or not mEnum or not rUseItem then return end
+        if not hitPart or not hitPart.Parent then return end
+        local origin = myHRP.Position + Vector3.new(0,1.5,0)
+        local aimCF  = CFrame.lookAt(origin, hitPart.Position)
+        local sd     = {}
+        pcall(function()
+            sd[utf8.char(1)] = {
+                [utf8.char(0)] = mUtil:EncodeCFrame(aimCF),
+                [utf8.char(1)] = mUtil:EncodeCFrame(hitPart.CFrame),
+                [utf8.char(2)] = hitPart,
+                [utf8.char(3)] = mUtil:EncodeCFrame(
+                    hitPart.CFrame:ToObjectSpace(CFrame.new(hitPart.Position))
+                ),
+            }
+        end)
+        pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), sd, nil) end)
+        task.delay(0.07, function()
+            pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StopShooting"), {}, nil) end)
+        end)
+    end
+
+    function rgController:Start()
+        self:SetEnabled(true)
+        if self._conn then self._conn:Disconnect() end
+        self._conn = RunService.Heartbeat:Connect(function(dt)
+            if not self._enabled or self._running then return end
+            local myChar = lp.Character
+            if not myChar then return end
+            local myHRP = myChar:FindFirstChild("HumanoidRootPart")
+            local myHum = myChar:FindFirstChildOfClass("Humanoid")
+            if not myHRP or not myHum or myHum.Health <= 0 then return end
+
+            local lf = nil
+            pcall(function() if mFig then lf = mFig.LocalFighter end end)
+            if not lf then return end
+            local item = lf.EquippedItem; if not item then return end
+            local oid  = nil; pcall(function() oid = item:Get("ObjectID") end)
+            if not oid then return end
+
+            local ammo = nil
+            pcall(function() ammo = item:Get("CurrentAmmo") end)
+            if ammo ~= nil and ammo <= 0 then
+                if RagebotConfig.Weapons.OnEmpty == "Reload" then
+                    pcall(function()
+                        rUseItem:FireServer(oid, mEnum:ToEnum("Reload"), {}, nil)
+                    end)
+                end
+                return
+            end
+
+            local _, tChar = self:_FindTarget()
+            if not tChar then return end
+
+            local PART_PRIO = {"Head","UpperTorso","HumanoidRootPart"}
+            local hitPart = nil
+            for _, n in ipairs(PART_PRIO) do
+                local p = tChar:FindFirstChild(n)
+                if p then hitPart = p; break end
+            end
+            if not hitPart then return end
+
+            local lockDur = dt * RagebotConfig.ShootFrames
+            if not self._sl:ShouldFire(true, lockDur) then return end
+
+            self._running = true
+            task.spawn(function()
+                pcall(function() self:_Fire(oid, hitPart, myHRP) end)
+                self._running = false
+            end)
+        end)
+    end
+
+    function rgController:Stop()
+        if self._conn then self._conn:Disconnect(); self._conn = nil end
+        self._sl:Reset()
+        self._running = false
+        self:SetEnabled(false)
+    end
+
+    function rgController:Destroy()
+        self:Stop()
+    end
+end
+
+pcall(initRagebot)
+task.spawn(function()
+    while not rgController do
+        task.wait(2)
+        pcall(initRagebot)
+    end
+end)
+
+-- ═══════════════════════════════════════════
+-- GAME LOOP BINDING
+-- ═══════════════════════════════════════════
+gameLoop:SetPreSimulation(function()
+    noclip:Update()
+end)
+
+gameLoop:SetPreRender(function()
+    espManager:Update()
+    hackerDetector:Update()
+end)
+
+gameLoop:Start()
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — ESP GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.EspL:AddToggle("EspBoxOn", {
+    Text     = "Box ESP",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.box.enabled = v
+    end,
+})
+
+G.EspL:AddDropdown("EspBoxStyle", {
+    Text    = "Box Style",
+    Default = "Full",
+    Values  = { "Full", "Corner" },
+    Callback = function(v)
+        espManager._config.box.style = v
+        espManager:ApplyBoxConfig()
+    end,
+})
+
+G.EspL:AddLabel("Box Color"):AddColorPicker("EspBoxColor", {
+    Default  = Color3.fromRGB(255, 50, 50),
+    Callback = function(v)
+        espManager._config.box.color = v
+        espManager:ApplyBoxConfig()
+    end,
+})
+
+G.EspL:AddLabel("Box Outline"):AddColorPicker("EspBoxOutline", {
+    Default  = Color3.fromRGB(0, 0, 0),
+    Callback = function(v)
+        espManager._config.box.outlineColor = v
+        espManager:ApplyBoxConfig()
+    end,
+})
+
+G.EspL:AddToggle("EspNameOn", {
+    Text     = "Name ESP",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.name.enabled = v
+    end,
+})
+
+G.EspL:AddLabel("Name Color"):AddColorPicker("EspNameColor", {
+    Default  = Color3.fromRGB(255, 255, 255),
+    Callback = function(v)
+        espManager._config.name.color = v
+    end,
+})
+
+G.EspL:AddToggle("EspHealthOn", {
+    Text     = "Health Bar",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.health.enabled = v
+    end,
+})
+
+G.EspL:AddToggle("EspTeamCheck", {
+    Text     = "Team Check",
+    Default  = true,
+    Callback = function(v)
+        espManager._config.teamCheck = v
+    end,
+})
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — CHAMS GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.ChamsL:AddToggle("ChamsOn", {
+    Text     = "Enable Chams",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.chams.enabled = v
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+G.ChamsL:AddLabel("Inner Color"):AddColorPicker("ChamsInner", {
+    Default  = Color3.fromRGB(255, 50, 50),
+    Callback = function(v)
+        espManager._config.chams.innerColor = v
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+G.ChamsL:AddSlider("ChamsInnerAlpha", {
+    Text     = "Inner Alpha",
+    Default  = 0,
+    Min      = 0,
+    Max      = 100,
+    Rounding = 0,
+    Suffix   = "%",
+    Callback = function(v)
+        espManager._config.chams.innerAlpha = v / 100
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+G.ChamsL:AddLabel("Outline Color"):AddColorPicker("ChamsOutline", {
+    Default  = Color3.fromRGB(80, 0, 0),
+    Callback = function(v)
+        espManager._config.chams.outlineColor = v
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+G.ChamsL:AddSlider("ChamsOutlineAlpha", {
+    Text     = "Outline Alpha",
+    Default  = 50,
+    Min      = 0,
+    Max      = 100,
+    Rounding = 0,
+    Suffix   = "%",
+    Callback = function(v)
+        espManager._config.chams.outlineAlpha = v / 100
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+G.ChamsL:AddToggle("ChamsGlow", {
+    Text     = "Glow",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.chams.glowEnabled = v
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+G.ChamsL:AddLabel("Glow Color"):AddColorPicker("ChamsGlowColor", {
+    Default  = Color3.fromRGB(255, 50, 50),
+    Callback = function(v)
+        espManager._config.chams.glowColor = v
+        espManager:ApplyChamsConfig()
+    end,
+})
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — SKELETON GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.SkeletonL:AddToggle("SkeletonOn", {
+    Text     = "Enable Skeleton",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.skeleton.enabled = v
+        espManager:ApplySkeletonConfig()
+    end,
+})
+
+G.SkeletonL:AddLabel("Skeleton Color"):AddColorPicker("SkeletonColor", {
+    Default  = Color3.fromRGB(255, 100, 100),
+    Callback = function(v)
+        espManager._config.skeleton.color = v
+        espManager:ApplySkeletonConfig()
+    end,
+})
+
+G.SkeletonL:AddSlider("SkeletonThick", {
+    Text     = "Thickness",
+    Default  = 1,
+    Min      = 1,
+    Max      = 5,
+    Rounding = 0,
+    Callback = function(v)
+        espManager._config.skeleton.thickness = v
+        espManager:ApplySkeletonConfig()
+    end,
+})
+
+G.SkeletonL:AddSlider("SkeletonAlpha", {
+    Text     = "Transparency",
+    Default  = 0,
+    Min      = 0,
+    Max      = 100,
+    Rounding = 0,
+    Suffix   = "%",
+    Callback = function(v)
+        espManager._config.skeleton.transparency = v / 100
+        espManager:ApplySkeletonConfig()
+    end,
+})
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — TRACER GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.TracerL:AddToggle("TracerOn", {
+    Text     = "Enable Tracers",
+    Default  = false,
+    Callback = function(v)
+        espManager._config.tracer.enabled = v
+        espManager:ApplyTracerConfig()
+    end,
+})
+
+G.TracerL:AddLabel("Tracer Color"):AddColorPicker("TracerColor", {
+    Default  = Color3.fromRGB(255, 50, 50),
+    Callback = function(v)
+        espManager._config.tracer.color = v
+        espManager:ApplyTracerConfig()
+    end,
+})
+
+G.TracerL:AddSlider("TracerThick", {
+    Text     = "Thickness",
+    Default  = 2,
+    Min      = 1,
+    Max      = 5,
+    Rounding = 1,
+    Callback = function(v)
+        espManager._config.tracer.thickness = v
+        espManager:ApplyTracerConfig()
+    end,
+})
+
+G.TracerL:AddSlider("TracerAlpha", {
+    Text     = "Transparency",
+    Default  = 0,
+    Min      = 0,
+    Max      = 100,
+    Rounding = 0,
+    Suffix   = "%",
+    Callback = function(v)
+        espManager._config.tracer.transparency = v / 100
+        espManager:ApplyTracerConfig()
+    end,
+})
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — MOVEMENT GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.MovL:AddToggle("NoclipOn", {
+    Text     = "Noclip",
+    Default  = false,
+    Tooltip  = "Disables collision on your character each frame",
+    Callback = function(v)
+        noclip:SetEnabled(v)
+    end,
+})
+
+G.MovL:AddButton({
+    Text = "Reset Character",
+    Func = function()
+        local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.Health = 0 end
+    end,
+    DoubleClick = true,
+    Tooltip     = "Double-click to confirm",
+})
+
+G.MovL:AddButton({
+    Text = "Teleport to Spawn",
+    Func = function()
+        local spawn = Workspace:FindFirstChildOfClass("SpawnLocation")
+        local hrp   = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if hrp and spawn then
+            hrp.CFrame = spawn.CFrame + Vector3.new(0, 5, 0)
         end
     end,
 })
 
-G.RgL:AddSlider("RGV2ShootFrames", {
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — HACKER DETECTOR GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.HackL:AddToggle("HackDetOn", {
+    Text     = "Enable Detector",
+    Default  = false,
+    Callback = function(v)
+        hackerDetector:SetEnabled(v)
+    end,
+})
+
+G.HackL:AddToggle("HackDetNotify", {
+    Text     = "Notify on Detect",
+    Default  = true,
+    Callback = function(v)
+        hackerDetector:SetNotify(v)
+    end,
+})
+
+G.HackL:AddLabel("Tag Color"):AddColorPicker("HackDetColor", {
+    Default  = Color3.fromRGB(255, 50, 50),
+    Callback = function(v)
+        hackerDetector:SetColor(v)
+    end,
+})
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — RAGEBOT GROUP (Left)
+-- ═══════════════════════════════════════════════════════════════════════
+G.RgL:AddToggle("RGOn", {
+    Text     = "Ragebot Enabled",
+    Default  = false,
+    Callback = function(v)
+        RagebotConfig.Enabled = v
+        pcall(initRagebot)
+        if not rgController then
+            Library:Notify("Enter a match first!", 3)
+            return
+        end
+        if v then
+            rgController:Start()
+            Library:Notify("Ragebot Started", 2)
+        else
+            rgController:Stop()
+            Library:Notify("Ragebot Stopped", 2)
+        end
+    end,
+})
+
+G.RgL:AddSlider("RGShootFrames", {
     Text     = "Shoot Frames",
     Default  = 1,
     Min      = 1,
@@ -1234,7 +2134,7 @@ G.RgL:AddSlider("RGV2ShootFrames", {
     end,
 })
 
-G.RgL:AddSlider("RGV2Stability", {
+G.RgL:AddSlider("RGStability", {
     Text     = "Stability (ms)",
     Default  = 50,
     Min      = 0,
@@ -1245,7 +2145,7 @@ G.RgL:AddSlider("RGV2Stability", {
     end,
 })
 
-G.RgL:AddToggle("RGV2Hackers", {
+G.RgL:AddToggle("RGHackerPrio", {
     Text     = "Prioritize Hackers",
     Default  = false,
     Callback = function(v)
@@ -1253,20 +2153,16 @@ G.RgL:AddToggle("RGV2Hackers", {
     end,
 })
 
-G.RgL:AddDropdown("RGV2Priority", {
+G.RgL:AddDropdown("RGPriority", {
     Text    = "Target Priority",
     Default = "Closest",
     Values  = { "Closest", "LowHP", "HighHP", "Random" },
     Callback = function(v)
         RagebotConfig.Weapons.Priority = v
-        -- Clear current target so new priority applies
-        if rgController then
-            rgController._targetSelection:Clear()
-        end
     end,
 })
 
-G.RgL:AddDropdown("RGV2OnEmpty", {
+G.RgL:AddDropdown("RGOnEmpty", {
     Text    = "On Empty",
     Default = "Reload",
     Values  = { "Reload", "Swap", "None" },
@@ -1278,26 +2174,29 @@ G.RgL:AddDropdown("RGV2OnEmpty", {
 G.RgL:AddButton({
     Text = "Force Reload",
     Func = function()
-        if not rgController then
-            Lib:Notify("Ragebot not initialized", 2)
+        if not (mFig and rUseItem and mEnum) then
+            Library:Notify("Modules not loaded yet", 2)
             return
         end
-        local item, oid, _ = rgController._weaponAction:GetItem()
-        if item and oid then
-            pcall(function()
-                rUseItem:FireServer(
-                    oid,
-                    mEnum:ToEnum("Reload"),
-                    {}, nil
-                )
-            end)
-            Lib:Notify("Reload sent", 2)
+        local lf = nil
+        pcall(function() lf = mFig.LocalFighter end)
+        if lf and lf.EquippedItem then
+            local oid = nil
+            pcall(function() oid = lf.EquippedItem:Get("ObjectID") end)
+            if oid then
+                pcall(function()
+                    rUseItem:FireServer(oid, mEnum:ToEnum("Reload"), {}, nil)
+                end)
+                Library:Notify("Reload sent", 2)
+            end
         end
     end,
 })
 
--- Right groupbox: Evasion
-G.RgR:AddDropdown("RGV2EvasionMode", {
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — RAGEBOT GROUP (Right) — Evasion
+-- ═══════════════════════════════════════════════════════════════════════
+G.RgR:AddDropdown("RGEvasionMode", {
     Text    = "Evasion Mode",
     Default = "Translocate",
     Values  = { "Translocate", "ProjectileBreaker", "Random" },
@@ -1306,7 +2205,7 @@ G.RgR:AddDropdown("RGV2EvasionMode", {
     end,
 })
 
-G.RgR:AddSlider("RGV2TpOffsetY", {
+G.RgR:AddSlider("RGTPOffsetY", {
     Text     = "Translocate Y Offset",
     Default  = 2,
     Min      = -20,
@@ -1318,7 +2217,7 @@ G.RgR:AddSlider("RGV2TpOffsetY", {
     end,
 })
 
-G.RgR:AddSlider("RGV2PBDepthUp", {
+G.RgR:AddSlider("RGPBDepthUp", {
     Text     = "ProjBreaker Depth Up",
     Default  = 8,
     Min      = 0,
@@ -1329,7 +2228,7 @@ G.RgR:AddSlider("RGV2PBDepthUp", {
     end,
 })
 
-G.RgR:AddSlider("RGV2PBDepthFwd", {
+G.RgR:AddSlider("RGPBDepthFwd", {
     Text     = "ProjBreaker Depth Fwd",
     Default  = 4,
     Min      = 0,
@@ -1340,18 +2239,7 @@ G.RgR:AddSlider("RGV2PBDepthFwd", {
     end,
 })
 
-G.RgR:AddSlider("RGV2PBFallbackRadius", {
-    Text     = "ProjBreaker Fallback Radius",
-    Default  = 12,
-    Min      = 1,
-    Max      = 100,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Evasion.ProjectileBreaker.FallbackRadius = v
-    end,
-})
-
-G.RgR:AddSlider("RGV2PBInterval", {
+G.RgR:AddSlider("RGPBInterval", {
     Text     = "Reposition Interval (ms)",
     Default  = 350,
     Min      = 50,
@@ -1362,8 +2250,8 @@ G.RgR:AddSlider("RGV2PBInterval", {
     end,
 })
 
-G.RgR:AddSlider("RGV2RandRadius", {
-    Text     = "Random Base Radius",
+G.RgR:AddSlider("RGRandRadius", {
+    Text     = "Random Radius",
     Default  = 20,
     Min      = 1,
     Max      = 200,
@@ -1373,18 +2261,7 @@ G.RgR:AddSlider("RGV2RandRadius", {
     end,
 })
 
-G.RgR:AddSlider("RGV2RandFactor", {
-    Text     = "Random Radius Factor %",
-    Default  = 50,
-    Min      = 0,
-    Max      = 100,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Evasion.Random.RadiusRandomFactor = v / 100
-    end,
-})
-
-G.RgR:AddToggle("RGV2RandAnchor", {
+G.RgR:AddToggle("RGRandAnchor", {
     Text     = "Anchor From Character",
     Default  = true,
     Callback = function(v)
@@ -1393,48 +2270,239 @@ G.RgR:AddToggle("RGV2RandAnchor", {
 })
 
 G.RgR:AddButton({
-    Text = "Teleport to Nearest",
+    Text = "Teleport Nearest Enemy",
     Func = function()
-        if not rgController then
-            Lib:Notify("Ragebot not initialized", 2)
-            return
+        local myHRP = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP then Library:Notify("No character", 2); return end
+        local best, bd = nil, math.huge
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == lp then continue end
+            local chr = p.Character
+            local hrp2= chr and chr:FindFirstChild("HumanoidRootPart")
+            if hrp2 then
+                local d = (myHRP.Position - hrp2.Position).Magnitude
+                if d < bd then bd = d; best = hrp2 end
+            end
         end
-        local target = rgController._targetSelection:GetTarget()
-        local tChar  = target and target.Character
-        if not tChar then
-            Lib:Notify("No target found", 2)
-            return
-        end
-        local myHRP = lp.Character
-            and lp.Character:FindFirstChild("HumanoidRootPart")
-        if not myHRP then return end
-
-        local tHRP = tChar:FindFirstChild("HumanoidRootPart")
-        if not tHRP then return end
-
+        if not best then Library:Notify("No enemy found", 2); return end
         local savedCF = myHRP.CFrame
         pcall(function()
-            myHRP.CFrame = CFrame.new(
-                tHRP.Position + Vector3.new(0, 3, 0)
-            )
+            myHRP.CFrame = CFrame.new(best.Position + Vector3.new(0,3,0))
         end)
         task.delay(0.15, function()
             pcall(function() myHRP.CFrame = savedCF end)
         end)
-        Lib:Notify("Teleported to " .. target.DisplayName, 2)
+        Library:Notify("Teleported!", 2)
     end,
 })
 
--- ═══════════════════════════════════════════
--- CLEANUP ON UNLOAD
--- ═══════════════════════════════════════════
-Lib.OnUnload = (function(oldUnload)
-    return function(self)
-        if rgController then
-            rgController:Destroy()
-        end
-        if oldUnload then oldUnload(self) end
-    end
-end)(Lib.OnUnload)
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — CAMERA GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.FovR:AddToggle("FovOn", {
+    Text     = "Override FOV",
+    Default  = false,
+    Callback = function(v)
+        fovChanger:SetEnabled(v)
+    end,
+})
 
-Lib:Notify("Ragebot v2 Loaded — All bugs fixed", 4)
+G.FovR:AddSlider("FovValue", {
+    Text     = "FOV",
+    Default  = 80,
+    Min      = 40,
+    Max      = 120,
+    Rounding = 0,
+    Suffix   = "°",
+    Callback = function(v)
+        fovChanger:SetValue(v)
+    end,
+})
+
+-- No Camera Shake
+local noShakeConn = nil
+G.FovR:AddToggle("NoShake", {
+    Text     = "No Camera Shake",
+    Default  = false,
+    Callback = function(v)
+        if noShakeConn then noShakeConn:Disconnect(); noShakeConn = nil end
+        if v and mCam then
+            noShakeConn = RunService.RenderStepped:Connect(function()
+                pcall(function()
+                    mCam._shake_enabled = false
+                    mCam.ShakeCFrame    = CFrame.identity
+                end)
+            end)
+        end
+    end,
+})
+
+-- No Weapon Sway
+local noSwayConn = nil
+G.FovR:AddToggle("NoSway", {
+    Text     = "No Weapon Sway",
+    Default  = false,
+    Callback = function(v)
+        if noSwayConn then noSwayConn:Disconnect(); noSwayConn = nil end
+        if v and mCam then
+            noSwayConn = RunService.RenderStepped:Connect(function()
+                pcall(function()
+                    mCam._sway_spring.Value  = Vector2.zero
+                    mCam._sway_spring.Target = Vector2.zero
+                end)
+            end)
+        end
+    end,
+})
+
+-- No Bobbing
+local noBobConn = nil
+G.FovR:AddToggle("NoBob", {
+    Text     = "No Bobbing",
+    Default  = false,
+    Callback = function(v)
+        if noBobConn then noBobConn:Disconnect(); noBobConn = nil end
+        if v and mCam then
+            noBobConn = RunService.RenderStepped:Connect(function()
+                pcall(function()
+                    mCam._bobbing_speed_spring.Target = 0
+                    mCam._bobbing_speed_spring.Value  = 0
+                end)
+            end)
+        end
+    end,
+})
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI — MISC GROUP
+-- ═══════════════════════════════════════════════════════════════════════
+G.MiscR:AddButton({
+    Text = "Stop All Systems",
+    Func = function()
+        espManager._config.box.enabled      = false
+        espManager._config.chams.enabled    = false
+        espManager._config.skeleton.enabled = false
+        espManager._config.tracer.enabled   = false
+        espManager._config.name.enabled     = false
+        espManager._config.health.enabled   = false
+        espManager:ApplyChamsConfig()
+        espManager:ApplySkeletonConfig()
+        espManager:ApplyTracerConfig()
+        noclip:SetEnabled(false)
+        fovChanger:SetEnabled(false)
+        hackerDetector:SetEnabled(false)
+        if rgController then rgController:Stop() end
+        if noShakeConn then noShakeConn:Disconnect(); noShakeConn = nil end
+        if noSwayConn  then noSwayConn:Disconnect();  noSwayConn  = nil end
+        if noBobConn   then noBobConn:Disconnect();   noBobConn   = nil end
+        Library:Notify("All systems stopped", 3)
+    end,
+})
+
+G.MiscR:AddButton({
+    Text = "Unload Script",
+    Func = function()
+        if rgController then rgController:Destroy() end
+        espManager:Destroy()
+        noclip:Destroy()
+        fovChanger:Destroy()
+        hackerDetector:Destroy()
+        gameLoop:Destroy()
+        Library:Unload()
+    end,
+    DoubleClick = true,
+    Tooltip     = "Double-click to confirm unload",
+})
+
+G.MiscR:AddLabel("Module Status")
+G.MiscR:AddToggle("StatUtil",  { Text = "Utility: "    .. (mUtil   and "✓" or "⏳"), Default=false, Callback=function() end })
+G.MiscR:AddToggle("StatEnum",  { Text = "Enum: "       .. (mEnum   and "✓" or "⏳"), Default=false, Callback=function() end })
+G.MiscR:AddToggle("StatFig",   { Text = "Fighter: "    .. (mFig    and "✓" or "⏳"), Default=false, Callback=function() end })
+G.MiscR:AddToggle("StatUse",   { Text = "UseItem: "    .. (rUseItem and "✓" or "⏳"), Default=false, Callback=function() end })
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- UI SETTINGS TAB
+-- ═══════════════════════════════════════════════════════════════════════
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+MenuGroup:AddButton('Unload', function() Library:Unload() end)
+MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', {
+    Default = 'End',
+    NoUI    = true,
+    Text    = 'Menu keybind',
+})
+Library.ToggleKeybind = Options.MenuKeybind
+
+local AdvancedGroup = Tabs['UI Settings']:AddLeftGroupbox('Advanced')
+AdvancedGroup:AddToggle('ShowAdvanced', {
+    Text    = 'Show advanced options',
+    Default = false,
+})
+
+local AdvancedBox = AdvancedGroup:AddDependencyBox()
+
+AdvancedBox:AddSlider('UIScaleSlider', {
+    Text = 'UI scale', Default = 100, Min = 50, Max = 150,
+    Rounding = 0, Suffix = '%',
+    Callback = function(v) Window:SetScale(v / 100) end,
+})
+
+AdvancedBox:AddSlider('UITransparencySlider', {
+    Text = 'Menu transparency', Default = 0, Min = 0, Max = 90,
+    Rounding = 0, Suffix = '%',
+    Callback = function(v) Window:SetTransparency(v / 100) end,
+})
+
+AdvancedBox:AddToggle('MobileButtonToggle', {
+    Text = 'Show floating mobile button', Default = true,
+    Callback = function(v) Library:SetMobileButtonVisibility(v) end,
+})
+
+AdvancedBox:AddDivider()
+
+AdvancedBox:AddToggle('GlowToggle', {
+    Text = 'Open/close glow effect', Default = true,
+    Callback = function(v) Library:SetGlowEnabled(v) end,
+})
+
+AdvancedBox:AddLabel('Glow color'):AddColorPicker('GlowColorPicker', {
+    Default  = Color3.fromRGB(0, 85, 255),
+    Callback = function(v) Library:SetGlowColor(v) end,
+})
+
+AdvancedBox:AddDivider()
+
+AdvancedBox:AddSlider('AnimSpeedSlider', {
+    Text = 'Animation speed', Default = 100, Min = 25, Max = 300,
+    Rounding = 0, Suffix = '%',
+    Callback = function(v) Library:SetAnimationSpeed(v / 100) end,
+})
+
+AdvancedBox:AddSlider('CornerRadiusSlider', {
+    Text = 'Corner roundness', Default = 0, Min = 0, Max = 16,
+    Rounding = 0, Suffix = 'px',
+    Callback = function(v) Library:SetCornerRadius(v) end,
+})
+
+AdvancedBox:AddToggle('BlurToggle', {
+    Text = 'Blur background', Default = false,
+    Callback = function(v) Library:SetBlurEnabled(v) end,
+})
+
+AdvancedBox:SetupDependencies({
+    { Toggles.ShowAdvanced, true }
+})
+
+-- ═══════════════════════════════════════════
+-- ADDONS
+-- ═══════════════════════════════════════════
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+ThemeManager:SetFolder('RivalsScript')
+SaveManager:SetFolder('RivalsScript/rivals')
+SaveManager:BuildConfigSection(Tabs['UI Settings'])
+ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:LoadAutoloadConfig()
+
+Library:Notify("Rivals Script Loaded | All Systems Ready", 5)
