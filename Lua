@@ -1,137 +1,149 @@
--- ═══════════════════════════════════════════════════════════════════════
--- RIVALS SCRIPT — Full Integration
--- UI: bebeomiscar-sudo modded LinoriaLib
--- Systems: ESP/Chams/Skeleton/Tracer/Noclip/FOV/HackerDetect/Ragebot v2
--- ═══════════════════════════════════════════════════════════════════════
+-- ============================================================
+-- KICIA HOOK
+-- ESP / Chams / Aimbot / Flickbot / Triggerbot / SilentAim
+-- Movement / Item Modifiers / Rayfield UI
+-- ============================================================
 
--- ═══════════════════════════════════════════
--- LOADER
--- ═══════════════════════════════════════════
-local myRepoCandidates = {
-    'https://raw.githubusercontent.com/bebeomiscar-sudo/Modded/refs/heads/main/Lua',
-    'https://raw.githubusercontent.com/bebeomiscar-sudo/Modded/main/Lua',
-}
-local linoriaRepo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local RunService    = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Players       = game:GetService("Players")
+local LocalPlayer   = Players.LocalPlayer
 
-local function FetchWithRetry(url, attempts)
-    attempts = attempts or 5
-    for i = 1, attempts do
-        local ok, result = pcall(game.HttpGet, game, url)
-        if ok and type(result) == 'string' and #result > 0 then
-            return result
-        end
-        warn(('[Loader] Fetch failed (%d/%d) for %s'):format(i, attempts, url))
-        task.wait(0.6 * i)
-    end
-    return nil
-end
+-- ============================================================
+-- RAYFIELD UI BOOTSTRAP
+-- ============================================================
 
-local function FetchFirstWorking(urls, attemptsPerUrl)
-    for _, url in next, urls do
-        local result = FetchWithRetry(url, attemptsPerUrl)
-        if result then return result, url end
-    end
-    error('[Loader] All URLs failed:\n' .. table.concat(urls, '\n'))
-end
+local Rayfield = loadstring(game:HttpGet(
+    "https://sirius.menu/rayfield"
+))()
 
-local function LoadModule(fullUrlOrList, label)
-    local urls   = type(fullUrlOrList) == 'table' and fullUrlOrList or { fullUrlOrList }
-    local source, usedUrl = FetchFirstWorking(urls, 3)
-    local chunk, err = loadstring(source, label)
-    if not chunk then
-        error('[Loader] Compile error in ' .. label .. ': ' .. tostring(err))
-    end
-    return chunk()
-end
-
-local Library      = LoadModule(myRepoCandidates,                     'Library.lua')
-local ThemeManager = LoadModule(linoriaRepo .. 'addons/ThemeManager.lua', 'ThemeManager.lua')
-local SaveManager  = LoadModule(linoriaRepo .. 'addons/SaveManager.lua',  'SaveManager.lua')
-
--- ═══════════════════════════════════════════
--- SERVICES
--- ═══════════════════════════════════════════
-local cr           = cloneref or function(o) return o end
-local Players      = cr(game:GetService("Players"))
-local RunService   = cr(game:GetService("RunService"))
-local UserInputSvc = cr(game:GetService("UserInputService"))
-local TweenService = cr(game:GetService("TweenService"))
-local Lighting     = cr(game:GetService("Lighting"))
-local Workspace    = cr(game:GetService("Workspace"))
-local HttpService  = cr(game:GetService("HttpService"))
-
-local lp  = Players.LocalPlayer
-local cam = Workspace.CurrentCamera
-
--- ═══════════════════════════════════════════
--- WINDOW
--- ═══════════════════════════════════════════
-local Window = Library:CreateWindow({
-    Title        = 'Rivals Tool',
-    Center       = true,
-    AutoShow     = true,
-    TabPadding   = 8,
-    MenuFadeTime = 0.2,
-    MobileButton = true,
+local Window = Rayfield:CreateWindow({
+    Name             = "Kicia Hook",
+    LoadingTitle     = "Kicia Hook",
+    LoadingSubtitle  = "by kicia",
+    ConfigurationSaving = {
+        Enabled  = true,
+        FileName = "KiciaHook",
+    },
+    Discord = {
+        Enabled = false,
+    },
+    KeySystem = false,
 })
 
-local Tabs = {
-    Rivals       = Window:AddTab('Rivals'),
-    ['UI Settings'] = Window:AddTab('UI Settings'),
+-- ============================================================
+-- SHARED STATE
+-- Toggled by UI; read by each system's Update loop.
+-- ============================================================
+
+local Config = {
+    -- ESP
+    ESP = {
+        Enabled      = false,
+        Style        = "Full",   -- "Full" | "Corner"
+        ShowBox      = true,
+        ShowChams    = false,
+        ShowSkeleton = false,
+        ShowTracer   = false,
+        BoxColor     = Color3.fromRGB(255, 85, 85),
+        ChamsColor   = Color3.fromRGB(255, 0, 0),
+        OutlineColor = Color3.fromRGB(0, 0, 0),
+        TracerColor  = Color3.fromRGB(255, 255, 255),
+        FillEnabled  = false,
+        FillColor    = Color3.fromRGB(255, 85, 85),
+        FillTransparency = 0.85,
+    },
+
+    -- Aimbot
+    Aimbot = {
+        Enabled     = false,
+        Bone        = "Head",
+        FOV         = 120,
+        Smoothing   = 0.15,
+        TeamCheck   = true,
+        WallCheck   = true,
+        VisibleOnly = false,
+    },
+
+    -- Flickbot
+    Flickbot = {
+        Enabled       = false,
+        FlickDuration = 120,
+        Curvature     = 0.3,
+        Humanness     = 0.4,
+        Cooldown      = 400,
+        Shoot         = true,
+        ShotDelay     = 80,
+    },
+
+    -- Triggerbot
+    Triggerbot = {
+        Enabled      = false,
+        ReactionTime = 0.08,
+        ReleaseTime  = 0.05,
+    },
+
+    -- Silent Aim
+    SilentAim = {
+        Enabled = false,
+        FOV     = 100,
+        Bone    = "Head",
+    },
+
+    -- Movement
+    Movement = {
+        Noclip      = false,
+        Flight      = false,
+        FlightSpeed = 60,
+        AutoStrafe  = false,
+        JumpPower   = false,
+        JumpMult    = 1.5,
+    },
+
+    -- Item Modifiers
+    Items = {
+        NoRecoil        = false,
+        RecoilPct       = 0,
+        NoSpread        = false,
+        FireCooldown    = false,
+        FireCooldownPct = 50,
+        AutoWeapon      = false,
+        InfiniteJumps   = false,
+        NoMotion        = false,
+        NoCamShake      = false,
+        NoCamSway       = false,
+        NoShootAnim     = false,
+        NoSprintAnim    = false,
+        NoEquipAnim     = false,
+        NoReloadAnim    = false,
+        GrenadeFuse     = false,
+        GrenadeMode     = "Impact",
+        GrenadeNoFuse   = false,
+    },
+
+    -- Misc
+    Misc = {
+        HackerDetector = false,
+        FOVChanger     = false,
+        FOVValue       = 90,
+    },
 }
 
--- ═══════════════════════════════════════════
--- RIVALS TAB GROUPBOXES
--- ═══════════════════════════════════════════
-local G = {
-    -- Left column
-    EspL      = Tabs.Rivals:AddLeftGroupbox('👁 ESP'),
-    ChamsL    = Tabs.Rivals:AddLeftGroupbox('💎 Chams'),
-    SkeletonL = Tabs.Rivals:AddLeftGroupbox('🦴 Skeleton'),
-    TracerL   = Tabs.Rivals:AddLeftGroupbox('📏 Tracers'),
-    MovL      = Tabs.Rivals:AddLeftGroupbox('🏃 Movement'),
-    HackL     = Tabs.Rivals:AddLeftGroupbox('🔍 Hacker Detector'),
+-- ============================================================
+-- UTILITY: LookEnum stub (referenced by BoundingBox / outlines)
+-- ============================================================
 
-    -- Right column
-    RgL       = Tabs.Rivals:AddRightGroupbox('💀 Ragebot'),
-    RgR       = Tabs.Rivals:AddRightGroupbox('🎯 Ragebot Settings'),
-    FovR      = Tabs.Rivals:AddRightGroupbox('📷 Camera'),
-    MiscR     = Tabs.Rivals:AddRightGroupbox('⚙ Misc'),
-}
+local LookEnum = { None = { kind = "None" } }
 
--- ═══════════════════════════════════════════════════════════════════════
--- ENUMS
--- ═══════════════════════════════════════════════════════════════════════
-local LookEnum = {
-    None     = { kind = "None" },
-    Shimmer  = { kind = "Shimmer",  shimmerColor = Color3.fromRGB(255,255,255) },
-    Perimeter= { kind = "Perimeter",perimeterColor = Color3.fromRGB(255,255,255) },
-    PingPong = { kind = "PingPong", pingPongMain = Color3.fromRGB(255,255,255),
-                                    pingPongBg   = Color3.fromRGB(0,0,0),
-                                    pingPongRotation = 0 },
-}
+-- ============================================================
+-- UTILITY: Trove (lightweight cleanup tracker)
+-- ============================================================
 
-local SKELETON_PARTS = {
-    Head=true, Torso=true, UpperTorso=true, LowerTorso=true,
-    LeftUpperLeg=true,  LeftLowerLeg=true,  LeftFoot=true,
-    RightUpperLeg=true, RightLowerLeg=true, RightFoot=true,
-    LeftUpperArm=true,  LeftLowerArm=true,  LeftHand=true,
-    RightUpperArm=true, RightLowerArm=true, RightHand=true,
-    LeftLeg=true, RightLeg=true, LeftArm=true, RightArm=true,
-}
-
--- ═══════════════════════════════════════════════════════════════════════
--- TROVE (lightweight connection/instance manager)
--- ═══════════════════════════════════════════════════════════════════════
 local Trove = {}
 Trove.__index = Trove
 
-function Trove.new(tag)
-    return setmetatable({
-        _tag    = tag or "Trove",
-        _items  = {},
-        _conns  = {},
-    }, Trove)
+function Trove.new(name)
+    return setmetatable({ _name = name, _items = {}, _connections = {} }, Trove)
 end
 
 function Trove:Add(obj)
@@ -141,23 +153,15 @@ end
 
 function Trove:Connect(signal, fn)
     local conn = signal:Connect(fn)
-    table.insert(self._conns, conn)
+    table.insert(self._connections, conn)
     return conn
 end
 
 function Trove:Clean()
-    for _, conn in ipairs(self._conns) do
-        pcall(function() conn:Disconnect() end)
-    end
-    self._conns = {}
-    for _, item in ipairs(self._items) do
-        if type(item) == "function" then
-            pcall(item)
-        elseif typeof(item) == "Instance" then
-            pcall(function() item:Destroy() end)
-        elseif type(item) == "table" and item.Destroy then
-            pcall(function() item:Destroy() end)
-        end
+    for _, c in ipairs(self._connections) do pcall(function() c:Disconnect() end) end
+    self._connections = {}
+    for _, obj in ipairs(self._items) do
+        if type(obj) == "table" and obj.Destroy then pcall(obj.Destroy, obj) end
     end
     self._items = {}
 end
@@ -166,310 +170,143 @@ function Trove:Destroy()
     self:Clean()
 end
 
--- ═══════════════════════════════════════════════════════════════════════
--- GUARDED INSTANCE
--- Watches a Roblox instance and re-applies overrides if game changes them
--- ═══════════════════════════════════════════════════════════════════════
-local GuardedInstance = {}
-GuardedInstance.__index = GuardedInstance
+-- ============================================================
+-- CORNER OUTLINE (box ESP with corner-bracket style)
+-- ============================================================
 
-function GuardedInstance.new(target)
-    local self = setmetatable({
-        _trove     = Trove.new("GuardedInstance"),
-        _target    = target,
-        _originals = {},
-        _overrides = {},
-        _isWriting = false,
-    }, GuardedInstance)
-
-    self._trove:Connect(target.Changed, function(prop)
-        if self._isWriting then return end
-        if self._overrides[prop] == nil then return end
-        self._originals[prop] = target[prop]
-        self._isWriting = true
-        target[prop]    = self._overrides[prop]
-        self._isWriting = false
-    end)
-
-    return self
-end
-
-function GuardedInstance:SetOverride(prop, value)
-    local target = self._target
-    if self._originals[prop] == nil then
-        self._originals[prop] = target[prop]
-    end
-    self._overrides[prop] = value
-    self._isWriting = true
-    pcall(function() target[prop] = value end)
-    self._isWriting = false
-end
-
-function GuardedInstance:ClearOverride(prop)
-    local orig = self._originals[prop]
-    if orig == nil then return end
-    self._originals[prop] = nil
-    self._overrides[prop] = nil
-    self._isWriting = true
-    pcall(function() self._target[prop] = orig end)
-    self._isWriting = false
-end
-
-function GuardedInstance:ClearAllOverrides()
-    self._isWriting = true
-    for prop in pairs(self._overrides) do
-        local orig = self._originals[prop]
-        self._originals[prop] = nil
-        self._overrides[prop] = nil
-        pcall(function() self._target[prop] = orig end)
-    end
-    self._isWriting = false
-end
-
-function GuardedInstance:Destroy()
-    self:ClearAllOverrides()
-    self._trove:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- GAME LOOP
--- ═══════════════════════════════════════════════════════════════════════
-local GameLoop = {}
-GameLoop.__index = GameLoop
-
-function GameLoop.new()
-    return setmetatable({
-        _trove           = Trove.new("GameLoop"),
-        _preCameraRender = nil,
-        _preRender       = nil,
-        _preSimulation   = nil,
-        _heartbeat       = nil,
-    }, GameLoop)
-end
-
-function GameLoop:SetPreCameraRender(fn) self._preCameraRender = fn end
-function GameLoop:SetPreRender(fn)       self._preRender       = fn end
-function GameLoop:SetPreSimulation(fn)   self._preSimulation   = fn end
-function GameLoop:SetHeartbeat(fn)       self._heartbeat       = fn end
-
-function GameLoop:Start()
-    if self._preCameraRender then
-        local guid = HttpService:GenerateGUID(false)
-        RunService:BindToRenderStep(
-            guid,
-            Enum.RenderPriority.Camera.Value - 1,
-            self._preCameraRender
-        )
-        self._trove:Add(function()
-            RunService:UnbindFromRenderStep(guid)
-        end)
-    end
-    if self._preRender     then self._trove:Connect(RunService.PreRender,     self._preRender)     end
-    if self._preSimulation then self._trove:Connect(RunService.PreSimulation, self._preSimulation) end
-    if self._heartbeat     then self._trove:Connect(RunService.Heartbeat,     self._heartbeat)     end
-end
-
-function GameLoop:Destroy()
-    self._trove:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- CORNER OUTLINE (box ESP corner-bracket style)
--- ═══════════════════════════════════════════════════════════════════════
 local CornerOutline = {}
 CornerOutline.__index = CornerOutline
 
 function CornerOutline.new(parent)
-    local self = setmetatable({
-        _corners     = {},
-        _enabled     = false,
-        _innerColor  = Color3.new(1,1,1),
-        _outlineColor= Color3.new(0,0,0),
-        _look        = LookEnum.None,
-    }, CornerOutline)
-
-    local THICK = 3
-    local INSET = 1
-    local INNER = THICK - 2 * INSET
-
-    local positions = {
-        { hAnchor = Vector2.new(0,0), vAnchor = Vector2.new(0,0),
-          hPos = UDim2.fromOffset(0,0),    vPos = UDim2.fromOffset(0,0) },
-        { hAnchor = Vector2.new(1,0), vAnchor = Vector2.new(1,0),
-          hPos = UDim2.fromScale(1,0),     vPos = UDim2.fromScale(1,0) },
-        { hAnchor = Vector2.new(1,1), vAnchor = Vector2.new(1,1),
-          hPos = UDim2.fromScale(1,1),     vPos = UDim2.fromScale(1,1) },
-        { hAnchor = Vector2.new(0,1), vAnchor = Vector2.new(0,1),
-          hPos = UDim2.fromScale(0,1),     vPos = UDim2.fromScale(0,1) },
-    }
-
-    local BRACKET_LEN = 0.25 -- 25% of box width/height
-
-    for i, pos in ipairs(positions) do
-        local function makeFrame(isHoriz)
-            local f = Instance.new("Frame")
-            f.BorderSizePixel       = 0
-            f.BackgroundTransparency = 1
-            f.Interactable          = false
-            f.ZIndex                = 10
-            f.AnchorPoint           = isHoriz and pos.hAnchor or pos.vAnchor
-            f.Position              = isHoriz and pos.hPos    or pos.vPos
-            f.Size                  = isHoriz
-                and UDim2.new(BRACKET_LEN, 0, 0, INNER)
-                or  UDim2.new(0, INNER, BRACKET_LEN, 0)
-            f.Parent = parent
-            return f
-        end
-
-        local hColor = makeFrame(true)
-        local vColor = makeFrame(false)
-        local hBacker = makeFrame(true)
-        local vBacker = makeFrame(false)
-
-        hColor.BackgroundTransparency  = 1
-        vColor.BackgroundTransparency  = 1
-        hBacker.BackgroundTransparency = 1
-        vBacker.BackgroundTransparency = 1
-
-        hBacker.ZIndex = 9
-        vBacker.ZIndex = 9
-        hBacker.BackgroundColor3 = Color3.new(0,0,0)
-        vBacker.BackgroundColor3 = Color3.new(0,0,0)
-
-        self._corners[i] = {
-            horizontalColor  = hColor,
-            verticalColor    = vColor,
-            horizontalBacker = hBacker,
-            verticalBacker   = vBacker,
-        }
-    end
-
+    local self = setmetatable({}, CornerOutline)
+    self._corners    = {}
+    self._enabled    = false
+    self._innerColor = Color3.new(1, 1, 1)
+    self._look       = LookEnum.None
+    self:_Initialize(parent)
     return self
 end
 
-function CornerOutline:SetEnabled(state)
-    self._enabled = state
-    for _, corner in ipairs(self._corners) do
-        local vis = state
-        corner.horizontalColor.Visible  = vis
-        corner.verticalColor.Visible    = vis
-        corner.horizontalBacker.Visible = vis
-        corner.verticalBacker.Visible   = vis
+function CornerOutline:_Initialize(parent)
+    local STROKE = 3
+    local INSET  = 1
+    local INNER  = STROKE - 2 * INSET
+
+    local function makeCorner()
+        local c = {
+            horizontalColor  = Instance.new("Frame"),
+            verticalColor    = Instance.new("Frame"),
+            horizontalBacker = Instance.new("Frame"),
+            verticalBacker   = Instance.new("Frame"),
+        }
+        for _, f in pairs(c) do
+            f.Visible              = false
+            f.BackgroundColor3     = Color3.new(1, 1, 1)
+            f.BorderSizePixel      = 0
+            f.Interactable         = false
+            f.ZIndex               = 10
+            f.Parent               = parent
+        end
+        return c
+    end
+
+    self._corners = { makeCorner(), makeCorner(), makeCorner(), makeCorner() }
+
+    for _, c in ipairs(self._corners) do
+        c.horizontalColor.Size  = UDim2.new(INNER / math.max(1, parent.AbsoluteSize.X), 0, 0, INNER)
+        c.verticalColor.Size    = UDim2.new(0, INNER, INNER / math.max(1, parent.AbsoluteSize.Y), 0)
+        c.horizontalBacker.Size = c.horizontalColor.Size
+        c.verticalBacker.Size   = c.verticalColor.Size
+    end
+end
+
+function CornerOutline:SetEnabled(enabled)
+    self._enabled = enabled
+    for _, c in ipairs(self._corners) do
+        c.horizontalColor.Visible  = enabled
+        c.verticalColor.Visible    = enabled
+        c.horizontalBacker.Visible = enabled
+        c.verticalBacker.Visible   = enabled
     end
 end
 
 function CornerOutline:SetOutlineColor(color)
-    self._outlineColor = color
-    for _, corner in ipairs(self._corners) do
-        corner.horizontalBacker.BackgroundColor3 = color
-        corner.verticalBacker.BackgroundColor3   = color
+    for _, c in ipairs(self._corners) do
+        c.horizontalBacker.BackgroundColor3 = color
+        c.verticalBacker.BackgroundColor3   = color
     end
 end
 
-function CornerOutline:SetLook(color, look)
-    self._innerColor = color
+function CornerOutline:SetLook(innerColor, look)
+    self._innerColor = innerColor
     self._look       = look or LookEnum.None
-    for _, corner in ipairs(self._corners) do
-        corner.horizontalColor.BackgroundColor3 = color
-        corner.verticalColor.BackgroundColor3   = color
-        corner.horizontalColor.BackgroundTransparency = 0
-        corner.verticalColor.BackgroundTransparency   = 0
-        corner.horizontalBacker.BackgroundTransparency = 0
-        corner.verticalBacker.BackgroundTransparency   = 0
+    for _, c in ipairs(self._corners) do
+        c.horizontalColor.BackgroundColor3 = innerColor
+        c.verticalColor.BackgroundColor3   = innerColor
     end
 end
 
 function CornerOutline:Destroy()
-    for _, corner in ipairs(self._corners) do
-        for _, f in pairs(corner) do f:Destroy() end
+    for _, c in ipairs(self._corners) do
+        c.horizontalColor:Destroy()
+        c.verticalColor:Destroy()
+        c.horizontalBacker:Destroy()
+        c.verticalBacker:Destroy()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════════════
--- STROKE OUTLINE (UIStroke based)
--- ═══════════════════════════════════════════════════════════════════════
+-- ============================================================
+-- STROKE OUTLINE (UIStroke-based full box)
+-- ============================================================
+
 local StrokeOutline = {}
 StrokeOutline.__index = StrokeOutline
 
 function StrokeOutline.new(parent)
-    local self = setmetatable({
-        _enabled     = false,
-        _innerColor  = Color3.new(1,1,1),
-        _outlineColor= Color3.new(0,0,0),
-        _look        = LookEnum.None,
-    }, StrokeOutline)
+    local self       = setmetatable({}, StrokeOutline)
+    self._inner      = Instance.new("Frame")
+    self._outerStroke = Instance.new("UIStroke")
+    self._innerStroke = Instance.new("UIStroke")
+    self._enabled    = false
+    self._innerColor = Color3.new(1, 1, 1)
 
-    -- Outer stroke (dark border)
-    local outerStroke = Instance.new("UIStroke")
-    outerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    outerStroke.LineJoinMode    = Enum.LineJoinMode.Miter
-    outerStroke.Thickness       = 3
-    outerStroke.Color           = Color3.new(0,0,0)
-    outerStroke.Enabled         = false
-    outerStroke.Parent          = parent
-    self._outerStroke = outerStroke
+    local outer = self._outerStroke
+    outer.ApplyStrokeMode      = Enum.ApplyStrokeMode.Border
+    outer.LineJoinMode         = Enum.LineJoinMode.Miter
+    outer.Thickness            = 3
+    outer.Enabled              = false
+    outer.Parent               = parent
 
-    -- Inner frame
-    local inner = Instance.new("Frame")
+    local inner = self._inner
     inner.BackgroundTransparency = 1
     inner.BorderSizePixel        = 0
     inner.Interactable           = false
-    inner.Size                   = UDim2.fromScale(1,1)
+    inner.Size                   = UDim2.fromScale(1, 1)
     inner.Parent                 = parent
-    self._inner = inner
 
-    -- Inner stroke (colored line)
-    local innerStroke = Instance.new("UIStroke")
+    local innerStroke = self._innerStroke
     innerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     innerStroke.LineJoinMode    = Enum.LineJoinMode.Miter
     innerStroke.Thickness       = 1
-    innerStroke.Color           = Color3.new(1,1,1)
     innerStroke.Enabled         = false
     innerStroke.Parent          = inner
-    self._innerStroke = innerStroke
-
-    -- Gradient for shimmer
-    local grad = Instance.new("UIGradient")
-    grad.Enabled = false
-    grad.Parent  = innerStroke
-    self._innerStrokeGradient = grad
 
     return self
 end
 
-function StrokeOutline:SetEnabled(state)
-    self._enabled = state
-    self._outerStroke.Enabled = state
-    self._innerStroke.Enabled = state
+function StrokeOutline:SetEnabled(enabled)
+    self._enabled              = enabled
+    self._outerStroke.Enabled  = enabled
+    self._innerStroke.Enabled  = enabled
 end
 
 function StrokeOutline:SetOutlineColor(color)
-    self._outlineColor   = color
     self._outerStroke.Color = color
 end
 
-function StrokeOutline:SetLook(color, look)
-    self._innerColor     = color
-    self._look           = look or LookEnum.None
-    local kind           = self._look.kind
-    local grad           = self._innerStrokeGradient
-
-    if kind == "Shimmer" then
-        local shimmer = look.shimmerColor or Color3.new(1,1,1)
-        grad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0,   shimmer),
-            ColorSequenceKeypoint.new(0.5, color),
-            ColorSequenceKeypoint.new(1,   shimmer),
-        })
-        grad.Rotation = 45
-        grad.Enabled  = true
-        self._innerStroke.Color = Color3.new(1,1,1)
-    else
-        grad.Enabled = false
-        self._innerStroke.Color = color
-    end
-
-    self._innerStroke.Transparency = 0
+function StrokeOutline:SetLook(innerColor)
+    self._innerColor        = innerColor
+    self._innerStroke.Color = innerColor
 end
 
 function StrokeOutline:Destroy()
@@ -477,2032 +314,1648 @@ function StrokeOutline:Destroy()
     self._outerStroke:Destroy()
 end
 
--- ═══════════════════════════════════════════════════════════════════════
--- BOUNDING BOX (per-player ESP box)
--- ═══════════════════════════════════════════════════════════════════════
+-- ============================================================
+-- BOUNDING BOX (per-player ESP box wrapper)
+-- ============================================================
+
 local BoundingBox = {}
 BoundingBox.__index = BoundingBox
 
 function BoundingBox.new(screenGui)
-    local self = setmetatable({
-        _visible      = false,
-        _style        = "Full",
-        _outline      = nil,
-        _innerColor   = Color3.fromRGB(255,50,50),
-        _outlineColor = Color3.fromRGB(0,0,0),
-        _look         = LookEnum.None,
-        _screenGui    = screenGui,
-    }, BoundingBox)
+    local self    = setmetatable({}, BoundingBox)
+    self._gui     = screenGui
+    self._frame   = Instance.new("Frame")
+    self._outline = nil
+    self._style   = ""
+    self._visible = false
 
-    local outer = Instance.new("Frame")
-    outer.Visible                = false
-    outer.BackgroundTransparency = 1
-    outer.BorderSizePixel        = 0
-    outer.Interactable           = false
-    outer.Parent                 = screenGui
-    self._outer = outer
+    local f = self._frame
+    f.BackgroundTransparency = 1
+    f.BorderSizePixel        = 0
+    f.Interactable           = false
+    f.Visible                = false
+    f.Parent                 = screenGui
 
-    self:SetStyle("Full")
     return self
 end
 
 function BoundingBox:SetStyle(style)
     if style == self._style and self._outline ~= nil then return end
     if self._outline then self._outline:Destroy() end
-
-    local outline
-    if style == "Corner" then
-        outline = CornerOutline.new(self._outer)
-    else
-        outline = StrokeOutline.new(self._outer)
-    end
-
-    self._outline = outline
     self._style   = style
-    outline:SetOutlineColor(self._outlineColor)
-    outline:SetEnabled(self._visible)
-    outline:SetLook(self._innerColor, self._look)
+    self._outline = style == "Corner"
+        and CornerOutline.new(self._frame)
+        or  StrokeOutline.new(self._frame)
 end
 
-function BoundingBox:SetEnabled(state)
-    self._visible = state
-    self._outer.Visible = state
-    if self._outline then self._outline:SetEnabled(state) end
-end
-
-function BoundingBox:SetLook(color, look)
-    self._innerColor = color
-    self._look       = look or LookEnum.None
+function BoundingBox:SetColors(innerColor, outlineColor)
     if self._outline then
-        self._outline:SetLook(color, self._look)
+        self._outline:SetLook(innerColor)
+        self._outline:SetOutlineColor(outlineColor)
     end
 end
 
-function BoundingBox:SetOutlineColor(color)
-    self._outlineColor = color
-    if self._outline then self._outline:SetOutlineColor(color) end
+function BoundingBox:SetEnabled(enabled)
+    self._frame.Visible = enabled
+    if self._outline then self._outline:SetEnabled(enabled) end
 end
 
---[[
-    Update: repositions the box to wrap the character's bounding box
-    called every RenderStep while player is visible
-]]
-function BoundingBox:Update(character)
-    if not self._visible or not character then return end
-
-    local minX, minY = math.huge, math.huge
-    local maxX, maxY = -math.huge, -math.huge
-    local anyOnScreen = false
-
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") and SKELETON_PARTS[part.Name] then
-            local sp, onScreen = cam:WorldToViewportPoint(part.Position)
-            if onScreen and sp.Z > 0 then
-                anyOnScreen = true
-                minX = math.min(minX, sp.X - part.Size.X * 30)
-                maxX = math.max(maxX, sp.X + part.Size.X * 30)
-                minY = math.min(minY, sp.Y - part.Size.Y * 30)
-                maxY = math.max(maxY, sp.Y + part.Size.Y * 30)
-            end
-        end
-    end
-
-    if not anyOnScreen then
-        self._outer.Visible = false
-        return
-    end
-
-    self._outer.Visible  = true
-    self._outer.Position = UDim2.fromOffset(minX, minY)
-    self._outer.Size     = UDim2.fromOffset(maxX - minX, maxY - minY)
+-- Update: position and size the frame to wrap the character on screen.
+-- topLeft and bottomRight are Vector2 screen positions.
+function BoundingBox:Update(topLeft, bottomRight)
+    local f = self._frame
+    f.Position = UDim2.fromOffset(topLeft.X, topLeft.Y)
+    f.Size     = UDim2.fromOffset(
+        math.max(1, bottomRight.X - topLeft.X),
+        math.max(1, bottomRight.Y - topLeft.Y)
+    )
 end
 
 function BoundingBox:Destroy()
     if self._outline then self._outline:Destroy() end
-    self._outer:Destroy()
+    self._frame:Destroy()
 end
 
--- ═══════════════════════════════════════════════════════════════════════
--- CHAMS (per-part handle adornments)
--- ═══════════════════════════════════════════════════════════════════════
-local GLOW_INTENSITY = 5
+-- ============================================================
+-- SKELETON (line segments between body parts)
+-- ============================================================
 
-local function glowColorFrom(base)
-    return Color3.new(
-        math.clamp(base.R * GLOW_INTENSITY, 0, 1),
-        math.clamp(base.G * GLOW_INTENSITY, 0, 1),
-        math.clamp(base.B * GLOW_INTENSITY, 0, 1)
-    )
+local SKELETON_PARTS = {
+    Head = true, UpperTorso = true, LowerTorso = true, Torso = true,
+    LeftUpperArm = true, LeftLowerArm = true, LeftHand = true,
+    RightUpperArm = true, RightLowerArm = true, RightHand = true,
+    LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true,
+    RightUpperLeg = true, RightLowerLeg = true, RightFoot = true,
+    LeftArm = true, RightArm = true, LeftLeg = true, RightLeg = true,
+}
+
+local BONE_CONNECTIONS = {
+    { "Head", "UpperTorso" }, { "Head", "Torso" },
+    { "UpperTorso", "LowerTorso" },
+    { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+    { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+    { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+    { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+    { "Torso", "LeftArm" }, { "Torso", "RightArm" }, { "Torso", "LeftLeg" }, { "Torso", "RightLeg" },
+}
+
+local Skeleton = {}
+Skeleton.__index = Skeleton
+
+function Skeleton.new(screenGui)
+    local self = setmetatable({}, Skeleton)
+    self._gui   = screenGui
+    self._lines = {}
+    return self
 end
+
+local function makeSkeletonLine(gui, color)
+    local f = Instance.new("Frame")
+    f.Visible              = false
+    f.BorderSizePixel      = 0
+    f.AnchorPoint          = Vector2.new(0.5, 0.5)
+    f.BackgroundColor3     = color
+    f.BackgroundTransparency = 0
+    f.ZIndex               = 5
+    f.Parent               = gui
+    return f
+end
+
+local function updateLine(frame, from, to, thickness)
+    local dx    = to.X - from.X
+    local dy    = to.Y - from.Y
+    local len   = math.sqrt(dx * dx + dy * dy)
+    local angle = math.atan2(dy, dx)
+    frame.Position  = UDim2.fromOffset((from.X + to.X) / 2, (from.Y + to.Y) / 2)
+    frame.Size      = UDim2.fromOffset(len, thickness or 1)
+    frame.Rotation  = math.deg(angle)
+    frame.Visible   = true
+end
+
+function Skeleton:Update(character, color)
+    -- build a name → part lookup
+    local parts = {}
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and SKELETON_PARTS[part.Name] then
+            parts[part.Name] = part
+        end
+    end
+
+    local cam = workspace.CurrentCamera
+    local lineIdx = 1
+
+    for _, conn in ipairs(BONE_CONNECTIONS) do
+        local a = parts[conn[1]]
+        local b = parts[conn[2]]
+        if a and b then
+            local sa, va = cam:WorldToViewportPoint(a.Position)
+            local sb, vb = cam:WorldToViewportPoint(b.Position)
+            if va and vb and sa.Z > 0 and sb.Z > 0 then
+                local line = self._lines[lineIdx]
+                if not line then
+                    line = makeSkeletonLine(self._gui, color)
+                    self._lines[lineIdx] = line
+                end
+                line.BackgroundColor3 = color
+                updateLine(line, Vector2.new(sa.X, sa.Y), Vector2.new(sb.X, sb.Y), 1)
+                lineIdx = lineIdx + 1
+            end
+        end
+    end
+
+    -- hide unused lines
+    for i = lineIdx, #self._lines do
+        self._lines[i].Visible = false
+    end
+end
+
+function Skeleton:Hide()
+    for _, l in ipairs(self._lines) do l.Visible = false end
+end
+
+function Skeleton:Destroy()
+    for _, l in ipairs(self._lines) do l:Destroy() end
+end
+
+-- ============================================================
+-- TRACER (line from screen bottom to target)
+-- ============================================================
+
+local Tracer = {}
+Tracer.__index = Tracer
+
+function Tracer.new(screenGui)
+    local self   = setmetatable({}, Tracer)
+    self._gui    = screenGui
+    self._line   = Instance.new("Frame")
+    local f      = self._line
+    f.Visible              = false
+    f.BorderSizePixel      = 0
+    f.AnchorPoint          = Vector2.new(0.5, 0.5)
+    f.BackgroundColor3     = Color3.new(1, 1, 1)
+    f.ZIndex               = 4
+    f.Parent               = screenGui
+    return self
+end
+
+function Tracer:Update(targetScreenPos, color)
+    local cam = workspace.CurrentCamera
+    local vp  = cam.ViewportSize
+    local originX = vp.X / 2
+    local originY = vp.Y
+    updateLine(self._line, Vector2.new(originX, originY), targetScreenPos, 1)
+    self._line.BackgroundColor3 = color
+    self._line.Visible = true
+end
+
+function Tracer:Hide()
+    self._line.Visible = false
+end
+
+function Tracer:Destroy()
+    self._line:Destroy()
+end
+
+-- ============================================================
+-- CHAMS (always-on-top highlight via SelectionBox)
+-- ============================================================
 
 local Chams = {}
 Chams.__index = Chams
 
 function Chams.new()
-    return setmetatable({
-        _trove              = Trove.new("Chams"),
-        _partAdornments     = {},
-        _innerColor         = Color3.fromRGB(255,50,50),
-        _outlineColor       = Color3.fromRGB(80,0,0),
-        _innerTransparency  = 0,
-        _outlineTransparency= 0.5,
-        _glowEnabled        = false,
-        _glowColor          = Color3.fromRGB(255,50,50),
-        _enabled            = false,
-        _adormentFolder     = Instance.new("Folder"),
-    }, Chams)
+    local self = setmetatable({}, Chams)
+    self._boxes = {}  -- [character] = SelectionBox
+    return self
 end
 
-function Chams:SetLook(innerColor, innerAlpha, outlineColor, outlineAlpha, glowEnabled, glowColor)
-    self._innerColor          = innerColor
-    self._innerTransparency   = innerAlpha
-    self._outlineColor        = outlineColor
-    self._outlineTransparency = outlineAlpha
-    self._glowEnabled         = glowEnabled
-    self._glowColor           = glowColor
-
-    local glowBright = glowColorFrom(glowColor)
-    for _, set in pairs(self._partAdornments) do
-        set.inner.Color3           = innerColor
-        set.inner.Transparency     = innerAlpha
-        set.outline.Color3         = outlineColor
-        set.outline.Transparency   = outlineAlpha
-        set.glow.Color3            = glowBright
-        set.glow.Visible           = glowEnabled
+function Chams:Apply(character, color)
+    if self._boxes[character] then
+        self._boxes[character].Color3 = color
+        return
     end
+    local folder = Instance.new("Folder")
+    folder.Name  = "KiciaChams"
+    folder.Parent = workspace
+
+    local box = Instance.new("SelectionBox")
+    box.Adornee       = character
+    box.Color3        = color
+    box.LineThickness = 0.05
+    box.SurfaceTransparency = 0.6
+    box.SurfaceColor3 = color
+    box.Parent        = folder
+
+    self._boxes[character] = box
 end
 
-function Chams:_AddPart(part)
-    if self._partAdornments[part] then return end
-
-    local function makeAdorn(cls)
-        local a = Instance.new(cls)
-        a.Adornee  = part
-        a.Visible  = true
-        a.Parent   = self._adormentFolder
-        return a
-    end
-
-    local inner, outline, glow
-
-    if part.Name == "Head" then
-        inner   = makeAdorn("CylinderHandleAdornment")
-        outline = makeAdorn("CylinderHandleAdornment")
-        glow    = makeAdorn("CylinderHandleAdornment")
-        local cf = CFrame.Angles(math.pi/2, 0, 0)
-        inner.CFrame   = cf; inner.Radius   = 0.54; inner.Height   = 1.12
-        outline.CFrame = cf; outline.Radius = 0.62; outline.Height = 1.30
-        glow.CFrame    = cf; glow.Radius    = 0.55; glow.Height    = 1.14
-    else
-        inner   = makeAdorn("BoxHandleAdornment")
-        outline = makeAdorn("BoxHandleAdornment")
-        glow    = makeAdorn("BoxHandleAdornment")
-        inner.Size   = part.Size + Vector3.one * 0.02
-        outline.Size = part.Size + Vector3.one * 0.12
-        glow.Size    = part.Size + Vector3.one * 0.03
-    end
-
-    inner.AlwaysOnTop   = true
-    inner.Color3        = self._innerColor
-    inner.Transparency  = self._innerTransparency
-    inner.ZIndex        = 2
-
-    outline.AlwaysOnTop  = false
-    outline.Color3       = self._outlineColor
-    outline.Transparency = self._outlineTransparency
-    outline.ZIndex       = -1
-
-    glow.AlwaysOnTop  = true
-    glow.Color3       = glowColorFrom(self._glowColor)
-    glow.Transparency = -1
-    glow.ZIndex       = 3
-    glow.Visible      = self._glowEnabled
-
-    self._partAdornments[part] = {
-        inner   = inner,
-        outline = outline,
-        glow    = glow,
-    }
-end
-
-function Chams:_RemovePart(part)
-    local set = self._partAdornments[part]
-    if not set then return end
-    self._partAdornments[part] = nil
-    set.inner:Destroy()
-    set.outline:Destroy()
-    set.glow:Destroy()
-end
-
-function Chams:SelectModel(character)
-    if not character then return end
-    self._adormentFolder.Parent = character
-
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") and SKELETON_PARTS[part.Name] then
-            self:_AddPart(part)
-        end
-    end
-
-    self._trove:Connect(character.DescendantAdded, function(child)
-        if child:IsA("BasePart") and SKELETON_PARTS[child.Name] then
-            self:_AddPart(child)
-        end
-    end)
-    self._trove:Connect(character.DescendantRemoving, function(child)
-        if child:IsA("BasePart") then self:_RemovePart(child) end
-    end)
-end
-
-function Chams:DeselectModel()
-    for part in pairs(self._partAdornments) do
-        self:_RemovePart(part)
-    end
-    self._trove:Clean()
-    self._adormentFolder.Parent = nil
-end
-
-function Chams:SetEnabled(state)
-    self._enabled = state
-    for _, set in pairs(self._partAdornments) do
-        set.inner.Visible   = state
-        set.outline.Visible = state
-        set.glow.Visible    = state and self._glowEnabled
+function Chams:Remove(character)
+    local box = self._boxes[character]
+    if box then
+        box.Parent:Destroy()
+        self._boxes[character] = nil
     end
 end
 
 function Chams:Destroy()
-    self:DeselectModel()
-    self._trove:Destroy()
-    self._adormentFolder:Destroy()
+    for char in pairs(self._boxes) do self:Remove(char) end
 end
 
--- ═══════════════════════════════════════════════════════════════════════
--- SKELETON (2D lines connecting body parts)
--- ═══════════════════════════════════════════════════════════════════════
-local Skeleton = {}
-Skeleton.__index = Skeleton
-
--- Bone connections: [part] → {part0, part1}
-local BONE_MAP = {
-    { "Head",         "UpperTorso" },
-    { "UpperTorso",   "LowerTorso" },
-    { "LowerTorso",   "HumanoidRootPart" },
-    { "LeftUpperArm", "UpperTorso" },
-    { "LeftLowerArm", "LeftUpperArm" },
-    { "LeftHand",     "LeftLowerArm" },
-    { "RightUpperArm","UpperTorso" },
-    { "RightLowerArm","RightUpperArm" },
-    { "RightHand",    "RightLowerArm" },
-    { "LeftUpperLeg", "LowerTorso" },
-    { "LeftLowerLeg", "LeftUpperLeg" },
-    { "LeftFoot",     "LeftLowerLeg" },
-    { "RightUpperLeg","LowerTorso" },
-    { "RightLowerLeg","RightUpperLeg" },
-    { "RightFoot",    "RightLowerLeg" },
-}
-
-function Skeleton.new(screenGui)
-    return setmetatable({
-        _trove            = Trove.new("Skeleton"),
-        _screenGui        = screenGui,
-        _lines            = {},
-        _color            = Color3.fromRGB(255,100,100),
-        _transparency     = 0,
-        _thickness        = 1,
-        _enabled          = false,
-        _model            = nil,
-    }, Skeleton)
-end
-
-function Skeleton:_MakeLine()
-    local f = Instance.new("Frame")
-    f.Visible                = false
-    f.BorderSizePixel        = 0
-    f.BackgroundColor3       = self._color
-    f.BackgroundTransparency = self._transparency
-    f.AnchorPoint            = Vector2.new(0.5, 0.5)
-    f.Parent                 = self._screenGui
-    return f
-end
-
-function Skeleton:SelectModel(character)
-    self:DeselectModel()
-    self._model = character
-
-    for _, bone in ipairs(BONE_MAP) do
-        local p0 = character:FindFirstChild(bone[1])
-        local p1 = character:FindFirstChild(bone[2])
-        if p0 and p1 then
-            local line = self:_MakeLine()
-            table.insert(self._lines, { line = line, p0 = p0, p1 = p1 })
-        end
-    end
-end
-
-function Skeleton:DeselectModel()
-    for _, entry in ipairs(self._lines) do
-        entry.line:Destroy()
-    end
-    self._lines = {}
-    self._model = nil
-    self._trove:Clean()
-end
-
-function Skeleton:SetEnabled(state)
-    self._enabled = state
-    for _, entry in ipairs(self._lines) do
-        entry.line.Visible = false -- update() will show when on-screen
-    end
-    if not state then
-        for _, entry in ipairs(self._lines) do
-            entry.line.Visible = false
-        end
-    end
-end
-
-function Skeleton:SetLook(color, transparency, thickness)
-    self._color        = color
-    self._transparency = transparency
-    self._thickness    = thickness
-    for _, entry in ipairs(self._lines) do
-        entry.line.BackgroundColor3       = color
-        entry.line.BackgroundTransparency = transparency
-    end
-end
-
---[[
-    Update: draws 2D lines between projected bone positions each frame
-]]
-function Skeleton:Update()
-    if not self._enabled or not self._model then return end
-
-    for _, entry in ipairs(self._lines) do
-        local p0, p1 = entry.p0, entry.p1
-        if not (p0.Parent and p1.Parent) then
-            entry.line.Visible = false
-            continue
-        end
-
-        local sp0, on0 = cam:WorldToViewportPoint(p0.Position)
-        local sp1, on1 = cam:WorldToViewportPoint(p1.Position)
-
-        if not (on0 and on1 and sp0.Z > 0 and sp1.Z > 0) then
-            entry.line.Visible = false
-            continue
-        end
-
-        local v0     = Vector2.new(sp0.X, sp0.Y)
-        local v1     = Vector2.new(sp1.X, sp1.Y)
-        local mid    = (v0 + v1) * 0.5
-        local diff   = v1 - v0
-        local length = diff.Magnitude
-        local angle  = math.atan2(diff.Y, diff.X)
-
-        local line = entry.line
-        line.Visible  = true
-        line.Position = UDim2.fromOffset(mid.X, mid.Y)
-        line.Size     = UDim2.fromOffset(length, self._thickness)
-        line.Rotation = math.deg(angle)
-    end
-end
-
-function Skeleton:Destroy()
-    self:DeselectModel()
-    self._trove:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- TRACER (line from screen bottom to target)
--- ═══════════════════════════════════════════════════════════════════════
-local Tracer = {}
-Tracer.__index = Tracer
-
-function Tracer.new(screenGui)
-    local self = setmetatable({
-        _screenGui    = screenGui,
-        _targetPart   = nil,
-        _visible      = false,
-        _color        = Color3.fromRGB(255,50,50),
-        _transparency = 0,
-        _thickness    = 1.5,
-        _origin       = "Bottom",  -- "Bottom" | "Center" | "Mouse"
-        _target       = "Feet",    -- "Feet" | "Head" | "Center"
-        _enabled      = false,
-    }, Tracer)
-
-    local outline = Instance.new("Frame")
-    outline.Visible                = false
-    outline.BorderSizePixel        = 0
-    outline.AnchorPoint            = Vector2.new(0.5, 0.5)
-    outline.BackgroundColor3       = Color3.new(0,0,0)
-    outline.BackgroundTransparency = 0
-    outline.ZIndex                 = 0
-    outline.Parent                 = screenGui
-    self._outline = outline
-
-    local line = Instance.new("Frame")
-    line.Visible                = false
-    line.BorderSizePixel        = 0
-    line.AnchorPoint            = Vector2.new(0.5, 0.5)
-    line.BackgroundColor3       = Color3.new(1,1,1)
-    line.BackgroundTransparency = 0
-    line.ZIndex                 = 1
-    line.Parent                 = screenGui
-    self._line = line
-
-    return self
-end
-
-function Tracer:SetTarget(part)
-    self._targetPart = part
-end
-
-function Tracer:ClearTarget()
-    self._targetPart = nil
-    self._line.Visible    = false
-    self._outline.Visible = false
-end
-
-function Tracer:SetEnabled(state)
-    self._enabled = state
-    if not state then
-        self._line.Visible    = false
-        self._outline.Visible = false
-    end
-end
-
-function Tracer:SetLook(color, transparency, thickness)
-    self._color        = color
-    self._transparency = transparency
-    self._thickness    = thickness
-    self._line.BackgroundColor3       = color
-    self._line.BackgroundTransparency = transparency
-end
-
-function Tracer:Update()
-    if not self._enabled or not self._targetPart then
-        self._line.Visible    = false
-        self._outline.Visible = false
-        return
-    end
-
-    local sp, onScreen = cam:WorldToViewportPoint(self._targetPart.Position)
-    if not onScreen or sp.Z <= 0 then
-        self._line.Visible    = false
-        self._outline.Visible = false
-        return
-    end
-
-    local vp    = cam.ViewportSize
-    local from  = Vector2.new(vp.X / 2, vp.Y)  -- bottom center
-    local to    = Vector2.new(sp.X, sp.Y)
-    local diff  = to - from
-    local len   = diff.Magnitude
-    local angle = math.atan2(diff.Y, diff.X)
-    local mid   = (from + to) * 0.5
-    local thick = self._thickness
-
-    self._line.Visible   = true
-    self._line.Position  = UDim2.fromOffset(mid.X, mid.Y)
-    self._line.Size      = UDim2.fromOffset(len, thick)
-    self._line.Rotation  = math.deg(angle)
-
-    self._outline.Visible   = true
-    self._outline.Position  = UDim2.fromOffset(mid.X, mid.Y)
-    self._outline.Size      = UDim2.fromOffset(len, thick + 2)
-    self._outline.Rotation  = math.deg(angle)
-end
-
-function Tracer:Destroy()
-    self._line:Destroy()
-    self._outline:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- HACKER DETECTOR
--- ═══════════════════════════════════════════════════════════════════════
-local HackerDetector = {}
-HackerDetector.__index = HackerDetector
-
-local HD_SPEED_THRESHOLD = 200
-local HD_SPEED_WINDOW    = 0.25
-local HD_NOTIFY_COOLDOWN = 10
-
-function HackerDetector.new(screenGui)
-    local self = setmetatable({
-        _trove         = Trove.new("HackerDetector"),
-        _screenGui     = screenGui,
-        _enabled       = false,
-        _shouldNotify  = true,
-        _tagColor      = Color3.fromRGB(255, 50, 50),
-        _speedTimers   = {},
-        _lastPositions = {},
-        _lastPosTime   = {},
-        _notified      = {},
-        _labels        = {},
-        _notifyCooldown= {},
-    }, HackerDetector)
-    return self
-end
-
-function HackerDetector:SetEnabled(state)
-    self._enabled = state
-    if not state then
-        for p, lbl in pairs(self._labels) do
-            lbl:Destroy()
-            self._labels[p] = nil
-        end
-    end
-end
-
-function HackerDetector:SetNotify(state)
-    self._shouldNotify = state
-end
-
-function HackerDetector:SetColor(color)
-    self._tagColor = color
-    for _, lbl in pairs(self._labels) do
-        lbl.TextColor3 = color
-    end
-end
-
-function HackerDetector:_IsMovingTooFast(player)
-    local chr = player.Character
-    if not chr then return false end
-    local hrp = chr:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-
-    local now = os.clock()
-    local pos = hrp.Position
-    local lastPos  = self._lastPositions[player]
-    local lastTime = self._lastPosTime[player]
-
-    self._lastPositions[player] = pos
-    self._lastPosTime[player]   = now
-
-    if not lastPos or not lastTime then return false end
-
-    local dt    = now - lastTime
-    local dist  = (pos - lastPos).Magnitude
-    local speed = dt > 0 and (dist / dt) or 0
-
-    if speed > HD_SPEED_THRESHOLD then
-        self._speedTimers[player] = (self._speedTimers[player] or 0) + dt
-    else
-        self._speedTimers[player] = 0
-    end
-
-    return (self._speedTimers[player] or 0) >= HD_SPEED_WINDOW
-end
-
-function HackerDetector:_TagPlayer(player)
-    if self._labels[player] then return end
-
-    local lbl = Instance.new("BillboardGui")
-    lbl.Size          = UDim2.fromOffset(200, 30)
-    lbl.StudsOffset   = Vector3.new(0, 3, 0)
-    lbl.AlwaysOnTop   = true
-
-    local txt = Instance.new("TextLabel", lbl)
-    txt.Size                   = UDim2.fromScale(1, 1)
-    txt.BackgroundTransparency = 1
-    txt.Text                   = "⚠ HACKER"
-    txt.TextColor3             = self._tagColor
-    txt.Font                   = Enum.Font.GothamBold
-    txt.TextSize               = 14
-    txt.TextStrokeTransparency = 0
-
-    local chr = player.Character
-    if chr then
-        local hrp = chr:FindFirstChild("HumanoidRootPart")
-        if hrp then lbl.Adornee = hrp end
-    end
-
-    lbl.Parent          = self._screenGui
-    self._labels[player] = lbl
-
-    -- Notify via warn (Library notify may not exist without full lib context)
-    local now = os.clock()
-    local cooldown = self._notifyCooldown[player] or 0
-    if self._shouldNotify and now > cooldown then
-        self._notifyCooldown[player] = now + HD_NOTIFY_COOLDOWN
-        warn("[HackerDetector] Possible hacker: " .. player.DisplayName)
-        -- If Library:Notify exists use it:
-        pcall(function()
-            Library:Notify(player.DisplayName .. " may be hacking!", 5)
-        end)
-    end
-end
-
-function HackerDetector:Update()
-    if not self._enabled then return end
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == lp then continue end
-
-        if self:_IsMovingTooFast(player) then
-            self:_TagPlayer(player)
-        else
-            -- Remove tag if they stopped hacking
-            if self._labels[player] then
-                self._labels[player]:Destroy()
-                self._labels[player] = nil
-                self._notified[player] = nil
-            end
-        end
-
-        -- Keep billboard attached to character
-        if self._labels[player] then
-            local chr = player.Character
-            local hrp = chr and chr:FindFirstChild("HumanoidRootPart")
-            self._labels[player].Adornee = hrp or nil
-        end
-    end
-
-    -- Clean up labels for players who left
-    for player, lbl in pairs(self._labels) do
-        if not player.Parent then
-            lbl:Destroy()
-            self._labels[player] = nil
-            self._speedTimers[player]   = nil
-            self._lastPositions[player] = nil
-            self._lastPosTime[player]   = nil
-        end
-    end
-end
-
-function HackerDetector:Destroy()
-    self:SetEnabled(false)
-    self._trove:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- NOCLIP
--- ═══════════════════════════════════════════════════════════════════════
-local Noclip = {}
-Noclip.__index = Noclip
-
-function Noclip.new()
-    local self = setmetatable({
-        _trove          = Trove.new("Noclip"),
-        _collidableParts = {},
-        _enabled        = false,
-    }, Noclip)
-
-    -- Re-bind on respawn
-    self._trove:Connect(lp.CharacterAdded, function(chr)
-        self:_BindCharacter(chr)
-    end)
-    if lp.Character then
-        self:_BindCharacter(lp.Character)
-    end
-
-    return self
-end
-
-function Noclip:_BindCharacter(character)
-    table.clear(self._collidableParts)
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            self._collidableParts[part] = true
-        end
-    end
-    self._trove:Connect(character.DescendantAdded, function(child)
-        if child:IsA("BasePart") then
-            self._collidableParts[child] = true
-        end
-    end)
-    self._trove:Connect(character.DescendantRemoving, function(child)
-        if child:IsA("BasePart") then
-            self._collidableParts[child] = nil
-        end
-    end)
-end
-
-function Noclip:SetEnabled(state)
-    if self._enabled and not state then
-        -- Restore collision on disable
-        for part in pairs(self._collidableParts) do
-            pcall(function() part.CanCollide = true end)
-        end
-    end
-    self._enabled = state
-end
-
-function Noclip:Update()
-    if not self._enabled then return end
-    for part in pairs(self._collidableParts) do
-        pcall(function() part.CanCollide = false end)
-    end
-end
-
-function Noclip:Destroy()
-    self:SetEnabled(false)
-    self._trove:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- FOV CHANGER (GuardedInstance wrapping CurrentCamera)
--- ═══════════════════════════════════════════════════════════════════════
-local FovChanger = {}
-FovChanger.__index = FovChanger
-
-function FovChanger.new()
-    local self = setmetatable({
-        _trove      = Trove.new("FovChanger"),
-        _guard      = nil,
-        _enabled    = false,
-        _value      = 80,
-    }, FovChanger)
-
-    self._trove:Connect(
-        Workspace:GetPropertyChangedSignal("CurrentCamera"),
-        function() self:_BindCamera() end
-    )
-    self:_BindCamera()
-    return self
-end
-
-function FovChanger:_BindCamera()
-    if self._guard then
-        self._guard:Destroy()
-        self._guard = nil
-    end
-    local c = Workspace.CurrentCamera
-    if c then
-        self._guard = GuardedInstance.new(c)
-        self:_Apply()
-    end
-end
-
-function FovChanger:_Apply()
-    if not self._guard then return end
-    if self._enabled then
-        self._guard:SetOverride("FieldOfView", self._value)
-    else
-        self._guard:ClearOverride("FieldOfView")
-    end
-end
-
-function FovChanger:SetEnabled(state)
-    self._enabled = state
-    self:_Apply()
-end
-
-function FovChanger:SetValue(fov)
-    self._value = fov
-    self:_Apply()
-end
-
-function FovChanger:Destroy()
-    if self._guard then self._guard:Destroy() end
-    self._trove:Destroy()
-end
-
--- ═══════════════════════════════════════════════════════════════════════
--- ESP MANAGER (orchestrates all per-player visual systems)
--- ═══════════════════════════════════════════════════════════════════════
-local ESPManager = {}
-ESPManager.__index = ESPManager
-
-function ESPManager.new()
-    local self = setmetatable({
-        _trove      = Trove.new("ESPManager"),
-        _entries    = {},  -- [player] = { box, chams, skeleton, tracer, nameLabel, healthBar }
-        _screenGui  = nil,
-        _config     = {
-            box         = { enabled=false, style="Full",  color=Color3.fromRGB(255,50,50),  outlineColor=Color3.fromRGB(0,0,0) },
-            chams       = { enabled=false, innerColor=Color3.fromRGB(255,50,50),  outlineColor=Color3.fromRGB(80,0,0),
-                            innerAlpha=0, outlineAlpha=0.5, glowEnabled=false, glowColor=Color3.fromRGB(255,50,50) },
-            skeleton    = { enabled=false, color=Color3.fromRGB(255,100,100), transparency=0, thickness=1 },
-            tracer      = { enabled=false, color=Color3.fromRGB(255,50,50),  transparency=0, thickness=1.5 },
-            name        = { enabled=false, color=Color3.fromRGB(255,255,255) },
-            health      = { enabled=false },
-            teamCheck   = true,
-        },
-    }, self)
-
-    -- Build ScreenGui
-    local sg = Instance.new("ScreenGui")
-    sg.Name             = "RivalsESP"
-    sg.ResetOnSpawn     = false
-    sg.IgnoreGuiInset   = true
-    sg.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
-    sg.Parent           = lp.PlayerGui
-    self._screenGui     = sg
-    self._trove:Add(sg)
-
-    -- Bind existing players
+-- ============================================================
+-- ESP CONTROLLER
+-- Maintains one ESP entry per visible enemy player.
+-- Updates each frame in PreRender.
+-- ============================================================
+
+local ESPController = {}
+ESPController.__index = ESPController
+
+function ESPController.new()
+    local self = setmetatable({}, ESPController)
+    self._trove     = Trove.new("esp")
+    self._entries   = {}
+    self._screenGui = Instance.new("ScreenGui")
+    self._chams     = Chams.new()
+
+    local sg = self._screenGui
+    sg.Name              = "KiciaESP"
+    sg.ResetOnSpawn      = false
+    sg.IgnoreGuiInset    = true
+    sg.DisplayOrder      = 999
+    sg.ZIndexBehavior    = Enum.ZIndexBehavior.Sibling
+    sg.Parent            = LocalPlayer.PlayerGui
+
+    -- watch players joining/leaving
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= lp then self:_AddPlayer(p) end
+        if p ~= LocalPlayer then self:_AddPlayer(p) end
     end
-
     self._trove:Connect(Players.PlayerAdded, function(p)
-        if p ~= lp then self:_AddPlayer(p) end
+        if p ~= LocalPlayer then self:_AddPlayer(p) end
     end)
     self._trove:Connect(Players.PlayerRemoving, function(p)
         self:_RemovePlayer(p)
     end)
 
+    -- update each frame
+    self._trove:Connect(RunService.PreRender, function()
+        self:_Update()
+    end)
+
     return self
 end
 
-function ESPManager:_SameTm(player)
-    local ok = false
-    pcall(function()
-        local a = lp:GetAttribute("TeamID")
-        local b = player:GetAttribute("TeamID")
-        if a ~= nil and b ~= nil then ok = (a == b) end
-    end)
-    return ok
-end
-
-function ESPManager:_AddPlayer(player)
-    if self._entries[player] then return end
-
-    local box      = BoundingBox.new(self._screenGui)
-    local chams    = Chams.new()
-    local skeleton = Skeleton.new(self._screenGui)
-    local tracer   = Tracer.new(self._screenGui)
-
-    -- Name label
-    local nameGui = Instance.new("BillboardGui")
-    nameGui.Size        = UDim2.fromOffset(200, 20)
-    nameGui.StudsOffset = Vector3.new(0, 3.5, 0)
-    nameGui.AlwaysOnTop = true
-    local nameLbl = Instance.new("TextLabel", nameGui)
-    nameLbl.Size                   = UDim2.fromScale(1,1)
-    nameLbl.BackgroundTransparency = 1
-    nameLbl.Text                   = player.DisplayName
-    nameLbl.Font                   = Enum.Font.GothamBold
-    nameLbl.TextSize               = 13
-    nameLbl.TextColor3             = self._config.name.color
-    nameLbl.TextStrokeTransparency = 0
-    nameLbl.Visible                = false
-    nameGui.Parent = self._screenGui
-
-    -- Health bar (BillboardGui)
-    local hpGui = Instance.new("BillboardGui")
-    hpGui.Size        = UDim2.fromOffset(4, 80)
-    hpGui.StudsOffset = Vector3.new(-3, 0, 0)
-    hpGui.AlwaysOnTop = true
-    local hpBg = Instance.new("Frame", hpGui)
-    hpBg.Size                   = UDim2.fromScale(1,1)
-    hpBg.BackgroundColor3       = Color3.fromRGB(0,0,0)
-    hpBg.BackgroundTransparency = 0.3
-    hpBg.BorderSizePixel        = 0
-    local hpBar = Instance.new("Frame", hpBg)
-    hpBar.AnchorPoint       = Vector2.new(0, 1)
-    hpBar.Position          = UDim2.fromScale(0, 1)
-    hpBar.Size              = UDim2.fromScale(1, 1)
-    hpBar.BackgroundColor3  = Color3.fromRGB(50, 200, 50)
-    hpBar.BorderSizePixel   = 0
-    hpGui.Visible = false
-    hpGui.Parent  = self._screenGui
-
+function ESPController:_AddPlayer(player)
     self._entries[player] = {
-        box      = box,
-        chams    = chams,
-        skeleton = skeleton,
-        tracer   = tracer,
-        nameGui  = nameGui,
-        nameLbl  = nameLbl,
-        hpGui    = hpGui,
-        hpBar    = hpBar,
+        player   = player,
+        box      = BoundingBox.new(self._screenGui),
+        skeleton = Skeleton.new(self._screenGui),
+        tracer   = Tracer.new(self._screenGui),
     }
-
-    -- Bind character
-    if player.Character then
-        self:_BindCharacter(player, player.Character)
-    end
-
-    self._trove:Connect(player.CharacterAdded, function(chr)
-        self:_BindCharacter(player, chr)
-    end)
-    self._trove:Connect(player.CharacterRemoving, function()
-        local e = self._entries[player]
-        if not e then return end
-        e.chams:DeselectModel()
-        e.skeleton:DeselectModel()
-        e.tracer:ClearTarget()
-        e.nameGui.Adornee = nil
-        e.hpGui.Adornee   = nil
-    end)
+    self._entries[player].box:SetStyle(Config.ESP.Style)
 end
 
-function ESPManager:_BindCharacter(player, character)
+function ESPController:_RemovePlayer(player)
     local e = self._entries[player]
-    if not e then return end
-
-    task.wait(0.1) -- wait for character to fully load
-
-    local hrp  = character:WaitForChild("HumanoidRootPart", 5)
-    local head = character:WaitForChild("Head", 5)
-    local hum  = character:WaitForChild("Humanoid", 5)
-    if not hrp then return end
-
-    -- Chams
-    if self._config.chams.enabled then
-        e.chams:SelectModel(character)
-        local c = self._config.chams
-        e.chams:SetLook(c.innerColor, c.innerAlpha, c.outlineColor, c.outlineAlpha, c.glowEnabled, c.glowColor)
-        e.chams:SetEnabled(true)
+    if e then
+        e.box:Destroy()
+        e.skeleton:Destroy()
+        e.tracer:Destroy()
+        self._chams:Remove(player.Character)
+        self._entries[player] = nil
     end
+end
 
-    -- Skeleton
-    if self._config.skeleton.enabled then
-        e.skeleton:SelectModel(character)
-        local s = self._config.skeleton
-        e.skeleton:SetLook(s.color, s.transparency, s.thickness)
-        e.skeleton:SetEnabled(true)
-    end
+-- _GetBoundingBox2D: compute screen-space bounding box for a character.
+-- Returns topLeft, bottomRight as Vector2, or nil if off-screen.
+local function getCharacterScreenBounds(character)
+    local cam    = workspace.CurrentCamera
+    local minX, minY =  math.huge,  math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyOnScreen = false
 
-    -- Tracer target
-    if self._config.tracer.enabled then
-        e.tracer:SetTarget(head or hrp)
-        local t = self._config.tracer
-        e.tracer:SetLook(t.color, t.transparency, t.thickness)
-        e.tracer:SetEnabled(true)
-    end
-
-    -- Name / health adorees
-    e.nameGui.Adornee = hrp
-    e.hpGui.Adornee   = hrp
-
-    -- Health update
-    if hum then
-        local function updateHP()
-            local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-            e.hpBar.Size           = UDim2.fromScale(1, pct)
-            e.hpBar.BackgroundColor3 = Color3.fromRGB(
-                math.floor(255 * (1 - pct)),
-                math.floor(255 * pct),
-                0
-            )
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local s, visible = cam:WorldToViewportPoint(part.Position)
+            if visible and s.Z > 0 then
+                anyOnScreen = true
+                minX = math.min(minX, s.X)
+                minY = math.min(minY, s.Y)
+                maxX = math.max(maxX, s.X)
+                maxY = math.max(maxY, s.Y)
+            end
         end
-        updateHP()
-        self._trove:Connect(hum.HealthChanged, updateHP)
     end
+
+    if not anyOnScreen then return nil end
+    return Vector2.new(minX - 4, minY - 4), Vector2.new(maxX + 4, maxY + 4)
 end
 
-function ESPManager:_RemovePlayer(player)
-    local e = self._entries[player]
-    if not e then return end
-    e.box:Destroy()
-    e.chams:Destroy()
-    e.skeleton:Destroy()
-    e.tracer:Destroy()
-    e.nameGui:Destroy()
-    e.hpGui:Destroy()
-    self._entries[player] = nil
-end
-
-function ESPManager:Update()
-    for player, e in pairs(self._entries) do
-        if player == lp then continue end
-
-        -- Team check
-        local shouldSkip = self._config.teamCheck and self:_SameTm(player)
-        local chr = player.Character
-        local hum = chr and chr:FindFirstChildOfClass("Humanoid")
-        local alive = hum and hum.Health > 0
-
-        if shouldSkip or not chr or not alive then
+function ESPController:_Update()
+    if not Config.ESP.Enabled then
+        for _, e in pairs(self._entries) do
             e.box:SetEnabled(false)
-            e.nameGui.Enabled = false
-            e.hpGui.Enabled   = false
-            e.skeleton:SetEnabled(false)
-            e.tracer:SetEnabled(false)
-            continue
+            e.skeleton:Hide()
+            e.tracer:Hide()
+        end
+        return
+    end
+
+    local cam = workspace.CurrentCamera
+
+    for player, e in pairs(self._entries) do
+        local char = player.Character
+        if not char then
+            e.box:SetEnabled(false)
+            e.skeleton:Hide()
+            e.tracer:Hide()
+            self._chams:Remove(nil)
+            goto continue
+        end
+
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then
+            e.box:SetEnabled(false)
+            e.skeleton:Hide()
+            e.tracer:Hide()
+            goto continue
+        end
+
+        local topLeft, bottomRight = getCharacterScreenBounds(char)
+        if not topLeft then
+            e.box:SetEnabled(false)
+            e.skeleton:Hide()
+            e.tracer:Hide()
+            goto continue
         end
 
         -- Box
-        if self._config.box.enabled then
+        if Config.ESP.ShowBox then
+            e.box:SetStyle(Config.ESP.Style)
+            e.box:SetColors(Config.ESP.BoxColor, Config.ESP.OutlineColor)
+            e.box:Update(topLeft, bottomRight)
             e.box:SetEnabled(true)
-            e.box:Update(chr)
         else
             e.box:SetEnabled(false)
         end
 
-        -- Name
-        e.nameGui.Enabled    = self._config.name.enabled
-        e.nameLbl.Visible    = self._config.name.enabled
-        e.nameLbl.TextColor3 = self._config.name.color
-
-        -- Health
-        e.hpGui.Enabled = self._config.health.enabled
-
         -- Skeleton
-        if self._config.skeleton.enabled then
-            e.skeleton:Update()
+        if Config.ESP.ShowSkeleton then
+            e.skeleton:Update(char, Config.ESP.BoxColor)
+        else
+            e.skeleton:Hide()
         end
 
         -- Tracer
-        if self._config.tracer.enabled then
-            e.tracer:Update()
-        end
-    end
-end
-
-function ESPManager:ApplyBoxConfig()
-    local c = self._config.box
-    for _, e in pairs(self._entries) do
-        e.box:SetStyle(c.style)
-        e.box:SetLook(c.color, LookEnum.None)
-        e.box:SetOutlineColor(c.outlineColor)
-    end
-end
-
-function ESPManager:ApplyChamsConfig()
-    local c = self._config.chams
-    for player, e in pairs(self._entries) do
-        local chr = player.Character
-        if chr and c.enabled then
-            if not e.chams._enabled then
-                e.chams:SelectModel(chr)
+        if Config.ESP.ShowTracer then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if root then
+                local s, visible = cam:WorldToViewportPoint(root.Position)
+                if visible and s.Z > 0 then
+                    e.tracer:Update(Vector2.new(s.X, s.Y), Config.ESP.TracerColor)
+                else
+                    e.tracer:Hide()
+                end
             end
-            e.chams:SetLook(c.innerColor, c.innerAlpha, c.outlineColor, c.outlineAlpha, c.glowEnabled, c.glowColor)
-            e.chams:SetEnabled(true)
         else
-            e.chams:SetEnabled(false)
+            e.tracer:Hide()
         end
+
+        -- Chams
+        if Config.ESP.ShowChams then
+            self._chams:Apply(char, Config.ESP.ChamsColor)
+        else
+            self._chams:Remove(char)
+        end
+
+        ::continue::
     end
 end
 
-function ESPManager:ApplySkeletonConfig()
-    local s = self._config.skeleton
-    for player, e in pairs(self._entries) do
-        local chr = player.Character
-        if chr and s.enabled then
-            if not e.skeleton._model then
-                e.skeleton:SelectModel(chr)
+function ESPController:Destroy()
+    self._chams:Destroy()
+    self._screenGui:Destroy()
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- AIMBOT CORE
+-- ============================================================
+
+local AimbotController = {}
+AimbotController.__index = AimbotController
+
+function AimbotController.new()
+    local self        = setmetatable({}, AimbotController)
+    self._trove       = Trove.new("aimbot")
+    self._currentTarget = nil
+
+    self._trove:Connect(RunService.PreRender, function()
+        self:_Update()
+    end)
+    return self
+end
+
+-- _GetBestTarget: find nearest enemy to screen center within FOV.
+function AimbotController:_GetBestTarget()
+    local cam       = workspace.CurrentCamera
+    local vp        = cam.ViewportSize
+    local centerX   = vp.X / 2
+    local centerY   = vp.Y / 2
+    local maxDist   = Config.Aimbot.FOV
+    local best      = nil
+    local bestDist  = math.huge
+    local bone      = Config.Aimbot.Bone
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+
+        -- team check
+        if Config.Aimbot.TeamCheck and player.Team == LocalPlayer.Team then continue end
+
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
+
+        local part = char:FindFirstChild(bone) or char:FindFirstChild("HumanoidRootPart")
+        if not part then continue end
+
+        -- wall check
+        if Config.Aimbot.WallCheck then
+            local origin = cam.CFrame.Position
+            local dir    = (part.Position - origin)
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = { LocalPlayer.Character, cam }
+            local result = workspace:Raycast(origin, dir, params)
+            if result and not char:IsAncestorOf(result.Instance) then continue end
+        end
+
+        local s, visible = cam:WorldToViewportPoint(part.Position)
+        if not visible or s.Z <= 0 then continue end
+
+        local dx   = s.X - centerX
+        local dy   = s.Y - centerY
+        local dist = math.sqrt(dx * dx + dy * dy)
+        if dist < maxDist and dist < bestDist then
+            bestDist = dist
+            best     = { part = part, screen = Vector2.new(s.X, s.Y) }
+        end
+    end
+
+    return best
+end
+
+function AimbotController:_Update()
+    if not Config.Aimbot.Enabled then
+        self._currentTarget = nil
+        return
+    end
+
+    local best = self:_GetBestTarget()
+    self._currentTarget = best
+
+    if not best then return end
+
+    -- lerp camera toward target
+    local cam    = workspace.CurrentCamera
+    local vp     = cam.ViewportSize
+    local cx, cy = vp.X / 2, vp.Y / 2
+    local dx     = best.screen.X - cx
+    local dy     = best.screen.Y - cy
+    local speed  = math.clamp(Config.Aimbot.Smoothing, 0.01, 1)
+
+    local newX   = cx + dx * speed
+    local newY   = cy + dy * speed
+    local dir    = cam:ViewportPointToRay(newX, newY).Direction
+    local pitch  = math.asin(-dir.Y)
+    local yaw    = math.atan2(-dir.X, -dir.Z)
+
+    cam.CFrame   = CFrame.new(cam.CFrame.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+end
+
+function AimbotController:GetCurrentTarget()
+    return self._currentTarget
+end
+
+function AimbotController:Destroy()
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- FLICKBOT
+-- ============================================================
+
+local FlickbotController = {}
+FlickbotController.__index = FlickbotController
+
+function FlickbotController.new(aimbot)
+    local self  = setmetatable({}, FlickbotController)
+    self._trove = Trove.new("flickbot")
+    self._aimbot = aimbot
+    self._state  = "Idle"
+    self._trajectory = nil
+    self._trajectoryIndex = 1
+    self._elapsedMs = 0
+    self._totalMs   = 0
+    self._bakedEnd  = Vector3.zAxis
+    self._selected  = nil
+    self._timer     = 0
+
+    -- keybind: F key starts a flick
+    self._trove:Connect(UserInputService.InputBegan, function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.KeyCode == Enum.KeyCode.F and Config.Flickbot.Enabled then
+            if self._state == "Idle" then self:_StartFlick() end
+        end
+    end)
+
+    self._trove:Connect(RunService.PreRender, function(dt)
+        self:_Update(dt)
+    end)
+
+    return self
+end
+
+local function partToScreen(part)
+    local cam = workspace.CurrentCamera
+    local s, visible = cam:WorldToViewportPoint(part.Position)
+    if not visible or s.Z <= 0 then return nil end
+    return Vector2.new(s.X, s.Y)
+end
+
+function FlickbotController:_StartFlick()
+    local best = self._aimbot:_GetBestTarget()
+    if not best then return end
+
+    local screenTarget = partToScreen(best.part)
+    if not screenTarget then return end
+
+    local cam  = workspace.CurrentCamera
+    local vp   = cam.ViewportSize
+    local cx, cy = vp.X / 2, vp.Y / 2
+
+    -- bake straight trajectory; curvature and humanness bend it
+    local durationMs = Config.Flickbot.FlickDuration
+    local steps = math.max(2, math.floor(durationMs / 16))
+    local traj  = {}
+
+    for i = 1, steps do
+        local t     = (i - 1) / (steps - 1)
+        -- apply cubic ease-in-out
+        local eased = t < 0.5 and 4 * t * t * t or 1 - (-2 * t + 2)^3 / 2
+        -- slight curve: arc perpendicular to direction, scaled by curvature
+        local curveBend = math.sin(t * math.pi) * Config.Flickbot.Curvature * 40
+        local sx = cx + (screenTarget.X - cx) * eased
+        local sy = cy + (screenTarget.Y - cy) * eased + curveBend
+        -- humanness: small random jitter
+        local jitter = Config.Flickbot.Humanness * 4
+        sx = sx + (math.random() - 0.5) * jitter
+        sy = sy + (math.random() - 0.5) * jitter
+
+        traj[i] = {
+            direction = cam:ViewportPointToRay(sx, sy).Direction,
+            t         = (i - 1) / (steps - 1) * durationMs,
+        }
+    end
+
+    self._trajectory        = traj
+    self._trajectoryIndex   = 1
+    self._elapsedMs         = 0
+    self._totalMs           = durationMs
+    self._bakedEnd          = traj[#traj].direction
+    self._selected          = best
+    self._state             = "Flicking"
+end
+
+function FlickbotController:_FinishToCooldown()
+    self._selected   = nil
+    self._trajectory = nil
+    local cooldownMs = Config.Flickbot.Cooldown
+    if cooldownMs > 0 then
+        self._state = "Cooldown"
+        self._timer = cooldownMs / 1000
+    else
+        self._state = "Idle"
+    end
+end
+
+function FlickbotController:_SampleTrajectory(dt)
+    local traj = self._trajectory
+    self._elapsedMs = self._elapsedMs + dt * 1000
+    local idx = self._trajectoryIndex
+    while idx < #traj and traj[idx + 1].t <= self._elapsedMs do
+        idx = idx + 1
+    end
+    self._trajectoryIndex = idx
+    local curr = traj[idx]
+    local next = traj[idx + 1]
+    if not next then return traj[#traj].direction, true end
+    local span  = next.t - curr.t
+    local alpha = span > 0 and math.clamp((self._elapsedMs - curr.t) / span, 0, 1) or 1
+    return curr.direction:Lerp(next.direction, alpha), false
+end
+
+function FlickbotController:_FireShot()
+    local char = LocalPlayer.Character
+    if not char then return end
+    -- simulate mouse click via VirtualInputManager if available
+    local tool = char:FindFirstChildOfClass("Tool")
+    if tool and tool:FindFirstChild("Shoot") then
+        tool.Shoot:FireServer()
+    end
+end
+
+function FlickbotController:_Update(dt)
+    if not Config.Flickbot.Enabled then
+        self._state = "Idle"
+        return
+    end
+
+    local state = self._state
+    if state == "Flicking" then
+        local selected = self._selected
+        if not selected or not self._trajectory then self:_FinishToCooldown(); return end
+        if selected.part.Parent == nil then self:_FinishToCooldown(); return end
+
+        local dir, finished = self:_SampleTrajectory(dt)
+
+        -- live target correction
+        if self._totalMs > 0 then
+            local camPos   = workspace.CurrentCamera.CFrame.Position
+            local liveUnit = (selected.part.Position - camPos).Unit
+            local progress = math.clamp(self._elapsedMs / self._totalMs, 0, 1)
+            dir = (dir + (liveUnit - self._bakedEnd) * progress).Unit
+        end
+
+        local pitch = math.asin(-dir.Y)
+        local yaw   = math.atan2(-dir.X, -dir.Z)
+        local cam   = workspace.CurrentCamera
+        cam.CFrame  = CFrame.new(cam.CFrame.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+
+        if finished then
+            if Config.Flickbot.Shoot then
+                self._state = "PostShot"
+                self._timer = Config.Flickbot.ShotDelay / 1000
+            else
+                self:_FinishToCooldown()
             end
-            e.skeleton:SetLook(s.color, s.transparency, s.thickness)
-            e.skeleton:SetEnabled(true)
-        else
-            e.skeleton:SetEnabled(false)
         end
+
+    elseif state == "PostShot" then
+        self._timer = self._timer - dt
+        if self._timer <= 0 then
+            self:_FireShot()
+            self:_FinishToCooldown()
+        end
+
+    elseif state == "Cooldown" then
+        self._timer = self._timer - dt
+        if self._timer <= 0 then self._state = "Idle" end
     end
 end
 
-function ESPManager:ApplyTracerConfig()
-    local t = self._config.tracer
-    for player, e in pairs(self._entries) do
-        local chr  = player.Character
-        local head = chr and chr:FindFirstChild("Head")
-        local hrp  = chr and chr:FindFirstChild("HumanoidRootPart")
-        if (head or hrp) and t.enabled then
-            e.tracer:SetTarget(head or hrp)
-            e.tracer:SetLook(t.color, t.transparency, t.thickness)
-            e.tracer:SetEnabled(true)
-        else
-            e.tracer:SetEnabled(false)
+function FlickbotController:Destroy()
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- TRIGGERBOT
+-- ============================================================
+
+local TriggerbotController = {}
+TriggerbotController.__index = TriggerbotController
+
+function TriggerbotController.new()
+    local self = setmetatable({}, TriggerbotController)
+    self._trove           = Trove.new("triggerbot")
+    self._reactionElapsed = nil
+    self._releaseRemaining = 0
+
+    self._trove:Connect(RunService.Heartbeat, function(dt)
+        self:_Update(dt)
+    end)
+    return self
+end
+
+function TriggerbotController:_CheckCrosshair()
+    local cam = workspace.CurrentCamera
+    local vp  = cam.ViewportSize
+    local ray = cam:ViewportPointToRay(vp.X / 2, vp.Y / 2)
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LocalPlayer.Character }
+
+    local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
+    if not result then return false end
+
+    local model = result.Instance:FindFirstAncestorOfClass("Model")
+    if not model then return false end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if player.Character == model then
+            if Config.Triggerbot.TeamCheck and player.Team == LocalPlayer.Team then
+                return false
+            end
+            local h = model:FindFirstChildOfClass("Humanoid")
+            return h ~= nil and h.Health > 0
         end
+    end
+    return false
+end
+
+local function fireTriggerbotShot()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    -- use mouse1click via VirtualInputManager
+    local success, VIM = pcall(function()
+        return game:GetService("VirtualInputManager")
+    end)
+    if success and VIM then
+        VIM:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+        task.defer(function()
+            VIM:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end)
     end
 end
 
-function ESPManager:Destroy()
-    for player in pairs(self._entries) do
-        self:_RemovePlayer(player)
+function TriggerbotController:_Update(dt)
+    local cfg = Config.Triggerbot
+    if not cfg.Enabled then
+        self._reactionElapsed  = nil
+        self._releaseRemaining = 0
+        return
+    end
+
+    local onTarget = self:_CheckCrosshair()
+    if onTarget then
+        self._reactionElapsed = (self._reactionElapsed or 0) + dt
+    else
+        self._reactionElapsed = nil
+    end
+
+    local reactionMet = self._reactionElapsed ~= nil
+                     and cfg.ReactionTime <= self._reactionElapsed
+
+    if onTarget and reactionMet then
+        self._releaseRemaining = cfg.ReleaseTime
+        fireTriggerbotShot()
+        return
+    end
+
+    self._releaseRemaining = math.max(0, self._releaseRemaining - dt)
+    if self._releaseRemaining > 0 then
+        fireTriggerbotShot()
+    end
+end
+
+function TriggerbotController:Destroy()
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- SILENT AIM
+-- ============================================================
+
+local SilentAimController = {}
+SilentAimController.__index = SilentAimController
+
+function SilentAimController.new()
+    local self  = setmetatable({}, SilentAimController)
+    self._trove = Trove.new("silentaim")
+    self._hook  = nil
+
+    self:_HookRemote()
+    return self
+end
+
+function SilentAimController:_GetBestTarget()
+    local cam     = workspace.CurrentCamera
+    local vp      = cam.ViewportSize
+    local cx, cy  = vp.X / 2, vp.Y / 2
+    local maxDist = Config.SilentAim.FOV
+    local bone    = Config.SilentAim.Bone
+    local best, bestDist = nil, math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
+        local part = char:FindFirstChild(bone) or char:FindFirstChild("HumanoidRootPart")
+        if not part then continue end
+        local s, visible = cam:WorldToViewportPoint(part.Position)
+        if not visible or s.Z <= 0 then continue end
+        local dist = math.sqrt((s.X - cx)^2 + (s.Y - cy)^2)
+        if dist < maxDist and dist < bestDist then
+            bestDist = dist
+            best     = part
+        end
+    end
+    return best
+end
+
+-- Hook the camera to redirect bullets.
+-- This approach patches the Camera CFrame read so that the
+-- game thinks it's aiming at the target.
+function SilentAimController:_HookRemote()
+    -- We hook FireServer on all RemoteEvents in the char's tool
+    -- to redirect the direction argument.
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    self._trove:Connect(LocalPlayer.CharacterAdded, function(newChar)
+        self:_HookRemote()
+    end)
+
+    self._trove:Connect(RunService.PreRender, function()
+        if not Config.SilentAim.Enabled then return end
+        local target = self:_GetBestTarget()
+        if not target then return end
+
+        -- Nudge camera slightly toward target each frame
+        -- (silent redirect: server receives adjusted direction)
+        local cam     = workspace.CurrentCamera
+        local origin  = cam.CFrame.Position
+        local aimDir  = (target.Position - origin).Unit
+        local pitch   = math.asin(-aimDir.Y)
+        local yaw     = math.atan2(-aimDir.X, -aimDir.Z)
+        -- Store for use in shot injection — does not move the visible camera
+        self._aimCFrame = CFrame.new(origin)
+            * CFrame.Angles(0, yaw, 0)
+            * CFrame.Angles(pitch, 0, 0)
+    end)
+end
+
+function SilentAimController:Destroy()
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- NOCLIP
+-- ============================================================
+
+local NoclipController = {}
+NoclipController.__index = NoclipController
+
+function NoclipController.new()
+    local self = setmetatable({}, NoclipController)
+    self._trove = Trove.new("noclip")
+
+    self._trove:Connect(RunService.Stepped, function()
+        if not Config.Movement.Noclip then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+
+    return self
+end
+
+function NoclipController:Destroy()
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- FLIGHT
+-- ============================================================
+
+local FlightController = {}
+FlightController.__index = FlightController
+
+function FlightController.new()
+    local self  = setmetatable({}, FlightController)
+    self._trove = Trove.new("flight")
+    self._mover = nil
+
+    self._trove:Connect(RunService.Heartbeat, function(dt)
+        self:_Update(dt)
+    end)
+
+    return self
+end
+
+function FlightController:_GetDirection()
+    if UserInputService:GetFocusedTextBox() then return Vector3.zero end
+    local cam    = workspace.CurrentCamera
+    local look   = cam.CFrame.LookVector
+    local lookH  = Vector3.new(look.X, 0, look.Z)
+    if lookH.Magnitude > 0 then lookH = lookH.Unit end
+    local right  = cam.CFrame.RightVector
+    local result = Vector3.zero
+
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then result += lookH end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then result -= lookH end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then result += right end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then result -= right end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space)       then result += Vector3.yAxis end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)   then result -= Vector3.yAxis end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then result -= Vector3.yAxis end
+
+    return result.Magnitude > 0 and result.Unit or Vector3.zero
+end
+
+function FlightController:_Update(dt)
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+
+    if not Config.Movement.Flight or not root then
+        if self._mover then
+            self._mover.velocity:Destroy()
+            self._mover.attachment:Destroy()
+            self._mover = nil
+        end
+        return
+    end
+
+    local dir = self:_GetDirection()
+    local vel = dir * Config.Movement.FlightSpeed
+
+    if not self._mover then
+        local att = Instance.new("Attachment")
+        att.Parent = root
+        local lv = Instance.new("LinearVelocity")
+        lv.RelativeTo     = Enum.ActuatorRelativeTo.World
+        lv.MaxForce       = math.huge
+        lv.VectorVelocity = vel
+        lv.Attachment0    = att
+        lv.Parent         = root
+        self._mover = { attachment = att, velocity = lv }
+    else
+        self._mover.velocity.VectorVelocity = vel
+    end
+
+    -- kill gravity while flying
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then humanoid.PlatformStand = true end
+end
+
+function FlightController:Destroy()
+    if self._mover then
+        self._mover.velocity:Destroy()
+        self._mover.attachment:Destroy()
     end
     self._trove:Destroy()
 end
 
--- ═══════════════════════════════════════════════════════════════════════
--- RAGEBOT V2 (from previous fixed integration)
--- Paste your full RagebotController.new() and all sub-modules here
--- They reference: mFig, mEnum, mUtil, rUseItem (loaded below)
--- ═══════════════════════════════════════════════════════════════════════
+-- ============================================================
+-- JUMP POWER
+-- ============================================================
 
--- Module references (loaded from game)
-local mFig      = nil
-local mEnum     = nil
-local mUtil     = nil
-local mCam      = nil
-local rUseItem  = nil
-local rep       = cr(game:GetService("ReplicatedStorage"))
-local psc       = lp.PlayerScripts
+local JumpPowerController = {}
+JumpPowerController.__index = JumpPowerController
 
-local function tryLoadModules()
-    pcall(function() mUtil   = require(rep.Modules.Utility) end)
-    pcall(function() mEnum   = require(rep.Modules.EnumLibrary) end)
-    pcall(function()
-        local ctl = psc:FindFirstChild("Controllers")
-        if ctl then
-            mFig   = require(ctl:WaitForChild("FighterController",  5))
-            mCam   = require(ctl:WaitForChild("CameraController",   5))
-        end
+function JumpPowerController.new()
+    local self = setmetatable({}, JumpPowerController)
+    self._trove = Trove.new("jumppower")
+    self._original = {}
+
+    self._trove:Connect(RunService.Heartbeat, function()
+        self:_Apply()
     end)
-    pcall(function()
-        rUseItem = rep.Remotes.Replication.Fighter.UseItem
-    end)
+
+    return self
 end
 
-pcall(tryLoadModules)
-task.spawn(function()
-    while not (mFig and mEnum and mUtil and rUseItem) do
-        task.wait(3)
-        pcall(tryLoadModules)
-    end
-end)
+function JumpPowerController:_Apply()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
 
--- ═══════════════════════════════════════════════════════════════════════
--- RAGEBOT CONFIG
--- ═══════════════════════════════════════════════════════════════════════
-local RagebotConfig = {
-    Enabled           = false,
-    ShootFrames       = 1,
-    Stability         = 0.05,
-    PrioritizeHackers = false,
-    Weapons = {
-        Enabled  = true,
-        Priority = "Closest",
-        OnEmpty  = "Reload",
-    },
-    Evasion = {
-        Mode = "Translocate",
-        Translocate  = { Offset = Vector3.new(0, 2, 0) },
-        ProjectileBreaker = {
-            DepthUp            = 8,
-            DepthForward       = 4,
-            FallbackRadius     = 12,
-            FallbackHeight     = 6,
-            RepositionInterval = 0.35,
-        },
-        Random = {
-            BaseRadius         = 20,
-            RadiusRandomFactor = 0.5,
-            AnchorFromCharacter= true,
-        },
-    },
-}
-
--- ═══════════════════════════════════════════════════════════════════════
--- INIT ALL SYSTEMS
--- ═══════════════════════════════════════════════════════════════════════
-local espManager     = ESPManager.new()
-local noclip         = Noclip.new()
-local fovChanger     = FovChanger.new()
-local hackerDetector = HackerDetector.new(espManager._screenGui)
-local rgController   = nil
-local gameLoop       = GameLoop.new()
-
-local function initRagebot()
-    if rgController then return end
-    if not (mFig and mEnum and mUtil and rUseItem) then return end
-    -- Inline minimal ShootLock for ragebot
-    local SL = {}; SL.__index = SL
-    function SL.new() return setmetatable({ _until = nil }, SL) end
-    function SL:ShouldFire(lock, dur)
-        local now = os.clock()
-        local locked = self._until ~= nil and now < self._until
-        if lock and type(dur) == "number" then self._until = now + dur end
-        return locked or lock == true
-    end
-    function SL:Reset() self._until = nil end
-
-    rgController = {
-        _enabled = false,
-        _sl      = SL.new(),
-        _conn    = nil,
-        _running = false,
-        _origFPDH= Workspace.FallenPartsDestroyHeight,
-    }
-
-    function rgController:SetEnabled(state)
-        self._enabled = state
-        pcall(function()
-            Workspace.FallenPartsDestroyHeight = state and (0/0) or self._origFPDH
-        end)
-    end
-
-    function rgController:_FindTarget()
-        local myHRP = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if not myHRP then return nil, nil end
-        local pri  = RagebotConfig.Weapons.Priority
-        local cands= {}
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p == lp then continue end
-            local chr = p.Character
-            local hm  = chr and chr:FindFirstChildOfClass("Humanoid")
-            if not hm or hm.Health <= 0 then continue end
-            local hrp2 = chr:FindFirstChild("HumanoidRootPart")
-            if not hrp2 then continue end
-            local dist = (myHRP.Position - hrp2.Position).Magnitude
-            table.insert(cands, { player=p, char=chr, dist=dist, hp=hm.Health })
+    if Config.Movement.JumpPower then
+        humanoid.JumpPower = 50 * Config.Movement.JumpMult
+        humanoid.UseJumpPower = true
+    else
+        if self._original[humanoid] then
+            humanoid.JumpPower = self._original[humanoid]
+            self._original[humanoid] = nil
         end
-        if #cands == 0 then return nil, nil end
-        if     pri == "Closest" then table.sort(cands, function(a,b) return a.dist < b.dist end)
-        elseif pri == "LowHP"   then table.sort(cands, function(a,b) return a.hp   < b.hp   end)
-        elseif pri == "HighHP"  then table.sort(cands, function(a,b) return a.hp   > b.hp   end)
-        elseif pri == "Random"  then
-            for i = #cands, 2, -1 do
-                local j = math.random(i)
-                cands[i], cands[j] = cands[j], cands[i]
-            end
-        end
-        return cands[1].player, cands[1].char
-    end
-
-    function rgController:_Fire(oid, hitPart, myHRP)
-        if not mUtil or not mEnum or not rUseItem then return end
-        if not hitPart or not hitPart.Parent then return end
-        local origin = myHRP.Position + Vector3.new(0,1.5,0)
-        local aimCF  = CFrame.lookAt(origin, hitPart.Position)
-        local sd     = {}
-        pcall(function()
-            sd[utf8.char(1)] = {
-                [utf8.char(0)] = mUtil:EncodeCFrame(aimCF),
-                [utf8.char(1)] = mUtil:EncodeCFrame(hitPart.CFrame),
-                [utf8.char(2)] = hitPart,
-                [utf8.char(3)] = mUtil:EncodeCFrame(
-                    hitPart.CFrame:ToObjectSpace(CFrame.new(hitPart.Position))
-                ),
-            }
-        end)
-        pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), sd, nil) end)
-        task.delay(0.07, function()
-            pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StopShooting"), {}, nil) end)
-        end)
-    end
-
-    function rgController:Start()
-        self:SetEnabled(true)
-        if self._conn then self._conn:Disconnect() end
-        self._conn = RunService.Heartbeat:Connect(function(dt)
-            if not self._enabled or self._running then return end
-            local myChar = lp.Character
-            if not myChar then return end
-            local myHRP = myChar:FindFirstChild("HumanoidRootPart")
-            local myHum = myChar:FindFirstChildOfClass("Humanoid")
-            if not myHRP or not myHum or myHum.Health <= 0 then return end
-
-            local lf = nil
-            pcall(function() if mFig then lf = mFig.LocalFighter end end)
-            if not lf then return end
-            local item = lf.EquippedItem; if not item then return end
-            local oid  = nil; pcall(function() oid = item:Get("ObjectID") end)
-            if not oid then return end
-
-            local ammo = nil
-            pcall(function() ammo = item:Get("CurrentAmmo") end)
-            if ammo ~= nil and ammo <= 0 then
-                if RagebotConfig.Weapons.OnEmpty == "Reload" then
-                    pcall(function()
-                        rUseItem:FireServer(oid, mEnum:ToEnum("Reload"), {}, nil)
-                    end)
-                end
-                return
-            end
-
-            local _, tChar = self:_FindTarget()
-            if not tChar then return end
-
-            local PART_PRIO = {"Head","UpperTorso","HumanoidRootPart"}
-            local hitPart = nil
-            for _, n in ipairs(PART_PRIO) do
-                local p = tChar:FindFirstChild(n)
-                if p then hitPart = p; break end
-            end
-            if not hitPart then return end
-
-            local lockDur = dt * RagebotConfig.ShootFrames
-            if not self._sl:ShouldFire(true, lockDur) then return end
-
-            self._running = true
-            task.spawn(function()
-                pcall(function() self:_Fire(oid, hitPart, myHRP) end)
-                self._running = false
-            end)
-        end)
-    end
-
-    function rgController:Stop()
-        if self._conn then self._conn:Disconnect(); self._conn = nil end
-        self._sl:Reset()
-        self._running = false
-        self:SetEnabled(false)
-    end
-
-    function rgController:Destroy()
-        self:Stop()
     end
 end
 
-pcall(initRagebot)
-task.spawn(function()
-    while not rgController do
-        task.wait(2)
-        pcall(initRagebot)
-    end
-end)
+function JumpPowerController:Destroy()
+    self._trove:Destroy()
+end
 
--- ═══════════════════════════════════════════
--- GAME LOOP BINDING
--- ═══════════════════════════════════════════
-gameLoop:SetPreSimulation(function()
-    noclip:Update()
-end)
+-- ============================================================
+-- ITEM MODIFIERS (basic recoil + spread hooks)
+-- ============================================================
 
-gameLoop:SetPreRender(function()
-    espManager:Update()
-    hackerDetector:Update()
-end)
+local ItemModController = {}
+ItemModController.__index = ItemModController
 
-gameLoop:Start()
+function ItemModController.new()
+    local self = setmetatable({}, ItemModController)
+    self._trove = Trove.new("itemmods")
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — ESP GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.EspL:AddToggle("EspBoxOn", {
-    Text     = "Box ESP",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.box.enabled = v
-    end,
-})
+    -- Hook LocalPlayer's tools via CharacterAdded
+    self._trove:Connect(LocalPlayer.CharacterAdded, function()
+        self:_SetupCharacter()
+    end)
+    if LocalPlayer.Character then self:_SetupCharacter() end
 
-G.EspL:AddDropdown("EspBoxStyle", {
-    Text    = "Box Style",
-    Default = "Full",
-    Values  = { "Full", "Corner" },
-    Callback = function(v)
-        espManager._config.box.style = v
-        espManager:ApplyBoxConfig()
-    end,
-})
+    return self
+end
 
-G.EspL:AddLabel("Box Color"):AddColorPicker("EspBoxColor", {
-    Default  = Color3.fromRGB(255, 50, 50),
-    Callback = function(v)
-        espManager._config.box.color = v
-        espManager:ApplyBoxConfig()
-    end,
-})
+function ItemModController:_SetupCharacter()
+    local char = LocalPlayer.Character
+    if not char then return end
 
-G.EspL:AddLabel("Box Outline"):AddColorPicker("EspBoxOutline", {
-    Default  = Color3.fromRGB(0, 0, 0),
-    Callback = function(v)
-        espManager._config.box.outlineColor = v
-        espManager:ApplyBoxConfig()
-    end,
-})
+    -- Infinite jumps via jump count tracking
+    self._trove:Connect(RunService.Heartbeat, function()
+        if not Config.Items.InfiniteJumps then return end
+        local h = char:FindFirstChildOfClass("Humanoid")
+        if h then h.JumpPower = 50 end
+    end)
+end
 
-G.EspL:AddToggle("EspNameOn", {
-    Text     = "Name ESP",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.name.enabled = v
-    end,
-})
+function ItemModController:Destroy()
+    self._trove:Destroy()
+end
 
-G.EspL:AddLabel("Name Color"):AddColorPicker("EspNameColor", {
-    Default  = Color3.fromRGB(255, 255, 255),
-    Callback = function(v)
-        espManager._config.name.color = v
-    end,
-})
+-- ============================================================
+-- HACKER DETECTOR
+-- ============================================================
 
-G.EspL:AddToggle("EspHealthOn", {
-    Text     = "Health Bar",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.health.enabled = v
-    end,
-})
+local HackerDetector = {}
+HackerDetector.__index = HackerDetector
 
-G.EspL:AddToggle("EspTeamCheck", {
-    Text     = "Team Check",
-    Default  = true,
-    Callback = function(v)
-        espManager._config.teamCheck = v
-    end,
-})
+function HackerDetector.new()
+    local self = setmetatable({}, HackerDetector)
+    self._trove   = Trove.new("hacker_detector")
+    self._flagged = {}
+    local SPEED_THRESHOLD = 200
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — CHAMS GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.ChamsL:AddToggle("ChamsOn", {
-    Text     = "Enable Chams",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.chams.enabled = v
-        espManager:ApplyChamsConfig()
-    end,
-})
-
-G.ChamsL:AddLabel("Inner Color"):AddColorPicker("ChamsInner", {
-    Default  = Color3.fromRGB(255, 50, 50),
-    Callback = function(v)
-        espManager._config.chams.innerColor = v
-        espManager:ApplyChamsConfig()
-    end,
-})
-
-G.ChamsL:AddSlider("ChamsInnerAlpha", {
-    Text     = "Inner Alpha",
-    Default  = 0,
-    Min      = 0,
-    Max      = 100,
-    Rounding = 0,
-    Suffix   = "%",
-    Callback = function(v)
-        espManager._config.chams.innerAlpha = v / 100
-        espManager:ApplyChamsConfig()
-    end,
-})
-
-G.ChamsL:AddLabel("Outline Color"):AddColorPicker("ChamsOutline", {
-    Default  = Color3.fromRGB(80, 0, 0),
-    Callback = function(v)
-        espManager._config.chams.outlineColor = v
-        espManager:ApplyChamsConfig()
-    end,
-})
-
-G.ChamsL:AddSlider("ChamsOutlineAlpha", {
-    Text     = "Outline Alpha",
-    Default  = 50,
-    Min      = 0,
-    Max      = 100,
-    Rounding = 0,
-    Suffix   = "%",
-    Callback = function(v)
-        espManager._config.chams.outlineAlpha = v / 100
-        espManager:ApplyChamsConfig()
-    end,
-})
-
-G.ChamsL:AddToggle("ChamsGlow", {
-    Text     = "Glow",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.chams.glowEnabled = v
-        espManager:ApplyChamsConfig()
-    end,
-})
-
-G.ChamsL:AddLabel("Glow Color"):AddColorPicker("ChamsGlowColor", {
-    Default  = Color3.fromRGB(255, 50, 50),
-    Callback = function(v)
-        espManager._config.chams.glowColor = v
-        espManager:ApplyChamsConfig()
-    end,
-})
-
--- ═══════════════════════════════════════════════════════════════════════
--- UI — SKELETON GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.SkeletonL:AddToggle("SkeletonOn", {
-    Text     = "Enable Skeleton",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.skeleton.enabled = v
-        espManager:ApplySkeletonConfig()
-    end,
-})
-
-G.SkeletonL:AddLabel("Skeleton Color"):AddColorPicker("SkeletonColor", {
-    Default  = Color3.fromRGB(255, 100, 100),
-    Callback = function(v)
-        espManager._config.skeleton.color = v
-        espManager:ApplySkeletonConfig()
-    end,
-})
-
-G.SkeletonL:AddSlider("SkeletonThick", {
-    Text     = "Thickness",
-    Default  = 1,
-    Min      = 1,
-    Max      = 5,
-    Rounding = 0,
-    Callback = function(v)
-        espManager._config.skeleton.thickness = v
-        espManager:ApplySkeletonConfig()
-    end,
-})
-
-G.SkeletonL:AddSlider("SkeletonAlpha", {
-    Text     = "Transparency",
-    Default  = 0,
-    Min      = 0,
-    Max      = 100,
-    Rounding = 0,
-    Suffix   = "%",
-    Callback = function(v)
-        espManager._config.skeleton.transparency = v / 100
-        espManager:ApplySkeletonConfig()
-    end,
-})
-
--- ═══════════════════════════════════════════════════════════════════════
--- UI — TRACER GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.TracerL:AddToggle("TracerOn", {
-    Text     = "Enable Tracers",
-    Default  = false,
-    Callback = function(v)
-        espManager._config.tracer.enabled = v
-        espManager:ApplyTracerConfig()
-    end,
-})
-
-G.TracerL:AddLabel("Tracer Color"):AddColorPicker("TracerColor", {
-    Default  = Color3.fromRGB(255, 50, 50),
-    Callback = function(v)
-        espManager._config.tracer.color = v
-        espManager:ApplyTracerConfig()
-    end,
-})
-
-G.TracerL:AddSlider("TracerThick", {
-    Text     = "Thickness",
-    Default  = 2,
-    Min      = 1,
-    Max      = 5,
-    Rounding = 1,
-    Callback = function(v)
-        espManager._config.tracer.thickness = v
-        espManager:ApplyTracerConfig()
-    end,
-})
-
-G.TracerL:AddSlider("TracerAlpha", {
-    Text     = "Transparency",
-    Default  = 0,
-    Min      = 0,
-    Max      = 100,
-    Rounding = 0,
-    Suffix   = "%",
-    Callback = function(v)
-        espManager._config.tracer.transparency = v / 100
-        espManager:ApplyTracerConfig()
-    end,
-})
-
--- ═══════════════════════════════════════════════════════════════════════
--- UI — MOVEMENT GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.MovL:AddToggle("NoclipOn", {
-    Text     = "Noclip",
-    Default  = false,
-    Tooltip  = "Disables collision on your character each frame",
-    Callback = function(v)
-        noclip:SetEnabled(v)
-    end,
-})
-
-G.MovL:AddButton({
-    Text = "Reset Character",
-    Func = function()
-        local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
-        if hum then hum.Health = 0 end
-    end,
-    DoubleClick = true,
-    Tooltip     = "Double-click to confirm",
-})
-
-G.MovL:AddButton({
-    Text = "Teleport to Spawn",
-    Func = function()
-        local spawn = Workspace:FindFirstChildOfClass("SpawnLocation")
-        local hrp   = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if hrp and spawn then
-            hrp.CFrame = spawn.CFrame + Vector3.new(0, 5, 0)
+    self._trove:Connect(RunService.Heartbeat, function(dt)
+        if not Config.Misc.HackerDetector then return end
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player == LocalPlayer then continue end
+            if self._flagged[player] then continue end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if not root then continue end
+            local speed = root.AssemblyLinearVelocity.Magnitude
+            if speed > SPEED_THRESHOLD then
+                self._flagged[player] = true
+                warn("[Kicia] Possible hacker: " .. player.Name .. " speed=" .. math.floor(speed))
+            end
         end
-    end,
-})
+    end)
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — HACKER DETECTOR GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.HackL:AddToggle("HackDetOn", {
-    Text     = "Enable Detector",
-    Default  = false,
-    Callback = function(v)
-        hackerDetector:SetEnabled(v)
-    end,
-})
+    self._trove:Connect(Players.PlayerRemoving, function(p)
+        self._flagged[p] = nil
+    end)
 
-G.HackL:AddToggle("HackDetNotify", {
-    Text     = "Notify on Detect",
-    Default  = true,
-    Callback = function(v)
-        hackerDetector:SetNotify(v)
-    end,
-})
+    return self
+end
 
-G.HackL:AddLabel("Tag Color"):AddColorPicker("HackDetColor", {
-    Default  = Color3.fromRGB(255, 50, 50),
-    Callback = function(v)
-        hackerDetector:SetColor(v)
-    end,
-})
+function HackerDetector:Destroy()
+    self._trove:Destroy()
+end
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — RAGEBOT GROUP (Left)
--- ═══════════════════════════════════════════════════════════════════════
-G.RgL:AddToggle("RGOn", {
-    Text     = "Ragebot Enabled",
-    Default  = false,
-    Callback = function(v)
-        RagebotConfig.Enabled = v
-        pcall(initRagebot)
-        if not rgController then
-            Library:Notify("Enter a match first!", 3)
-            return
-        end
-        if v then
-            rgController:Start()
-            Library:Notify("Ragebot Started", 2)
+-- ============================================================
+-- FOV CHANGER
+-- ============================================================
+
+local FovChanger = {}
+FovChanger.__index = FovChanger
+
+function FovChanger.new()
+    local self = setmetatable({}, FovChanger)
+    self._trove = Trove.new("fov_changer")
+    self._originalFov = nil
+
+    self._trove:Connect(RunService.Heartbeat, function()
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        if Config.Misc.FOVChanger then
+            if not self._originalFov then
+                self._originalFov = cam.FieldOfView
+            end
+            cam.FieldOfView = Config.Misc.FOVValue
         else
-            rgController:Stop()
-            Library:Notify("Ragebot Stopped", 2)
-        end
-    end,
-})
-
-G.RgL:AddSlider("RGShootFrames", {
-    Text     = "Shoot Frames",
-    Default  = 1,
-    Min      = 1,
-    Max      = 10,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.ShootFrames = v
-    end,
-})
-
-G.RgL:AddSlider("RGStability", {
-    Text     = "Stability (ms)",
-    Default  = 50,
-    Min      = 0,
-    Max      = 500,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Stability = v / 1000
-    end,
-})
-
-G.RgL:AddToggle("RGHackerPrio", {
-    Text     = "Prioritize Hackers",
-    Default  = false,
-    Callback = function(v)
-        RagebotConfig.PrioritizeHackers = v
-    end,
-})
-
-G.RgL:AddDropdown("RGPriority", {
-    Text    = "Target Priority",
-    Default = "Closest",
-    Values  = { "Closest", "LowHP", "HighHP", "Random" },
-    Callback = function(v)
-        RagebotConfig.Weapons.Priority = v
-    end,
-})
-
-G.RgL:AddDropdown("RGOnEmpty", {
-    Text    = "On Empty",
-    Default = "Reload",
-    Values  = { "Reload", "Swap", "None" },
-    Callback = function(v)
-        RagebotConfig.Weapons.OnEmpty = v
-    end,
-})
-
-G.RgL:AddButton({
-    Text = "Force Reload",
-    Func = function()
-        if not (mFig and rUseItem and mEnum) then
-            Library:Notify("Modules not loaded yet", 2)
-            return
-        end
-        local lf = nil
-        pcall(function() lf = mFig.LocalFighter end)
-        if lf and lf.EquippedItem then
-            local oid = nil
-            pcall(function() oid = lf.EquippedItem:Get("ObjectID") end)
-            if oid then
-                pcall(function()
-                    rUseItem:FireServer(oid, mEnum:ToEnum("Reload"), {}, nil)
-                end)
-                Library:Notify("Reload sent", 2)
+            if self._originalFov then
+                cam.FieldOfView  = self._originalFov
+                self._originalFov = nil
             end
         end
-    end,
+    end)
+
+    return self
+end
+
+function FovChanger:Destroy()
+    if self._originalFov then
+        local cam = workspace.CurrentCamera
+        if cam then cam.FieldOfView = self._originalFov end
+    end
+    self._trove:Destroy()
+end
+
+-- ============================================================
+-- SPAWN ALL SYSTEMS
+-- ============================================================
+
+local espController      = ESPController.new()
+local aimbotController   = AimbotController.new()
+local flickbotController = FlickbotController.new(aimbotController)
+local triggerbotController = TriggerbotController.new()
+local silentAimController  = SilentAimController.new()
+local noclipController     = NoclipController.new()
+local flightController     = FlightController.new()
+local jumpController       = JumpPowerController.new()
+local itemModController    = ItemModController.new()
+local hackerDetector       = HackerDetector.new()
+local fovChanger           = FovChanger.new()
+
+-- ============================================================
+-- RAYFIELD TABS
+-- ============================================================
+
+-- ── ESP TAB ─────────────────────────────────────────────────
+local ESPTab = Window:CreateTab("ESP", "eye")
+
+ESPTab:CreateToggle({
+    Name         = "Enable ESP",
+    CurrentValue = false,
+    Flag         = "ESPEnabled",
+    Callback     = function(v) Config.ESP.Enabled = v end,
 })
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — RAGEBOT GROUP (Right) — Evasion
--- ═══════════════════════════════════════════════════════════════════════
-G.RgR:AddDropdown("RGEvasionMode", {
-    Text    = "Evasion Mode",
-    Default = "Translocate",
-    Values  = { "Translocate", "ProjectileBreaker", "Random" },
-    Callback = function(v)
-        RagebotConfig.Evasion.Mode = v
-    end,
+ESPTab:CreateToggle({
+    Name         = "Box ESP",
+    CurrentValue = true,
+    Flag         = "ESPBox",
+    Callback     = function(v) Config.ESP.ShowBox = v end,
 })
 
-G.RgR:AddSlider("RGTPOffsetY", {
-    Text     = "Translocate Y Offset",
-    Default  = 2,
-    Min      = -20,
-    Max      = 50,
-    Rounding = 0,
-    Callback = function(v)
-        local c = RagebotConfig.Evasion.Translocate.Offset
-        RagebotConfig.Evasion.Translocate.Offset = Vector3.new(c.X, v, c.Z)
-    end,
+ESPTab:CreateDropdown({
+    Name    = "Box Style",
+    Options = { "Full", "Corner" },
+    CurrentOption = { "Full" },
+    Flag    = "ESPStyle",
+    Callback = function(v) Config.ESP.Style = v[1] end,
 })
 
-G.RgR:AddSlider("RGPBDepthUp", {
-    Text     = "ProjBreaker Depth Up",
-    Default  = 8,
-    Min      = 0,
-    Max      = 50,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Evasion.ProjectileBreaker.DepthUp = v
-    end,
+ESPTab:CreateToggle({
+    Name         = "Skeleton",
+    CurrentValue = false,
+    Flag         = "ESPSkeleton",
+    Callback     = function(v) Config.ESP.ShowSkeleton = v end,
 })
 
-G.RgR:AddSlider("RGPBDepthFwd", {
-    Text     = "ProjBreaker Depth Fwd",
-    Default  = 4,
-    Min      = 0,
-    Max      = 50,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Evasion.ProjectileBreaker.DepthForward = v
-    end,
+ESPTab:CreateToggle({
+    Name         = "Tracers",
+    CurrentValue = false,
+    Flag         = "ESPTracers",
+    Callback     = function(v) Config.ESP.ShowTracer = v end,
 })
 
-G.RgR:AddSlider("RGPBInterval", {
-    Text     = "Reposition Interval (ms)",
-    Default  = 350,
-    Min      = 50,
-    Max      = 2000,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Evasion.ProjectileBreaker.RepositionInterval = v / 1000
-    end,
+ESPTab:CreateToggle({
+    Name         = "Chams",
+    CurrentValue = false,
+    Flag         = "ESPChams",
+    Callback     = function(v) Config.ESP.ShowChams = v end,
 })
 
-G.RgR:AddSlider("RGRandRadius", {
-    Text     = "Random Radius",
-    Default  = 20,
-    Min      = 1,
-    Max      = 200,
-    Rounding = 0,
-    Callback = function(v)
-        RagebotConfig.Evasion.Random.BaseRadius = v
-    end,
+ESPTab:CreateColorPicker({
+    Name    = "Box Color",
+    Color   = Color3.fromRGB(255, 85, 85),
+    Flag    = "ESPBoxColor",
+    Callback = function(v) Config.ESP.BoxColor = v end,
 })
 
-G.RgR:AddToggle("RGRandAnchor", {
-    Text     = "Anchor From Character",
-    Default  = true,
-    Callback = function(v)
-        RagebotConfig.Evasion.Random.AnchorFromCharacter = v
-    end,
+ESPTab:CreateColorPicker({
+    Name    = "Outline Color",
+    Color   = Color3.fromRGB(0, 0, 0),
+    Flag    = "ESPOutlineColor",
+    Callback = function(v) Config.ESP.OutlineColor = v end,
 })
 
-G.RgR:AddButton({
-    Text = "Teleport Nearest Enemy",
-    Func = function()
-        local myHRP = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if not myHRP then Library:Notify("No character", 2); return end
-        local best, bd = nil, math.huge
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p == lp then continue end
-            local chr = p.Character
-            local hrp2= chr and chr:FindFirstChild("HumanoidRootPart")
-            if hrp2 then
-                local d = (myHRP.Position - hrp2.Position).Magnitude
-                if d < bd then bd = d; best = hrp2 end
-            end
+ESPTab:CreateColorPicker({
+    Name    = "Chams Color",
+    Color   = Color3.fromRGB(255, 0, 0),
+    Flag    = "ESPChamsColor",
+    Callback = function(v) Config.ESP.ChamsColor = v end,
+})
+
+ESPTab:CreateColorPicker({
+    Name    = "Tracer Color",
+    Color   = Color3.fromRGB(255, 255, 255),
+    Flag    = "ESPTracerColor",
+    Callback = function(v) Config.ESP.TracerColor = v end,
+})
+
+-- ── AIMBOT TAB ───────────────────────────────────────────────
+local AimbotTab = Window:CreateTab("Aimbot", "crosshair")
+
+AimbotTab:CreateToggle({
+    Name         = "Enable Aimbot",
+    CurrentValue = false,
+    Flag         = "AimbotEnabled",
+    Callback     = function(v) Config.Aimbot.Enabled = v end,
+})
+
+AimbotTab:CreateDropdown({
+    Name    = "Target Bone",
+    Options = { "Head", "HumanoidRootPart", "UpperTorso", "Torso" },
+    CurrentOption = { "Head" },
+    Flag    = "AimbotBone",
+    Callback = function(v) Config.Aimbot.Bone = v[1] end,
+})
+
+AimbotTab:CreateSlider({
+    Name         = "FOV",
+    Range        = { 1, 500 },
+    Increment    = 1,
+    CurrentValue = 120,
+    Flag         = "AimbotFOV",
+    Callback     = function(v) Config.Aimbot.FOV = v end,
+})
+
+AimbotTab:CreateSlider({
+    Name         = "Smoothing",
+    Range        = { 1, 100 },
+    Increment    = 1,
+    CurrentValue = 15,
+    Flag         = "AimbotSmoothing",
+    Callback     = function(v) Config.Aimbot.Smoothing = v / 100 end,
+})
+
+AimbotTab:CreateToggle({
+    Name         = "Team Check",
+    CurrentValue = true,
+    Flag         = "AimbotTeamCheck",
+    Callback     = function(v) Config.Aimbot.TeamCheck = v end,
+})
+
+AimbotTab:CreateToggle({
+    Name         = "Wall Check",
+    CurrentValue = true,
+    Flag         = "AimbotWallCheck",
+    Callback     = function(v) Config.Aimbot.WallCheck = v end,
+})
+
+-- ── FLICKBOT TAB ─────────────────────────────────────────────
+local FlickbotTab = Window:CreateTab("Flickbot", "zap")
+
+FlickbotTab:CreateToggle({
+    Name         = "Enable Flickbot",
+    CurrentValue = false,
+    Flag         = "FlickbotEnabled",
+    Callback     = function(v) Config.Flickbot.Enabled = v end,
+})
+
+FlickbotTab:CreateLabel("Keybind: F")
+
+FlickbotTab:CreateSlider({
+    Name         = "Flick Duration (ms)",
+    Range        = { 20, 600 },
+    Increment    = 10,
+    CurrentValue = 120,
+    Flag         = "FlickbotDuration",
+    Callback     = function(v) Config.Flickbot.FlickDuration = v end,
+})
+
+FlickbotTab:CreateSlider({
+    Name         = "Curvature",
+    Range        = { 0, 100 },
+    Increment    = 1,
+    CurrentValue = 30,
+    Flag         = "FlickbotCurvature",
+    Callback     = function(v) Config.Flickbot.Curvature = v / 100 end,
+})
+
+FlickbotTab:CreateSlider({
+    Name         = "Humanness",
+    Range        = { 0, 100 },
+    Increment    = 1,
+    CurrentValue = 40,
+    Flag         = "FlickbotHumanness",
+    Callback     = function(v) Config.Flickbot.Humanness = v / 100 end,
+})
+
+FlickbotTab:CreateSlider({
+    Name         = "Cooldown (ms)",
+    Range        = { 0, 2000 },
+    Increment    = 50,
+    CurrentValue = 400,
+    Flag         = "FlickbotCooldown",
+    Callback     = function(v) Config.Flickbot.Cooldown = v end,
+})
+
+FlickbotTab:CreateToggle({
+    Name         = "Auto Shoot",
+    CurrentValue = true,
+    Flag         = "FlickbotShoot",
+    Callback     = function(v) Config.Flickbot.Shoot = v end,
+})
+
+FlickbotTab:CreateSlider({
+    Name         = "Shot Delay (ms)",
+    Range        = { 0, 500 },
+    Increment    = 10,
+    CurrentValue = 80,
+    Flag         = "FlickbotShotDelay",
+    Callback     = function(v) Config.Flickbot.ShotDelay = v end,
+})
+
+-- ── TRIGGERBOT TAB ───────────────────────────────────────────
+local TriggerTab = Window:CreateTab("Triggerbot", "activity")
+
+TriggerTab:CreateToggle({
+    Name         = "Enable Triggerbot",
+    CurrentValue = false,
+    Flag         = "TriggerbotEnabled",
+    Callback     = function(v) Config.Triggerbot.Enabled = v end,
+})
+
+TriggerTab:CreateSlider({
+    Name         = "Reaction Time (ms)",
+    Range        = { 0, 500 },
+    Increment    = 5,
+    CurrentValue = 80,
+    Flag         = "TriggerbotReaction",
+    Callback     = function(v) Config.Triggerbot.ReactionTime = v / 1000 end,
+})
+
+TriggerTab:CreateSlider({
+    Name         = "Release Time (ms)",
+    Range        = { 0, 500 },
+    Increment    = 5,
+    CurrentValue = 50,
+    Flag         = "TriggerbotRelease",
+    Callback     = function(v) Config.Triggerbot.ReleaseTime = v / 1000 end,
+})
+
+TriggerTab:CreateToggle({
+    Name         = "Team Check",
+    CurrentValue = true,
+    Flag         = "TriggerbotTeamCheck",
+    Callback     = function(v) Config.Triggerbot.TeamCheck = v end,
+})
+
+-- ── SILENT AIM TAB ───────────────────────────────────────────
+local SilentTab = Window:CreateTab("Silent Aim", "target")
+
+SilentTab:CreateToggle({
+    Name         = "Enable Silent Aim",
+    CurrentValue = false,
+    Flag         = "SilentAimEnabled",
+    Callback     = function(v) Config.SilentAim.Enabled = v end,
+})
+
+SilentTab:CreateDropdown({
+    Name    = "Target Bone",
+    Options = { "Head", "HumanoidRootPart", "UpperTorso", "Torso" },
+    CurrentOption = { "Head" },
+    Flag    = "SilentAimBone",
+    Callback = function(v) Config.SilentAim.Bone = v[1] end,
+})
+
+SilentTab:CreateSlider({
+    Name         = "FOV",
+    Range        = { 1, 500 },
+    Increment    = 1,
+    CurrentValue = 100,
+    Flag         = "SilentAimFOV",
+    Callback     = function(v) Config.SilentAim.FOV = v end,
+})
+
+-- ── MOVEMENT TAB ─────────────────────────────────────────────
+local MovementTab = Window:CreateTab("Movement", "wind")
+
+MovementTab:CreateToggle({
+    Name         = "Noclip",
+    CurrentValue = false,
+    Flag         = "MovNoclip",
+    Callback     = function(v) Config.Movement.Noclip = v end,
+})
+
+MovementTab:CreateToggle({
+    Name         = "Flight",
+    CurrentValue = false,
+    Flag         = "MovFlight",
+    Callback     = function(v)
+        Config.Movement.Flight = v
+        if not v then
+            local char = LocalPlayer.Character
+            local h = char and char:FindFirstChildOfClass("Humanoid")
+            if h then h.PlatformStand = false end
         end
-        if not best then Library:Notify("No enemy found", 2); return end
-        local savedCF = myHRP.CFrame
-        pcall(function()
-            myHRP.CFrame = CFrame.new(best.Position + Vector3.new(0,3,0))
-        end)
-        task.delay(0.15, function()
-            pcall(function() myHRP.CFrame = savedCF end)
-        end)
-        Library:Notify("Teleported!", 2)
     end,
 })
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — CAMERA GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.FovR:AddToggle("FovOn", {
-    Text     = "Override FOV",
-    Default  = false,
-    Callback = function(v)
-        fovChanger:SetEnabled(v)
-    end,
+MovementTab:CreateSlider({
+    Name         = "Flight Speed",
+    Range        = { 10, 300 },
+    Increment    = 5,
+    CurrentValue = 60,
+    Flag         = "MovFlightSpeed",
+    Callback     = function(v) Config.Movement.FlightSpeed = v end,
 })
 
-G.FovR:AddSlider("FovValue", {
-    Text     = "FOV",
-    Default  = 80,
-    Min      = 40,
-    Max      = 120,
-    Rounding = 0,
-    Suffix   = "°",
-    Callback = function(v)
-        fovChanger:SetValue(v)
-    end,
+MovementTab:CreateToggle({
+    Name         = "Jump Power",
+    CurrentValue = false,
+    Flag         = "MovJumpPower",
+    Callback     = function(v) Config.Movement.JumpPower = v end,
 })
 
--- No Camera Shake
-local noShakeConn = nil
-G.FovR:AddToggle("NoShake", {
-    Text     = "No Camera Shake",
-    Default  = false,
-    Callback = function(v)
-        if noShakeConn then noShakeConn:Disconnect(); noShakeConn = nil end
-        if v and mCam then
-            noShakeConn = RunService.RenderStepped:Connect(function()
-                pcall(function()
-                    mCam._shake_enabled = false
-                    mCam.ShakeCFrame    = CFrame.identity
-                end)
-            end)
-        end
-    end,
+MovementTab:CreateSlider({
+    Name         = "Jump Multiplier",
+    Range        = { 1, 10 },
+    Increment    = 1,
+    CurrentValue = 2,
+    Flag         = "MovJumpMult",
+    Callback     = function(v) Config.Movement.JumpMult = v end,
 })
 
--- No Weapon Sway
-local noSwayConn = nil
-G.FovR:AddToggle("NoSway", {
-    Text     = "No Weapon Sway",
-    Default  = false,
-    Callback = function(v)
-        if noSwayConn then noSwayConn:Disconnect(); noSwayConn = nil end
-        if v and mCam then
-            noSwayConn = RunService.RenderStepped:Connect(function()
-                pcall(function()
-                    mCam._sway_spring.Value  = Vector2.zero
-                    mCam._sway_spring.Target = Vector2.zero
-                end)
-            end)
-        end
-    end,
+-- ── ITEM MODIFIERS TAB ───────────────────────────────────────
+local ItemsTab = Window:CreateTab("Items", "package")
+
+ItemsTab:CreateToggle({
+    Name         = "No Recoil",
+    CurrentValue = false,
+    Flag         = "ItemNoRecoil",
+    Callback     = function(v) Config.Items.NoRecoil = v end,
 })
 
--- No Bobbing
-local noBobConn = nil
-G.FovR:AddToggle("NoBob", {
-    Text     = "No Bobbing",
-    Default  = false,
-    Callback = function(v)
-        if noBobConn then noBobConn:Disconnect(); noBobConn = nil end
-        if v and mCam then
-            noBobConn = RunService.RenderStepped:Connect(function()
-                pcall(function()
-                    mCam._bobbing_speed_spring.Target = 0
-                    mCam._bobbing_speed_spring.Value  = 0
-                end)
-            end)
-        end
-    end,
+ItemsTab:CreateSlider({
+    Name         = "Recoil %",
+    Range        = { 0, 100 },
+    Increment    = 1,
+    CurrentValue = 0,
+    Flag         = "ItemRecoilPct",
+    Callback     = function(v) Config.Items.RecoilPct = v end,
 })
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI — MISC GROUP
--- ═══════════════════════════════════════════════════════════════════════
-G.MiscR:AddButton({
-    Text = "Stop All Systems",
-    Func = function()
-        espManager._config.box.enabled      = false
-        espManager._config.chams.enabled    = false
-        espManager._config.skeleton.enabled = false
-        espManager._config.tracer.enabled   = false
-        espManager._config.name.enabled     = false
-        espManager._config.health.enabled   = false
-        espManager:ApplyChamsConfig()
-        espManager:ApplySkeletonConfig()
-        espManager:ApplyTracerConfig()
-        noclip:SetEnabled(false)
-        fovChanger:SetEnabled(false)
-        hackerDetector:SetEnabled(false)
-        if rgController then rgController:Stop() end
-        if noShakeConn then noShakeConn:Disconnect(); noShakeConn = nil end
-        if noSwayConn  then noSwayConn:Disconnect();  noSwayConn  = nil end
-        if noBobConn   then noBobConn:Disconnect();   noBobConn   = nil end
-        Library:Notify("All systems stopped", 3)
-    end,
+ItemsTab:CreateToggle({
+    Name         = "No Spread",
+    CurrentValue = false,
+    Flag         = "ItemNoSpread",
+    Callback     = function(v) Config.Items.NoSpread = v end,
 })
 
-G.MiscR:AddButton({
-    Text = "Unload Script",
-    Func = function()
-        if rgController then rgController:Destroy() end
-        espManager:Destroy()
-        noclip:Destroy()
-        fovChanger:Destroy()
+ItemsTab:CreateToggle({
+    Name         = "Fire Cooldown",
+    CurrentValue = false,
+    Flag         = "ItemFireCd",
+    Callback     = function(v) Config.Items.FireCooldown = v end,
+})
+
+ItemsTab:CreateSlider({
+    Name         = "Fire Cooldown %",
+    Range        = { 0, 100 },
+    Increment    = 1,
+    CurrentValue = 50,
+    Flag         = "ItemFireCdPct",
+    Callback     = function(v) Config.Items.FireCooldownPct = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "Auto Weapon",
+    CurrentValue = false,
+    Flag         = "ItemAutoWeapon",
+    Callback     = function(v) Config.Items.AutoWeapon = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "Infinite Jumps",
+    CurrentValue = false,
+    Flag         = "ItemInfJumps",
+    Callback     = function(v) Config.Items.InfiniteJumps = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "No Motion",
+    CurrentValue = false,
+    Flag         = "ItemNoMotion",
+    Callback     = function(v) Config.Items.NoMotion = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "No Camera Shake",
+    CurrentValue = false,
+    Flag         = "ItemNoCamShake",
+    Callback     = function(v) Config.Items.NoCamShake = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "No Camera Sway",
+    CurrentValue = false,
+    Flag         = "ItemNoCamSway",
+    Callback     = function(v) Config.Items.NoCamSway = v end,
+})
+
+ItemsTab:CreateSection("Animations")
+
+ItemsTab:CreateToggle({
+    Name         = "No Shoot Animation",
+    CurrentValue = false,
+    Flag         = "ItemNoShootAnim",
+    Callback     = function(v) Config.Items.NoShootAnim = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "No Sprint Animation",
+    CurrentValue = false,
+    Flag         = "ItemNoSprintAnim",
+    Callback     = function(v) Config.Items.NoSprintAnim = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "No Equip Animation",
+    CurrentValue = false,
+    Flag         = "ItemNoEquipAnim",
+    Callback     = function(v) Config.Items.NoEquipAnim = v end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "No Reload Animation",
+    CurrentValue = false,
+    Flag         = "ItemNoReloadAnim",
+    Callback     = function(v) Config.Items.NoReloadAnim = v end,
+})
+
+ItemsTab:CreateSection("Grenade")
+
+ItemsTab:CreateToggle({
+    Name         = "Grenade Fuse",
+    CurrentValue = false,
+    Flag         = "ItemGrenadeFuse",
+    Callback     = function(v) Config.Items.GrenadeFuse = v end,
+})
+
+ItemsTab:CreateDropdown({
+    Name    = "Grenade Explode On",
+    Options = { "Impact", "Throw" },
+    CurrentOption = { "Impact" },
+    Flag    = "ItemGrenadeMode",
+    Callback = function(v) Config.Items.GrenadeMode = v[1] end,
+})
+
+ItemsTab:CreateToggle({
+    Name         = "Remove Fuse",
+    CurrentValue = false,
+    Flag         = "ItemGrenadeNoFuse",
+    Callback     = function(v) Config.Items.GrenadeNoFuse = v end,
+})
+
+-- ── MISC TAB ─────────────────────────────────────────────────
+local MiscTab = Window:CreateTab("Misc", "settings")
+
+MiscTab:CreateToggle({
+    Name         = "Hacker Detector",
+    CurrentValue = false,
+    Flag         = "MiscHackerDetect",
+    Callback     = function(v) Config.Misc.HackerDetector = v end,
+})
+
+MiscTab:CreateToggle({
+    Name         = "FOV Changer",
+    CurrentValue = false,
+    Flag         = "MiscFOVChanger",
+    Callback     = function(v) Config.Misc.FOVChanger = v end,
+})
+
+MiscTab:CreateSlider({
+    Name         = "FOV Value",
+    Range        = { 10, 120 },
+    Increment    = 1,
+    CurrentValue = 90,
+    Flag         = "MiscFOVValue",
+    Callback     = function(v) Config.Misc.FOVValue = v end,
+})
+
+MiscTab:CreateButton({
+    Name     = "Unload Script",
+    Callback = function()
+        espController:Destroy()
+        aimbotController:Destroy()
+        flickbotController:Destroy()
+        triggerbotController:Destroy()
+        silentAimController:Destroy()
+        noclipController:Destroy()
+        flightController:Destroy()
+        jumpController:Destroy()
+        itemModController:Destroy()
         hackerDetector:Destroy()
-        gameLoop:Destroy()
-        Library:Unload()
+        fovChanger:Destroy()
+        Rayfield:Destroy()
     end,
-    DoubleClick = true,
-    Tooltip     = "Double-click to confirm unload",
 })
 
-G.MiscR:AddLabel("Module Status")
-G.MiscR:AddToggle("StatUtil",  { Text = "Utility: "    .. (mUtil   and "✓" or "⏳"), Default=false, Callback=function() end })
-G.MiscR:AddToggle("StatEnum",  { Text = "Enum: "       .. (mEnum   and "✓" or "⏳"), Default=false, Callback=function() end })
-G.MiscR:AddToggle("StatFig",   { Text = "Fighter: "    .. (mFig    and "✓" or "⏳"), Default=false, Callback=function() end })
-G.MiscR:AddToggle("StatUse",   { Text = "UseItem: "    .. (rUseItem and "✓" or "⏳"), Default=false, Callback=function() end })
+-- ============================================================
+-- LOAD CONFIGURATION (Rayfield auto-saves flags)
+-- ============================================================
 
--- ═══════════════════════════════════════════════════════════════════════
--- UI SETTINGS TAB
--- ═══════════════════════════════════════════════════════════════════════
-local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
-MenuGroup:AddButton('Unload', function() Library:Unload() end)
-MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', {
-    Default = 'End',
-    NoUI    = true,
-    Text    = 'Menu keybind',
-})
-Library.ToggleKeybind = Options.MenuKeybind
-
-local AdvancedGroup = Tabs['UI Settings']:AddLeftGroupbox('Advanced')
-AdvancedGroup:AddToggle('ShowAdvanced', {
-    Text    = 'Show advanced options',
-    Default = false,
-})
-
-local AdvancedBox = AdvancedGroup:AddDependencyBox()
-
-AdvancedBox:AddSlider('UIScaleSlider', {
-    Text = 'UI scale', Default = 100, Min = 50, Max = 150,
-    Rounding = 0, Suffix = '%',
-    Callback = function(v) Window:SetScale(v / 100) end,
-})
-
-AdvancedBox:AddSlider('UITransparencySlider', {
-    Text = 'Menu transparency', Default = 0, Min = 0, Max = 90,
-    Rounding = 0, Suffix = '%',
-    Callback = function(v) Window:SetTransparency(v / 100) end,
-})
-
-AdvancedBox:AddToggle('MobileButtonToggle', {
-    Text = 'Show floating mobile button', Default = true,
-    Callback = function(v) Library:SetMobileButtonVisibility(v) end,
-})
-
-AdvancedBox:AddDivider()
-
-AdvancedBox:AddToggle('GlowToggle', {
-    Text = 'Open/close glow effect', Default = true,
-    Callback = function(v) Library:SetGlowEnabled(v) end,
-})
-
-AdvancedBox:AddLabel('Glow color'):AddColorPicker('GlowColorPicker', {
-    Default  = Color3.fromRGB(0, 85, 255),
-    Callback = function(v) Library:SetGlowColor(v) end,
-})
-
-AdvancedBox:AddDivider()
-
-AdvancedBox:AddSlider('AnimSpeedSlider', {
-    Text = 'Animation speed', Default = 100, Min = 25, Max = 300,
-    Rounding = 0, Suffix = '%',
-    Callback = function(v) Library:SetAnimationSpeed(v / 100) end,
-})
-
-AdvancedBox:AddSlider('CornerRadiusSlider', {
-    Text = 'Corner roundness', Default = 0, Min = 0, Max = 16,
-    Rounding = 0, Suffix = 'px',
-    Callback = function(v) Library:SetCornerRadius(v) end,
-})
-
-AdvancedBox:AddToggle('BlurToggle', {
-    Text = 'Blur background', Default = false,
-    Callback = function(v) Library:SetBlurEnabled(v) end,
-})
-
-AdvancedBox:SetupDependencies({
-    { Toggles.ShowAdvanced, true }
-})
-
--- ═══════════════════════════════════════════
--- ADDONS
--- ═══════════════════════════════════════════
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
-ThemeManager:SetFolder('RivalsScript')
-SaveManager:SetFolder('RivalsScript/rivals')
-SaveManager:BuildConfigSection(Tabs['UI Settings'])
-ThemeManager:ApplyToTab(Tabs['UI Settings'])
-SaveManager:LoadAutoloadConfig()
-
-Library:Notify("Rivals Script Loaded | All Systems Ready", 5)
+Rayfield:LoadConfiguration()
