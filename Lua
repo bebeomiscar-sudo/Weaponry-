@@ -13,9 +13,7 @@ local LocalPlayer   = Players.LocalPlayer
 -- RAYFIELD UI BOOTSTRAP
 -- ============================================================
 
-local Rayfield = loadstring(game:HttpGet(
-    "https://sirius.menu/rayfield"
-))()
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
     Name             = "Kicia Hook",
