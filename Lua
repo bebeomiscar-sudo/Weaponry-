@@ -1,21 +1,25 @@
 --[[
     ╔══════════════════════════════════════════════════════════╗
     ║  Rivals Tool v3                                         ║
-    ║  + Anti-Cheat Bypass (Full — 8 layers)                 ║
+    ║  + Anti-Cheat Bypass (Full — 7 layers, stable)         ║
     ╚══════════════════════════════════════════════════════════╝
 ]]
 
+-- Fix: yield one frame so hooks seat before LC3 initializes
+task.wait(0)
+
 -- ═══════════════════════════════════════════
 -- ANTI-CHEAT BYPASS
--- Runs BEFORE services — all 8 layers:
 -- 1. setmetatable weak table poison
 -- 2. ClientAlert spoof + namecall intercept
 -- 3. Kick block (namecall + direct hookfunction)
 -- 4. getgc filter (hide LC3/MiscCtrl from AC scans)
 -- 5. LC3 + MiscellaneousController function neutering
 -- 6. GC function staller
--- 7. Challenge-response heartbeat layer
--- 8. Descriptor scan (disable AC-named scripts)
+-- 7. Descriptor scan (disable AC-named scripts)
+-- NOTE: challenge-response layer disabled — was causing
+--       race condition on load (Error 267). Layers 1-6
+--       handle detection without echoing heartbeats.
 -- ═══════════════════════════════════════════
 pcall(function()
     local _cr = cloneref or function(o) return o end
@@ -157,65 +161,11 @@ pcall(function()
         end
     end
 
-    -- 7. Challenge-response heartbeat layer
-    task.spawn(function()
-        local remotes   = _rep:FindFirstChild("Remotes")
-        local ac_remote = remotes and remotes:FindFirstChild("RemoteEvent")
-        if not ac_remote then
-            for _, v in ipairs(_rep:GetDescendants()) do
-                if v:IsA("RemoteEvent") and (
-                    v.Name:lower():find("anti") or v.Name:lower():find("check") or
-                    v.Name:lower():find("heart") or v.Name:lower():find("verify")
-                ) then
-                    ac_remote = v; break
-                end
-            end
-        end
-        if not ac_remote then return end
-
-        local expected_interval = 0.6
-        local last_fire   = tick()
-        local first_seen  = false
-        local client_id   = ""
-        local ema_alpha   = 0.5
-
-        local _old_fs; _old_fs = hookfunction(ac_remote.FireServer, newcclosure(function(self, ...)
-            local now  = tick()
-            local args = {...}
-            if not first_seen then
-                first_seen = true
-                local a1 = args[1]
-                if type(a1) == "table" and type(a1[1]) == "string" then
-                    client_id = tostring(a1[1])
-                end
-                last_fire = now
-            else
-                local dt2 = now - last_fire
-                if dt2 > 0 then
-                    expected_interval = ema_alpha * dt2 + (1 - ema_alpha) * expected_interval
-                    if expected_interval < 0.25 then expected_interval = 0.25 end
-                end
-                last_fire = now
-            end
-            return _old_fs(self, ...)
-        end))
-
-        ac_remote.OnClientEvent:Connect(function(...)
-            local t = {...}
-            local challenge = t[1]
-            local index     = t[2]
-            if typeof(challenge) ~= "buffer" or type(index) ~= "number" then return end
-            task.defer(function()
-                local since = tick() - last_fire
-                local wait  = expected_interval - since
-                if wait > 0 then task.wait(wait) end
-                pcall(function()
-                    ac_remote:FireServer(client_id, buffer.tostring(challenge), index)
-                end)
-                last_fire = tick()
-            end)
-        end)
-    end)
+    -- 7. Challenge-response layer — DISABLED
+    -- Caused Error 267 race condition: client_id empty on first heartbeat,
+    -- malformed echo = server kick. Layers 1-6 neuter LC3 before it can
+    -- run the challenge loop anyway. Re-enable if Rivals patches neuter layer.
+    -- task.spawn(function() ... end)
 
     -- 8. Descriptor scan — disable AC-named scripts
     coroutine.wrap(function()
@@ -329,7 +279,7 @@ local Save  = loadstring(game:HttpGet(repo.."addons/SaveManager.lua"))()
 Lib.ShowToggleFrameInKeybinds = true
 
 local Win = Lib:CreateWindow({
-    Title            = "LC",
+    Title            = "Rivals Tool v3",
     Center           = true,
     AutoShow         = true,
     Resizable        = true,
@@ -349,28 +299,28 @@ local T = {
 }
 
 local G = {
-    EzL  = T.Combat:AddLeftGroupbox("easy aimbot"),
-    LgR  = T.Combat:AddRightGroupbox("aimbot Settings"),
-    AiL  = T.Combat:AddLeftGroupbox("ai legit"),
-    LgL  = T.Combat:AddLeftGroupbox("legitbot (advanced)"),
-    SaL  = T.Combat:AddLeftGroupbox("silent aim"),
-    SaR  = T.Combat:AddRightGroupbox("sa settings"),
-    TbL  = T.Combat:AddLeftGroupbox("triggerbot"),
-    TbR  = T.Combat:AddRightGroupbox("triggerbot targeting"),
-    RgL  = T.Combat:AddLeftGroupbox("ragebot"),
-    RgR  = T.Combat:AddRightGroupbox("rage settings"),
-    AaL  = T.Combat:AddLeftGroupbox("anti-aim"),
-    AaR  = T.Combat:AddRightGroupbox("anti-aim settings"),
-    GnR  = T.Combat:AddRightGroupbox("gun mods"),
-    VsL  = T.Visuals:AddLeftGroupbox("esp"),
-    VsR  = T.Visuals:AddRightGroupbox("camera"),
-    TrL  = T.Visuals:AddLeftGroupbox("bullet tracers"),
-    WdL  = T.Visuals:AddLeftGroupbox("world"),
-    HnR  = T.Visuals:AddRightGroupbox("hit numbers"),
-    MiL  = T.Misc:AddLeftGroupbox("info"),
-    MiR  = T.Misc:AddRightGroupbox("actions"),
-    SkL  = T.Skins:AddLeftGroupbox("skin changer"),
-    SkR  = T.Skins:AddRightGroupbox("status"),
+    EzL  = T.Combat:AddLeftGroupbox("🎯 Easy Aimbot"),
+    LgR  = T.Combat:AddRightGroupbox("Aimbot Settings"),
+    AiL  = T.Combat:AddLeftGroupbox("🤖 AI Legit"),
+    LgL  = T.Combat:AddLeftGroupbox("Legitbot (Advanced)"),
+    SaL  = T.Combat:AddLeftGroupbox("Silent Aim"),
+    SaR  = T.Combat:AddRightGroupbox("SA Settings"),
+    TbL  = T.Combat:AddLeftGroupbox("Triggerbot"),
+    TbR  = T.Combat:AddRightGroupbox("Triggerbot Targeting"),
+    RgL  = T.Combat:AddLeftGroupbox("Ragebot"),
+    RgR  = T.Combat:AddRightGroupbox("Rage Settings"),
+    AaL  = T.Combat:AddLeftGroupbox("Anti-Aim"),
+    AaR  = T.Combat:AddRightGroupbox("Anti-Aim Settings"),
+    GnR  = T.Combat:AddRightGroupbox("Gun Mods"),
+    VsL  = T.Visuals:AddLeftGroupbox("ESP"),
+    VsR  = T.Visuals:AddRightGroupbox("Camera"),
+    TrL  = T.Visuals:AddLeftGroupbox("Bullet Tracers"),
+    WdL  = T.Visuals:AddLeftGroupbox("World"),
+    HnR  = T.Visuals:AddRightGroupbox("Hit Numbers"),
+    MiL  = T.Misc:AddLeftGroupbox("Info"),
+    MiR  = T.Misc:AddRightGroupbox("Actions"),
+    SkL  = T.Skins:AddLeftGroupbox("Skin Changer"),
+    SkR  = T.Skins:AddRightGroupbox("Status"),
     StL  = T.Settings:AddLeftGroupbox("UI / Mobile"),
 }
 
@@ -1788,7 +1738,7 @@ G.MiL:AddLabel("CamCtrl: "    ..(mCam  and"✓"or"⏳"))
 G.MiL:AddLabel("FighterCtrl: "..(mFig  and"✓"or"⏳"))
 G.MiL:AddLabel("Utility: "    ..(mUtil and"✓"or"✗"))
 G.MiL:AddLabel("EnumLib: "    ..(mEnum and"✓"or"✗"))
-G.MiL:AddLabel("AC Bypass: Full 8-layer ✓")
+G.MiL:AddLabel("AC Bypass: 7-layer stable ✓")
 G.MiL:AddLabel("Insert = toggle")
 G.MiR:AddButton({Text="Stop All",Func=function()
     AB.on=false; SA.on=false; TB.on=false; RG.on=false; AI.on=false
@@ -1921,4 +1871,8 @@ rs.RenderStepped:Connect(function(dt)
     end
 end)
 
-Lib:Notify("AC Bypass: 8 layers",6)
+Lib:Notify("Rivals v3 | AC Bypass: 7-layer stable | Insert to toggle",6)
+print("[v3] AC Bypass: 7-layer stable (challenge-response disabled)")
+print("[v3] AA: Pitch/YawBase/Yaw/Angle/Underground")
+print("[v3] TP: Standalone + RG integrated")
+print("[v3] RG: FOV 0-370 + betterRandom glitch")
