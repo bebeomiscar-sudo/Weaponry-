@@ -3,7 +3,7 @@
     ║  Rivals Tool v3 — Full Build                            ║
     ║  UI: yenkgg UE-Linoria fork                             ║
     ║  AC Bypass: 7-layer stable                              ║
-    ║  Ragebot: orbit_aura (void orbit/resolver/anti-riot)    ║
+    ║  Ragebot: orbit_aura (voidspam / peek desync)           ║
     ║  Tracers: standalone tab                                ║
     ╚══════════════════════════════════════════════════════════╝
 ]]
@@ -24,7 +24,6 @@ pcall(function()
     local _targets    = {"LocalScript3","MiscellaneousController"}
     local _ban_consts = {"TakeTheL","ban","kick","Kick","Shutdown","ClientAlert","MiscellaneousController"}
 
-    -- 1. weak table poison
     local _old_setmt; _old_setmt = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
         if mt and typeof(mt)=="table" and rawget(mt,"__mode")=="kv" then
             local tr = debug.traceback()
@@ -33,7 +32,6 @@ pcall(function()
         return _old_setmt(tbl, mt)
     end))
 
-    -- 2. ClientAlert spoof
     local _fakeAlert = Instance.new("RemoteEvent"); _fakeAlert.Name="ClientAlert"; _fakeAlert.Parent=_lp
     local _lpmt = getrawmetatable(_lp); local _old_lp_nc = _lpmt.__namecall
     setreadonly(_lpmt, false)
@@ -44,7 +42,6 @@ pcall(function()
     end)
     setreadonly(_lpmt, true)
 
-    -- 3. kick block namecall
     local _gmt = getrawmetatable(game); local _old_game_nc = _gmt.__namecall
     setreadonly(_gmt, false)
     _gmt.__namecall = newcclosure(function(self, ...)
@@ -54,7 +51,6 @@ pcall(function()
         return _old_game_nc(self, ...)
     end)
     setreadonly(_gmt, true)
-    -- kick block direct
     for _, name in ipairs({"Kick","kick"}) do
         pcall(function()
             local fn=_lp[name]; if type(fn)~="function" then return end
@@ -62,7 +58,6 @@ pcall(function()
         end)
     end
 
-    -- 4. getgc filter
     local _old_getgc = getgc
     getgc = function(...)
         local gc=_old_getgc(...); local out={}
@@ -76,7 +71,6 @@ pcall(function()
         return out
     end
 
-    -- 5. LC3 neuter
     local _ac_script=_rf:WaitForChild("LocalScript3",10); local _neutered=0
     for _,f in ipairs(_old_getgc(false)) do
         if typeof(f)~="function" then continue end
@@ -95,7 +89,6 @@ pcall(function()
         end
     end
 
-    -- 6. GC staller
     for _,v in ipairs(getgc()) do
         if typeof(v)~="function" then continue end
         local src=debug.info(v,"s"); if not src then continue end
@@ -104,7 +97,6 @@ pcall(function()
         end
     end
 
-    -- 7. descriptor scan
     coroutine.wrap(function()
         local _ac_tags={"anticheat","ac","detection","ban","kick","security","moderation"}
         local function _proc(o)
@@ -214,7 +206,6 @@ local T = {
 }
 
 local G = {
-    -- Combat
     EzL = T.Combat:AddLeftGroupbox("Easy Aimbot"),
     LgR = T.Combat:AddRightGroupbox("Aimbot Settings"),
     AiL = T.Combat:AddLeftGroupbox("AI Legit"),
@@ -225,26 +216,20 @@ local G = {
     AaL = T.Combat:AddLeftGroupbox("Anti-Aim"),
     AaR = T.Combat:AddRightGroupbox("Anti-Aim Settings"),
     GnR = T.Combat:AddRightGroupbox("Gun Mods"),
-    -- Visuals
     VsL = T.Visuals:AddLeftGroupbox("ESP"),
     VsR = T.Visuals:AddRightGroupbox("Camera"),
     TrL = T.Visuals:AddLeftGroupbox("Legacy Tracers"),
     WdL = T.Visuals:AddLeftGroupbox("World"),
     HnR = T.Visuals:AddRightGroupbox("Hit Numbers"),
-    -- Tracers tab
     TcL = T.Tracers:AddLeftGroupbox("Bullet Tracers"),
     TcR = T.Tracers:AddRightGroupbox("Tracer Style"),
-    -- Ragebot tab
     RgL = T.Rage:AddLeftGroupbox("Target"),
     RgR = T.Rage:AddRightGroupbox("Orbit Features"),
-    RgB = T.Rage:AddLeftGroupbox("Orbit Timing"),
-    -- Misc
+    RgB = T.Rage:AddLeftGroupbox("Voidspam Timing"),
     MiL = T.Misc:AddLeftGroupbox("Info"),
     MiR = T.Misc:AddRightGroupbox("Actions"),
-    -- Skins
     SkL = T.Skins:AddLeftGroupbox("Skin Changer"),
     SkR = T.Skins:AddRightGroupbox("Status"),
-    -- Settings
     StL = T.Settings:AddLeftGroupbox("Menu"),
 }
 
@@ -349,7 +334,7 @@ local gnSaved={}; local SKIP={Sniper=true,Crossbow=true,Bow=true,RPG=true}
 local function patchGuns() if not mItemLib then return end; local ok,items=pcall(function() return mItemLib.Items end); if not ok or not items then return end; for name,data in pairs(items) do if type(data)~="table" or SKIP[name] then continue end; if not gnSaved[name] then gnSaved[name]={ShootSpread=data.ShootSpread,ShootAccuracy=data.ShootAccuracy,ShootRecoil=data.ShootRecoil,ShootCooldown=data.ShootCooldown} end; local s=gnSaved[name]; if data.ShootSpread then data.ShootSpread=GN.noSpread and 0 or s.ShootSpread end; if data.ShootAccuracy then data.ShootAccuracy=GN.noSpread and 0 or s.ShootAccuracy end; if data.ShootRecoil then data.ShootRecoil=GN.noRecoil and 0 or s.ShootRecoil end; if data.ShootCooldown then data.ShootCooldown=GN.fast and 0.05 or s.ShootCooldown end end end
 
 -- ═══════════════════════════════════════════
--- ORBIT AURA RAGEBOT (void orbit)
+-- ORBIT AURA RAGEBOT (VOIDSPAM / PEAK DESYNC)
 -- ═══════════════════════════════════════════
 local OA = {
     enabled = false,
@@ -360,24 +345,24 @@ local OA = {
     antiProjectile = true,
     strikeMelee = true,
     tpDelay = 1.3,
-    shotInterval = 0.4,
+    shotInterval = 0.4, -- Now acts as "Hide Time" (how long to stay in void)
     autoTarget = true,
     autoShoot = true,
     aimPart = "Head",
     
-    -- NEW: Offsets and Strike TP
-    offsetX = 0,
-    offsetY = 0,
-    offsetZ = 0,
+    offsetX = 0, offsetY = 0, offsetZ = 0,
     strikeTP = false,
-    strikeTPMode = "Stick", -- "Stick" or "Above"
+    strikeTPMode = "Stick",
     
     angle = 0,
     lastTp = 0,
-    lastShot = 0,
     heldCF = nil,
     dodge = Vector3.zero,
     target = nil,
+    
+    -- Voidspam State Machine
+    phase = "void",     -- "void" (hiding) or "attack" (peeking/shooting)
+    phaseTimer = 0,
 }
 
 local oaPrevCF = nil
@@ -396,12 +381,8 @@ local function oaFindTarget()
         if not hm or hm.Health <= 0 then continue end
         local root = chr:FindFirstChild("HumanoidRootPart")
         if not root then continue end
-        
         local d = (root.Position - myPos).Magnitude
-        if d < bd then
-            bd = d
-            best = chr
-        end
+        if d < bd then bd = d; best = chr end
     end
     return best
 end
@@ -438,9 +419,7 @@ local function oaComputeCFrame(dt, targetChar)
     local riotHeight = 0
     if OA.antiRiot then
         local tTool = targetChar:FindFirstChildOfClass("Tool")
-        if tTool and tTool.Name:lower():find("riot") then
-            riotHeight = 300
-        end
+        if tTool and tTool.Name:lower():find("riot") then riotHeight = 300 end
     end
     
     local radius = OA.voidRadius
@@ -453,8 +432,7 @@ local function oaComputeCFrame(dt, targetChar)
                 for _, ch2 in ipairs(fp:GetChildren()) do
                     local nm = ch2.Name:lower()
                     if nm:find("knife") or nm:find("katana") or nm:find("axe") or nm:find("sword") or nm:find("bat") or nm:find("fists") or nm:find("scythe") or nm:find("chainsaw") or nm:find("daggers") or nm:find("gunblade") or nm:find("trowel") then
-                        isMelee = true
-                        break
+                        isMelee = true; break
                     end
                 end
             end
@@ -463,14 +441,8 @@ local function oaComputeCFrame(dt, targetChar)
     end
     
     OA.angle = OA.angle + (dt * 2.5)
-    
     local center = root.Position + resolverOffset
-    local orbitOffset = Vector3.new(
-        math.cos(OA.angle) * radius,
-        riotHeight,
-        math.sin(OA.angle) * radius
-    ) + OA.dodge
-    
+    local orbitOffset = Vector3.new(math.cos(OA.angle) * radius, riotHeight, math.sin(OA.angle) * radius) + OA.dodge
     return CFrame.new(center + orbitOffset, root.Position)
 end
 
@@ -484,24 +456,17 @@ local function oaShoot(targetChar)
     local hp = targetChar:FindFirstChild(OA.aimPart) or targetChar:FindFirstChild("Head")
     if not hp then return end
     
-    -- Apply manual X, Y, Z offsets to fix aim deviation
     local aimPos = hp.Position + Vector3.new(OA.offsetX, OA.offsetY, OA.offsetZ)
-    
     local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     
     -- Strike TP (Teleport Desync on Shot)
     if OA.strikeTP and myRoot then
         local tpPos = aimPos
-        if OA.strikeTPMode == "Above" then
-            tpPos = tpPos + Vector3.new(0, 4, 0) -- 4 studs above the head
-        end
-        pcall(function()
-            myRoot.CFrame = CFrame.new(tpPos, aimPos)
-        end)
+        if OA.strikeTPMode == "Above" then tpPos = tpPos + Vector3.new(0, 4, 0) end
+        pcall(function() myRoot.CFrame = CFrame.new(tpPos, aimPos) end)
     end
     
     local shootPos = myRoot and myRoot.Position or aimPos
-    
     local payload = {
         [utf8.char(1)] = {
             [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(shootPos, aimPos)),
@@ -510,14 +475,10 @@ local function oaShoot(targetChar)
             [utf8.char(3)] = mUtil:EncodeCFrame(hp.CFrame:ToObjectSpace(CFrame.new(aimPos)))
         }
     }
-    
-    pcall(function()
-        rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), payload, nil)
-    end)
-    -- Note: The heartbeat loop automatically snaps the player back to the void orbit 
-    -- on the very next frame, creating a flawless strike-and-return desync.
+    pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), payload, nil) end)
 end
 
+-- MAIN VOIDSPAM HEARTBEAT LOOP
 rs.Heartbeat:Connect(function(dt)
     if not OA.enabled then return end
     
@@ -525,32 +486,44 @@ rs.Heartbeat:Connect(function(dt)
         OA.target = oaFindTarget()
     end
     
-    if not OA.target then return end
+    if not OA.target then
+        OA.phase = "void"
+        OA.phaseTimer = 0
+        return
+    end
     
     oaActiveLF = mFig and mFig.LocalFighter
     if not oaActiveLF or not oaActiveLF.Entity or not oaActiveLF.Entity.RootPart then return end
     
-    local voidCF = oaComputeCFrame(dt, OA.target)
-    if not voidCF then return end
-    
-    local now = tick()
-    if (now - OA.lastTp) >= OA.tpDelay then
-        OA.lastTp = now
-        OA.heldCF = voidCF
-    end
-    
-    local sendCF = OA.heldCF or voidCF
-    
-    oaPrevCF = oaActiveLF.Entity.RootPart.CFrame
-    pcall(function()
-        oaActiveLF.Entity.RootPart.CFrame = sendCF
-    end)
-    
-    if OA.autoShoot then
-        if (now - OA.lastShot) >= OA.shotInterval then
-            OA.lastShot = now
+    if OA.phase == "void" then
+        -- VOID PHASE: Hide in the void orbit
+        local voidCF = oaComputeCFrame(dt, OA.target)
+        if voidCF then
+            local now = tick()
+            if (now - OA.lastTp) >= OA.tpDelay then
+                OA.lastTp = now
+                OA.heldCF = voidCF
+            end
+            local sendCF = OA.heldCF or voidCF
+            oaPrevCF = oaActiveLF.Entity.RootPart.CFrame
+            pcall(function() oaActiveLF.Entity.RootPart.CFrame = sendCF end)
+        end
+        
+        -- Count up timer. shotInterval is now the "Hide Time"
+        OA.phaseTimer = OA.phaseTimer + dt
+        if OA.phaseTimer >= OA.shotInterval then
+            OA.phase = "attack"
+            OA.phaseTimer = 0
+        end
+
+    elseif OA.phase == "attack" then
+        -- ATTACK PHASE: Teleport back (Strike TP) and Shoot
+        if OA.autoShoot then
             oaShoot(OA.target)
         end
+        -- Immediately return to void phase for the next cycle (snap back)
+        OA.phase = "void"
+        OA.phaseTimer = 0
     end
 end)
 
@@ -704,18 +677,21 @@ G.TcR:AddDropdown("TCStyle",{Text="Style",Default="Line",Values=TC_STYLES,Callba
 G.TcR:AddButton({Text="Clear Tracers",Func=function() for _,t in ipairs(tcTracers) do tcDestroy(t) end; tcTracers={}; Lib:Notify("Cleared",2) end})
 
 -- ═══════════════════════════════════════════
--- UI — RAGEBOT TAB (ORBIT AURA)
+-- UI — RAGEBOT TAB (VOIDSPAM / ORBIT AURA)
 -- ═══════════════════════════════════════════
-G.RgL:AddToggle("OAEnabled",{Text="Orbit Aura (Void)",Default=false,Callback=function(v) 
+G.RgL:AddToggle("OAEnabled",{Text="Orbit Aura (Voidspam)",Default=false,Callback=function(v) 
     OA.enabled = v
     if v then
         OA.angle = math.random() * math.pi * 2
         OA.lastTp = 0
-        OA.lastShot = 0
         OA.heldCF = nil
         OA.target = nil
+        OA.phase = "void"
+        OA.phaseTimer = 0
     else
         OA.heldCF = nil
+        OA.phase = "void"
+        OA.phaseTimer = 0
         if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
             pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
         end
@@ -741,9 +717,9 @@ G.RgR:AddLabel("── Strike TP (Teleport Desync) ──")
 G.RgR:AddToggle("OAStrikeTP",{Text="Strike TP (Desync)",Default=false,Tooltip="Teleports you to the target exactly when shooting",Callback=function(v) OA.strikeTP = v end})
 G.RgR:AddDropdown("OAStrikeMode",{Text="TP Mode",Default="Stick",Values={"Stick","Above"},Tooltip="Stick = exact head/part | Above = slightly above head",Callback=function(v) OA.strikeTPMode = v end})
 
-G.RgB:AddLabel("Orbit Timing")
-G.RgB:AddSlider("OATpDelay",{Text="TP Delay (s)",Default=1.3,Min=0.1,Max=5,Rounding=2,Callback=function(v) OA.tpDelay = v end})
-G.RgB:AddSlider("OAShotInt",{Text="Shot Interval (s)",Default=0.4,Min=0.05,Max=2,Rounding=2,Callback=function(v) OA.shotInterval = v end})
+G.RgB:AddLabel("Voidspam Timing")
+G.RgB:AddSlider("OAShotInt",{Text="Shot Interval (Hide Time)",Default=0.4,Min=0.05,Max=5,Rounding=2,Suffix="s",Tooltip="How long you stay in the void before teleporting back to attack",Callback=function(v) OA.shotInterval = v end})
+G.RgB:AddSlider("OATpDelay",{Text="Void TP Delay (s)",Default=1.3,Min=0.1,Max=5,Rounding=2,Tooltip="How often the void orbit position updates",Callback=function(v) OA.tpDelay = v end})
 G.RgB:AddSlider("OAVoidRad",{Text="Void Radius",Default=100000,Min=1000,Max=500000,Rounding=0,Suffix=" studs",Callback=function(v) OA.voidRadius = v end})
 
 -- ═══════════════════════════════════════════
@@ -764,6 +740,8 @@ G.MiR:AddButton({Text="Stop All",Func=function()
     AA.enabled=false; stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
     
     OA.enabled = false
+    OA.phase = "void"
+    OA.phaseTimer = 0
     if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
         pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
     end
@@ -776,6 +754,8 @@ end})
 G.MiR:AddButton({Text="Unload",Func=function()
     stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
     OA.enabled = false
+    OA.phase = "void"
+    OA.phaseTimer = 0
     if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
         pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
     end
@@ -809,6 +789,8 @@ G.StL:AddSlider("OpenSz",{Text="Button Size %",Default=100,Min=0,Max=200,Roundin
 G.StL:AddButton({Text="Unload Script",Func=function() 
     stopAntiAim(); 
     OA.enabled = false
+    OA.phase = "void"
+    OA.phaseTimer = 0
     if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
         pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
     end
@@ -873,4 +855,4 @@ rs.RenderStepped:Connect(function()
 end)
 
 Lib:Notify("Rivals v3 loaded | RightShift to toggle",5)
-print("[v3] Full build: AC bypass + orbit_aura + tracers + yenkgg UI")
+print("[v3] Full build: AC bypass + voidspam orbit_aura + tracers + yenkgg UI")
