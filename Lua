@@ -3,7 +3,7 @@
     ║  Rivals Tool v3 — Full Build                            ║
     ║  UI: yenkgg UE-Linoria fork                             ║
     ║  AC Bypass: 7-layer stable                              ║
-    ║  Ragebot: phantom_rage (auto-peek/backtrack/multi/dtap) ║
+    ║  Ragebot: orbit_aura (void orbit/resolver/anti-riot)    ║
     ║  Tracers: standalone tab                                ║
     ╚══════════════════════════════════════════════════════════╝
 ]]
@@ -236,9 +236,8 @@ local G = {
     TcR = T.Tracers:AddRightGroupbox("Tracer Style"),
     -- Ragebot tab
     RgL = T.Rage:AddLeftGroupbox("Target"),
-    RgR = T.Rage:AddRightGroupbox("HvH Features"),
-    RgB = T.Rage:AddLeftGroupbox("Orbit / Weapon"),
-    RgS = T.Rage:AddRightGroupbox("Status HUD"),
+    RgR = T.Rage:AddRightGroupbox("Orbit Features"),
+    RgB = T.Rage:AddLeftGroupbox("Orbit Timing"),
     -- Misc
     MiL = T.Misc:AddLeftGroupbox("Info"),
     MiR = T.Misc:AddRightGroupbox("Actions"),
@@ -350,291 +349,199 @@ local gnSaved={}; local SKIP={Sniper=true,Crossbow=true,Bow=true,RPG=true}
 local function patchGuns() if not mItemLib then return end; local ok,items=pcall(function() return mItemLib.Items end); if not ok or not items then return end; for name,data in pairs(items) do if type(data)~="table" or SKIP[name] then continue end; if not gnSaved[name] then gnSaved[name]={ShootSpread=data.ShootSpread,ShootAccuracy=data.ShootAccuracy,ShootRecoil=data.ShootRecoil,ShootCooldown=data.ShootCooldown} end; local s=gnSaved[name]; if data.ShootSpread then data.ShootSpread=GN.noSpread and 0 or s.ShootSpread end; if data.ShootAccuracy then data.ShootAccuracy=GN.noSpread and 0 or s.ShootAccuracy end; if data.ShootRecoil then data.ShootRecoil=GN.noRecoil and 0 or s.ShootRecoil end; if data.ShootCooldown then data.ShootCooldown=GN.fast and 0.05 or s.ShootCooldown end end end
 
 -- ═══════════════════════════════════════════
--- PHANTOM RAGE (ragebot — fully integrated)
+-- ORBIT AURA RAGEBOT (void orbit)
 -- ═══════════════════════════════════════════
-local PR = {}
-do
-    local repStore  = cr(game:GetService("ReplicatedStorage"))
-    local plrSvc    = cr(game:GetService("Players"))
-    local runSvc    = cr(game:GetService("RunService"))
-    local worldSpc  = cr(game:GetService("Workspace"))
-    local selfPlr   = plrSvc.LocalPlayer
+local OA = {
+    enabled = false,
+    fov = 360,
+    voidRadius = 100000,
+    resolver = true,
+    antiRiot = true,
+    antiProjectile = true,
+    strikeMelee = true,
+    tpDelay = 1.3,
+    shotInterval = 0.4,
+    autoTarget = true,
+    autoShoot = true,
+    aimPart = "Head",
+    
+    angle = 0,
+    lastTp = 0,
+    lastShot = 0,
+    heldCF = nil,
+    dodge = Vector3.zero,
+    target = nil,
+}
 
-    local mods = {
-        enumLib  = mEnum,
-        fightCtl = mFig,
-        camCtl   = mCam,
-        utilLib  = mUtil,
-    }
+local oaPrevCF = nil
+local oaActiveLF = nil
 
-    local function modReady() return mods.enumLib and mods.fightCtl and mods.utilLib end
-
-    -- refresh mods after controllers load
-    task.spawn(function()
-        while not modReady() do
-            task.wait(1)
-            mods.enumLib  = mEnum
-            mods.fightCtl = mFig
-            mods.camCtl   = mCam
-            mods.utilLib  = mUtil
-        end
-    end)
-
-    -- config
-    local prCfg = {
-        aim={active=false,lockChar=nil,autoMode=false,fireOnLock=true,fireRounds=1,aimPart="Head",prevChar=nil,prevPlr=nil,holdKey=false,shielded=false,strikePos="default",strikeCustom=false,slotChoice="primary",forceEquip=true,masterSwitch=false,meleeDropDist=3.5,submergeOff=4,overrideH=2,overrideFwd=0,overrideSide=0,overrideVert=0,overrideRad=0},
-        pred={active=false,scale=1.2,vel=Vector3.new(0,0,0),prevPos=nil,prevTick=0},
-        spin={running=false,theta=0,srvPos=nil,conn=nil,rpm=9000,lift=1,ring=0,savedCF=nil},
-        ammoState={reloading=false,dry=false,syncOn=false,reloadBeganAt=0},
-        phaseShift={on=false,fireMin=1,fireMax=1,hideMin=1,hideMax=1,phase=nil,lastFlip=0,phaseDur=0},
-        statusHud={on=false,layout="static",clr=Color3.fromRGB(235,235,235),xOff=0,yOff=40,showBullets=true,hideOnLoad=true,txtSz=15,rowSpacing=15},
-        -- HvH
-        autoPeek={on=false,peekDist=5,snapBack=true},
-        backtrack={on=false,windowMs=200,targetSlot=0},
-        multipoint={on=false,parts={"Head","UpperTorso","HumanoidRootPart"}},
-        doubletap={on=false,count=2},
-    }
-    PR.prCfg = prCfg
-
-    local btHistory={}
-    local peekSnapCF=nil
-    local snapState={cf=nil,lv=nil,av=nil}
-    local voidSnap={active=false}
-    local perfData={lastFireAt=0,killBeganAt=nil,lastStatusMain="",lastStatusSub="",lastStatusClr=nil}
-    local activeLF,prevCF
-
-    -- backtrack record
-    runSvc.Heartbeat:Connect(function()
-        if not prCfg.backtrack.on then return end
-        for _,p in ipairs(plrSvc:GetPlayers()) do
-            if p==selfPlr then continue end
-            local chr=p.Character; local root=chr and chr:FindFirstChild("HumanoidRootPart")
-            if root then
-                if not btHistory[p.Name] then btHistory[p.Name]={} end
-                local buf=btHistory[p.Name]; table.insert(buf,{t=tick(),pos=root.Position})
-                local cutoff=tick()-(prCfg.backtrack.windowMs/1000)
-                local i=1; while i<=#buf do if buf[i].t<cutoff then table.remove(buf,i) else i+=1 end end
-            end
-        end
-    end)
-
-    local function btGet(p)
-        if not prCfg.backtrack.on then return nil end
-        local buf=btHistory[p and p.Name]; if not buf or #buf==0 then return nil end
-        local slot=math.clamp(prCfg.backtrack.targetSlot,0,#buf-1)
-        return buf[math.max(1,#buf-slot)] and buf[math.max(1,#buf-slot)].pos
-    end
-
-    -- helpers
-    local INFINITE_SET={["Energy Rifle"]=true,["Energy Pistols"]=true}
-    local MELEE_SET={["Battle Axe"]=true,["Chainsaw"]=true,["Daggers"]=true,["Fists"]=true,["Gunblade"]=true,["Katana"]=true,["Knife"]=true,["Scythe"]=true,["Trowel"]=true}
-    local function fetchWpn() local vms=worldSpc:FindFirstChild("ViewModels"); if not vms then return nil end; local fp=vms:FindFirstChild("FirstPerson"); if not fp then return nil end; for _,ch2 in ipairs(fp:GetChildren()) do local parts={}; for p in ch2.Name:gmatch("[^-]+") do table.insert(parts,p:match("^%s*(.-)%s*$")) end; if #parts>=2 then return parts[2] end end; return nil end
-    local function isInfinite() local w=fetchWpn(); return w and INFINITE_SET[w]==true end
-    local function isMeleeSlot() return (prCfg.aim.slotChoice or "primary")=="melee" end
-    local SLOT_MAP={primary=1,secondary=2,melee=3}
-    local function wantSlot() return SLOT_MAP[prCfg.aim.slotChoice or "primary"] or 1 end
-
-    local function getLFItems() local lf=mods.fightCtl and mods.fightCtl.LocalFighter; return lf and lf.Items end
-    local function getSlotItem(idx) local items=getLFItems(); if not items then return nil end; if items[idx] then return items[idx] end; return nil end
-
-    local _lastSlot=0
-    local function pressSlot(idx) pcall(function() local vim=game:GetService("VirtualInputManager"); local kc=({Enum.KeyCode.One,Enum.KeyCode.Two,Enum.KeyCode.Three})[idx]; if not kc then return end; vim:SendKeyEvent(true,kc,false,game); task.wait(0.02); vim:SendKeyEvent(false,kc,false,game) end) end
-    local function forceEquip() if not prCfg.aim.active then return end; local want=wantSlot(); local lf=mods.fightCtl and mods.fightCtl.LocalFighter; if not lf then return end; local now=tick(); if now-_lastSlot<0.06 then return end; _lastSlot=now; local it=getSlotItem(want); local oid=it and it:Get("ObjectID"); if oid then local rm=repStore.Remotes.Replication.Fighter.UseItem; for _,en in ipairs({"Equip","Switch","EquipItem"}) do pcall(function() local ev=mods.enumLib:ToEnum(en); if ev then rm:FireServer(oid,ev,nil,nil) end end) end end; pressSlot(want) end
-
-    local function readAmmo() if isInfinite() then return nil,nil,false end; local lf=mods.fightCtl and mods.fightCtl.LocalFighter; if lf and lf.EquippedItem then local it=lf.EquippedItem; local cur,maxA,melee=0,0,false; pcall(function() cur=it:Get("CurrentAmmo") or 0; maxA=it:Get("MaxAmmo") or cur; local nm=tostring(it:Get("Name") or ""); if MELEE_SET[nm] then melee=true end end); if isMeleeSlot() then melee=true end; return tonumber(cur) or 0,tonumber(maxA) or 0,melee end; return 0,0,isMeleeSlot() end
-
-    local function isReloading() if isInfinite() then return false end; local lf=mods.fightCtl and mods.fightCtl.LocalFighter; if not lf or not lf.EquippedItem then return false end; local r=false; pcall(function() local it=lf.EquippedItem; for _,k in ipairs({"Reloading","IsReloading"}) do local v=it:Get(k); if v==true or v==1 then r=true end end end); if r then return true end; local began=prCfg.ammoState.reloadBeganAt or 0; return began>0 and (tick()-began)<1.75 end
-
-    local function pollAmmo() if isInfinite() then prCfg.ammoState.dry=false; prCfg.ammoState.reloading=false; return end; local cur,_,melee=readAmmo(); prCfg.ammoState.dry=not melee and (tonumber(cur) or 0)<=0; local rel=isReloading(); if rel and not prCfg.ammoState.reloading then prCfg.ammoState.reloadBeganAt=tick() elseif not rel then prCfg.ammoState.reloadBeganAt=0 end; prCfg.ammoState.reloading=rel end
-
-    local function isTeammate(tp) if not tp then return false end; return selfPlr:GetAttribute("TeamID")==tp:GetAttribute("TeamID") end
-    local function isValid(chr) if not chr or not chr.Parent then return false end; local h=chr:FindFirstChildOfClass("Humanoid"); if not h or h.Health<=0 then return false end; if not chr:FindFirstChild("HumanoidRootPart") then return false end; local tp=plrSvc:GetPlayerFromCharacter(chr); if not tp or isTeammate(tp) then return false end; return true end
-
-    local function findNearest() local cursor=game:GetService("UserInputService"):GetMouseLocation(); local best,bd=nil,math.huge; for _,tp in plrSvc:GetPlayers() do if tp==selfPlr or not tp.Character then continue end; local chr=tp.Character; if not isValid(chr) then continue end; local root=chr:FindFirstChild("HumanoidRootPart"); if not root then continue end; local sp,on=cam:WorldToViewportPoint(root.Position); if not on then continue end; local d=(Vector2.new(sp.X,sp.Y)-cursor).Magnitude; if d<bd then best=chr; bd=d end end; return best end
-
-    local function applyPred(tPart,origin) if not prCfg.pred.active or not tPart then return tPart and tPart.Position or Vector3.new() end; local base=tPart.Position; local dist=(base-origin).Magnitude; local ping=0; pcall(function() ping=game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()/1000 end); local tt=dist/3000; local total=(tt+ping)*prCfg.pred.scale; return base+(prCfg.pred.vel*total) end
-
-    local function getShootOrigin() if prCfg.ammoState.syncOn and prCfg.spin.srvPos then return prCfg.spin.srvPos end; local root=selfPlr.Character and selfPlr.Character:FindFirstChild("HumanoidRootPart"); return root and root.Position or Vector3.new() end
-
-    local function clearSnap() snapState.cf,snapState.lv,snapState.av=nil,nil,nil end
-
-    local function getVoidHRP() local chr=selfPlr.Character; return chr and chr:FindFirstChild("HumanoidRootPart") end
-
-    local function rndSkip(mi,ma,dmi,dma) local v=math.random(mi,ma); while v>=dmi and v<=dma do v=math.random(mi,ma) end; return v end
-
-    local function snapVoid(hrp) if not hrp then return end; snapState.cf=hrp.CFrame; snapState.lv=hrp.AssemblyLinearVelocity; snapState.av=hrp.AssemblyAngularVelocity; local lim,dead=2147483646,1147483646; pcall(function() local p=Vector3.new(rndSkip(-lim,lim,-dead,dead),rndSkip(-lim,lim,-dead,dead),rndSkip(-lim,lim,-dead,dead)); hrp.CFrame=CFrame.new(p)*CFrame.Angles(math.pi,math.pi,math.pi); hrp.AssemblyLinearVelocity=Vector3.new(rndSkip(-lim,lim,-dead,dead),rndSkip(-lim,lim,-dead,dead),rndSkip(-lim,lim,-dead,dead)) end) end
-
-    runSvc:BindToRenderStep("prSnap",Enum.RenderPriority.First.Value,function() if not snapState.cf then return end; local hrp=getVoidHRP(); if not hrp then return end; pcall(function() hrp.CFrame=snapState.cf; hrp.AssemblyLinearVelocity=snapState.lv; hrp.AssemblyAngularVelocity=snapState.av end) end)
-
-    -- auto-peek restore
-    runSvc:BindToRenderStep("prPeek",Enum.RenderPriority.First.Value-1,function() if not peekSnapCF then return end; local hrp=getVoidHRP(); if not hrp then peekSnapCF=nil; return end; pcall(function() hrp.CFrame=peekSnapCF end); peekSnapCF=nil end)
-
-    local function buildPayload(shootPos,targetPos,hitPart) return {[utf8.char(1)]={[utf8.char(0)]=mods.utilLib:EncodeCFrame(CFrame.new(shootPos,targetPos)),[utf8.char(1)]=mods.utilLib:EncodeCFrame(CFrame.new(shootPos,targetPos)),[utf8.char(2)]=hitPart,[utf8.char(3)]=mods.utilLib:EncodeCFrame(CFrame.new(0.43,0.25,0.42))}} end
-
-    local function sendShot(oid,payload,rounds) local rm=repStore.Remotes.Replication.Fighter.UseItem; rounds=math.clamp(math.floor(tonumber(rounds) or 1),1,5); for _=1,rounds do pcall(function() rm:FireServer(oid,mods.enumLib:ToEnum("StartShooting"),payload,nil) end) end end
-
-    local function resolveHP(chr,name) if not chr then return nil end; return chr:FindFirstChild(name) or chr:FindFirstChild("Head") end
-
-    local function executeAttack()
-        if not modReady() then return end
-        if not prCfg.aim.active or not prCfg.aim.lockChar or not prCfg.aim.fireOnLock then return end
-        if prCfg.aim.shielded then return end
-        if prCfg.ammoState.reloading or prCfg.ammoState.dry then return end
-        local tChar=prCfg.aim.lockChar; if not isValid(tChar) then return end
-        local lf=mods.fightCtl and mods.fightCtl.LocalFighter; if not lf or not lf.EquippedItem then return end
-        local oid=lf.EquippedItem:Get("ObjectID"); if not oid then return end
-        local tPlr=prCfg.aim.prevPlr
-        local shootPos=getShootOrigin()
-        perfData.lastFireAt=tick()
-
-        local function doFire()
-            if prCfg.multipoint.on then
-                local rounds=prCfg.doubletap.on and prCfg.doubletap.count or (prCfg.aim.fireRounds or 1)
-                for _,pName in ipairs(prCfg.multipoint.parts) do
-                    local hp=resolveHP(tChar,pName); if not hp then continue end
-                    local tPos=prCfg.backtrack.on and btGet(tPlr) or applyPred(hp,shootPos)
-                    tPos=tPos or hp.Position
-                    sendShot(oid,buildPayload(shootPos,tPos,hp),rounds)
-                end
-            else
-                local hp=resolveHP(tChar,prCfg.aim.aimPart); if not hp then return end
-                local tPos=prCfg.backtrack.on and btGet(tPlr) or applyPred(hp,shootPos)
-                tPos=tPos or hp.Position
-                local rounds=prCfg.doubletap.on and prCfg.doubletap.count or (prCfg.aim.fireRounds or 1)
-                sendShot(oid,buildPayload(shootPos,tPos,hp),rounds)
-            end
-        end
-
-        if prCfg.autoPeek.on then
-            local hrp=getVoidHRP()
-            if hrp then
-                local saved=hrp.CFrame
-                local fwd=saved.LookVector*(prCfg.autoPeek.peekDist or 5)
-                pcall(function() hrp.CFrame=CFrame.new(saved.Position+fwd,saved.Position+fwd+saved.LookVector) end)
-                doFire()
-                if prCfg.autoPeek.snapBack then peekSnapCF=saved end
-            else doFire() end
-        else
-            doFire()
+local function oaFindTarget()
+    local best, bd = nil, math.huge
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local myPos = myRoot and myRoot.Position or Vector3.zero
+    for _, p in ipairs(plr:GetPlayers()) do
+        if p == lp then continue end
+        if sameTm(p) then continue end
+        local chr = p.Character
+        if not chr then continue end
+        local hm = chr:FindFirstChildOfClass("Humanoid")
+        if not hm or hm.Health <= 0 then continue end
+        local root = chr:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+        
+        local d = (root.Position - myPos).Magnitude
+        if d < bd then
+            bd = d
+            best = chr
         end
     end
-
-    local function stopSync()
-        if not prCfg.ammoState.syncOn then return end
-        if prCfg.spin.conn then prCfg.spin.conn:Disconnect(); prCfg.spin.conn=nil end
-        prCfg.ammoState.syncOn=false; prCfg.spin.running=false; clearSnap()
-        if prCfg.spin.savedCF and activeLF and activeLF.Entity and activeLF.Entity.RootPart then
-            pcall(function() activeLF.Entity.RootPart.CFrame=prCfg.spin.savedCF end)
-        end
-        prCfg.spin.srvPos=nil; prCfg.spin.savedCF=nil; prevCF=nil
-    end
-
-    local function startSync()
-        if prCfg.ammoState.syncOn then return end
-        if prCfg.aim.shielded then return end
-        if not prCfg.aim.lockChar or not isValid(prCfg.aim.lockChar) then return end
-        activeLF=mods.fightCtl and mods.fightCtl.LocalFighter
-        prCfg.ammoState.syncOn=true; prCfg.spin.running=true
-        if activeLF and activeLF.Entity and activeLF.Entity.RootPart then
-            prCfg.spin.savedCF=activeLF.Entity.RootPart.CFrame
-        end
-        prCfg.spin.conn=runSvc.Heartbeat:Connect(function(dt)
-            if not prCfg.ammoState.syncOn then return end
-            if not prCfg.aim.lockChar or not isValid(prCfg.aim.lockChar) then stopSync(); return end
-            activeLF=mods.fightCtl and mods.fightCtl.LocalFighter
-            if not activeLF or not activeLF.Entity or not activeLF.Entity.RootPart then stopSync(); return end
-            forceEquip()
-            if prCfg.ammoState.dry then local hrp=getVoidHRP(); if hrp then snapVoid(hrp) end; return end
-            local root=prCfg.aim.lockChar:FindFirstChild("HumanoidRootPart"); if not root then stopSync(); return end
-            prCfg.spin.theta=prCfg.spin.theta+(prCfg.spin.rpm*dt)
-            local offset=Vector3.new(math.cos(prCfg.spin.theta)*prCfg.spin.ring,prCfg.spin.lift,math.sin(prCfg.spin.theta)*prCfg.spin.ring)
-            prCfg.spin.srvPos=root.Position+offset
-            local curCF=activeLF.Entity.RootPart.CFrame; local newCF=CFrame.new(prCfg.spin.srvPos)
-            if (newCF.Position-curCF.Position).Magnitude<2000 then prevCF=curCF; activeLF.Entity.RootPart.CFrame=newCF; prCfg.spin.savedCF=curCF end
-        end)
-    end
-
-    local shieldList={}
-    runSvc.Heartbeat:Connect(function()
-        for _,p in pairs(plrSvc:GetPlayers()) do
-            if p==selfPlr then continue end
-            local chr=p.Character; local root=chr and chr:FindFirstChild("HumanoidRootPart")
-            local shielded=root and root:FindFirstChild("Attachment")~=nil
-            if shielded and not shieldList[p.Name] then
-                shieldList[p.Name]=true
-                if prCfg.aim.prevPlr==p then prCfg.aim.shielded=true; stopSync() end
-            elseif not shielded and shieldList[p.Name] then
-                shieldList[p.Name]=nil
-                if prCfg.aim.prevPlr==p then prCfg.aim.shielded=false; if prCfg.aim.active and prCfg.aim.lockChar and isValid(prCfg.aim.lockChar) then startSync() end end
-            end
-        end
-    end)
-
-    local function dropTarget() prCfg.aim.active=false; stopSync(); prCfg.aim.lockChar=nil; prCfg.aim.prevChar=nil; prCfg.aim.prevPlr=nil; prCfg.aim.holdKey=false; prCfg.aim.shielded=false end
-    local function lockTarget(chr) if not chr then return end; local tp=plrSvc:GetPlayerFromCharacter(chr); prCfg.aim.active=true; prCfg.aim.lockChar=chr; prCfg.aim.prevChar=chr; prCfg.aim.prevPlr=tp; prCfg.aim.shielded=false; local root=chr:FindFirstChild("HumanoidRootPart"); if root and root:FindFirstChild("Attachment") then prCfg.aim.shielded=true else forceEquip(); startSync() end end
-
-    PR.dropTarget=dropTarget; PR.lockTarget=lockTarget; PR.findNearest=findNearest
-
-    -- cam update hook (delayed until mCam loaded)
-    task.spawn(function()
-        while not mods.camCtl do task.wait(1); mods.camCtl=mCam end
-        if mods.camCtl and mods.camCtl.Update then
-            local oldCamUpdate=mods.camCtl.Update
-            mods.camCtl.Update=function(...) if prCfg.ammoState.syncOn and activeLF and activeLF.Entity and activeLF.Entity.RootPart and prevCF then activeLF.Entity.RootPart.CFrame=prevCF end; return oldCamUpdate(...) end
-        end
-    end)
-
-    -- main heartbeat
-    runSvc.Heartbeat:Connect(function()
-        pollAmmo()
-        if prCfg.aim.autoMode and not prCfg.aim.holdKey then
-            local cur,_,melee=readAmmo(); local hasAmmo=cur==nil or cur>0 or melee
-            if hasAmmo and not prCfg.ammoState.reloading then
-                if not prCfg.aim.active or not prCfg.aim.lockChar or not isValid(prCfg.aim.lockChar) then
-                    local nt=findNearest(); if nt then if prCfg.aim.active then stopSync() end; lockTarget(nt) end
-                end
-            end
-        end
-        if prCfg.aim.active and prCfg.aim.lockChar then
-            if not isValid(prCfg.aim.lockChar) then dropTarget(); return end
-            forceEquip()
-            if prCfg.aim.fireOnLock and not prCfg.aim.shielded then executeAttack() end
-        end
-    end)
-
-    -- velocity tracking for prediction
-    runSvc.Heartbeat:Connect(function()
-        if not prCfg.pred.active or not prCfg.aim.lockChar then prCfg.pred.vel=Vector3.new(0,0,0); return end
-        local root=prCfg.aim.lockChar:FindFirstChild("HumanoidRootPart"); if not root then return end
-        local now=tick(); local dt=now-prCfg.pred.prevTick
-        if dt>0 and dt<0.1 then local cur=root.Position; if prCfg.pred.prevPos then local iv=(cur-prCfg.pred.prevPos)/dt; prCfg.pred.vel=prCfg.pred.vel:Lerp(iv,0.6) end; prCfg.pred.prevPos=cur; prCfg.pred.prevTick=now end
-    end)
-
-    -- status HUD
-    local function mkLbl() local l=Drawing.new("Text"); l.Size=14; l.Font=2; l.Outline=true; l.Center=true; l.Visible=false; l.Color=prCfg.statusHud.clr; return l end
-    local hLine1=mkLbl(); local hLine2=mkLbl()
-    local function drawStatus()
-        if not prCfg.statusHud.on then hLine1.Visible=false; hLine2.Visible=false; return end
-        local camRef=ws.CurrentCamera; if not camRef then return end
-        local anch=(camRef.ViewportSize/2)+Vector2.new(prCfg.statusHud.xOff,prCfg.statusHud.yOff)
-        local gap=prCfg.statusHud.rowSpacing or 15
-        local main,sub
-        if prCfg.ammoState.reloading then main="phantom: reloading"; sub=""
-        elseif prCfg.aim.shielded then main="phantom: target shielded"; sub=""
-        elseif prCfg.aim.active and prCfg.aim.lockChar then
-            local nm=prCfg.aim.prevPlr and prCfg.aim.prevPlr.Name or "target"
-            local hum=prCfg.aim.lockChar:FindFirstChildOfClass("Humanoid")
-            main=string.format("phantom: attacking (%s)",nm)
-            sub=hum and string.format("%.0f hp",hum.Health) or "?"
-        else main="phantom: idle"; sub="" end
-        if main~=perfData.lastStatusMain then perfData.lastStatusMain=main; hLine1.Text=main end
-        hLine1.Position=anch; hLine1.Visible=true
-        if sub~="" then if sub~=perfData.lastStatusSub then perfData.lastStatusSub=sub; hLine2.Text=sub end; hLine2.Position=anch+Vector2.new(0,gap); hLine2.Visible=true else hLine2.Visible=false end
-    end
-    PR.drawStatus=drawStatus
-
-    runSvc.RenderStepped:Connect(function() if prCfg.statusHud.on then drawStatus() end end)
+    return best
 end
+
+local function oaComputeCFrame(dt, targetChar)
+    if not targetChar then return nil end
+    local root = targetChar:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    
+    local resolverOffset = Vector3.zero
+    if OA.resolver then
+        local tvel = root.AssemblyLinearVelocity or Vector3.zero
+        resolverOffset = Vector3.new(tvel.X, 0, tvel.Z) * (OA.shotInterval * 0.6)
+    end
+    
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if OA.antiProjectile and myRoot then
+        local dodged = false
+        for _, obj in ipairs(ws:GetChildren()) do
+            if obj:IsA("BasePart") and (obj.Name == "CoreProjectile" or obj.Name == "Part" or (obj.Name and obj.Name:find("Projectile"))) then
+                local pvel = obj.AssemblyLinearVelocity
+                if pvel and pvel.Magnitude > 40 and (myRoot.Position - obj.Position).Magnitude < 150 then
+                    OA.dodge = pvel:Cross(Vector3.new(0, 1, 0)).Unit * 200
+                    dodged = true
+                    break
+                end
+            end
+        end
+        if not dodged then OA.dodge = Vector3.zero end
+    else
+        OA.dodge = Vector3.zero
+    end
+    
+    local riotHeight = 0
+    if OA.antiRiot then
+        local tTool = targetChar:FindFirstChildOfClass("Tool")
+        if tTool and tTool.Name:lower():find("riot") then
+            riotHeight = 300
+        end
+    end
+    
+    local radius = OA.voidRadius
+    if OA.strikeMelee then
+        local vms = ws:FindFirstChild("ViewModels")
+        local isMelee = false
+        if vms then
+            local fp = vms:FindFirstChild("FirstPerson")
+            if fp then
+                for _, ch2 in ipairs(fp:GetChildren()) do
+                    local nm = ch2.Name:lower()
+                    if nm:find("knife") or nm:find("katana") or nm:find("axe") or nm:find("sword") or nm:find("bat") or nm:find("fists") or nm:find("scythe") or nm:find("chainsaw") or nm:find("daggers") or nm:find("gunblade") or nm:find("trowel") then
+                        isMelee = true
+                        break
+                    end
+                end
+            end
+        end
+        if isMelee then radius = 6 end
+    end
+    
+    OA.angle = OA.angle + (dt * 2.5)
+    
+    local center = root.Position + resolverOffset
+    local orbitOffset = Vector3.new(
+        math.cos(OA.angle) * radius,
+        riotHeight,
+        math.sin(OA.angle) * radius
+    ) + OA.dodge
+    
+    return CFrame.new(center + orbitOffset, root.Position)
+end
+
+local function oaShoot(targetChar)
+    if not mUtil or not mEnum or not rUseItem then return end
+    local lf = mFig and mFig.LocalFighter
+    if not lf or not lf.EquippedItem then return end
+    local oid = lf.EquippedItem:Get("ObjectID")
+    if not oid then return end
+    
+    local hp = targetChar:FindFirstChild(OA.aimPart) or targetChar:FindFirstChild("Head")
+    if not hp then return end
+    
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local shootPos = myRoot and myRoot.Position or Vector3.zero
+    
+    local payload = {
+        [utf8.char(1)] = {
+            [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(shootPos, hp.Position)),
+            [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(shootPos, hp.Position)),
+            [utf8.char(2)] = hp,
+            [utf8.char(3)] = mUtil:EncodeCFrame(CFrame.new(0.43, 0.25, 0.42))
+        }
+    }
+    
+    pcall(function()
+        rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), payload, nil)
+    end)
+end
+
+rs.Heartbeat:Connect(function(dt)
+    if not OA.enabled then return end
+    
+    if OA.autoTarget and (not OA.target or not OA.target.Parent or not OA.target:FindFirstChild("HumanoidRootPart")) then
+        OA.target = oaFindTarget()
+    end
+    
+    if not OA.target then return end
+    
+    oaActiveLF = mFig and mFig.LocalFighter
+    if not oaActiveLF or not oaActiveLF.Entity or not oaActiveLF.Entity.RootPart then return end
+    
+    local voidCF = oaComputeCFrame(dt, OA.target)
+    if not voidCF then return end
+    
+    local now = tick()
+    if (now - OA.lastTp) >= OA.tpDelay then
+        OA.lastTp = now
+        OA.heldCF = voidCF
+    end
+    
+    local sendCF = OA.heldCF or voidCF
+    
+    oaPrevCF = oaActiveLF.Entity.RootPart.CFrame
+    pcall(function()
+        oaActiveLF.Entity.RootPart.CFrame = sendCF
+    end)
+    
+    if OA.autoShoot then
+        if (now - OA.lastShot) >= OA.shotInterval then
+            OA.lastShot = now
+            oaShoot(OA.target)
+        end
+    end
+end)
+
+task.spawn(function()
+    while not mCam do task.wait(1) end
+    if mCam and mCam.Update then
+        local oldCamUpdate = mCam.Update
+        mCam.Update = function(...)
+            if OA.enabled and oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
+                pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
+            end
+            return oldCamUpdate(...)
+        end
+    end
+end)
 
 -- ═══════════════════════════════════════════
 -- VISUALS
@@ -773,58 +680,38 @@ G.TcR:AddDropdown("TCStyle",{Text="Style",Default="Line",Values=TC_STYLES,Callba
 G.TcR:AddButton({Text="Clear Tracers",Func=function() for _,t in ipairs(tcTracers) do tcDestroy(t) end; tcTracers={}; Lib:Notify("Cleared",2) end})
 
 -- ═══════════════════════════════════════════
--- UI — RAGEBOT TAB
+-- UI — RAGEBOT TAB (ORBIT AURA)
 -- ═══════════════════════════════════════════
-local prCfg = PR.prCfg
-
-G.RgL:AddToggle("RGAuto",{Text="Auto Target",Default=false,Callback=function(v) prCfg.aim.autoMode=v end})
-G.RgL:AddToggle("RGFireOnLock",{Text="Auto Shoot",Default=true,Callback=function(v) prCfg.aim.fireOnLock=v end})
-G.RgL:AddDropdown("RGPart",{Text="Hit Part",Default="Head",Values={"Head","UpperTorso","LowerTorso","HumanoidRootPart","Closest","Random"},Callback=function(v) prCfg.aim.aimPart=v end})
-G.RgL:AddDropdown("RGSlot",{Text="Weapon Slot",Default="primary",Values={"primary","secondary","melee"},Callback=function(v) prCfg.aim.slotChoice=v end})
-G.RgL:AddSlider("RGRounds",{Text="Shots Per Tick",Default=1,Min=1,Max=3,Rounding=0,Callback=function(v) prCfg.aim.fireRounds=v end})
-G.RgL:AddToggle("RGPred",{Text="Prediction",Default=false,Callback=function(v) prCfg.pred.active=v end})
-G.RgL:AddSlider("RGPredScale",{Text="Prediction Scale",Default=120,Min=50,Max=300,Rounding=0,Callback=function(v) prCfg.pred.scale=v/100 end})
-G.RgL:AddDivider()
-G.RgL:AddButton({Text="Lock Nearest",Func=function()
-    local t=PR.findNearest(); if t then PR.lockTarget(t); Lib:Notify("Locked: "..(plr:GetPlayerFromCharacter(t) and plr:GetPlayerFromCharacter(t).Name or "?"),3) else Lib:Notify("No target",2) end
+G.RgL:AddToggle("OAEnabled",{Text="Orbit Aura (Void)",Default=false,Callback=function(v) 
+    OA.enabled = v
+    if v then
+        OA.angle = math.random() * math.pi * 2
+        OA.lastTp = 0
+        OA.lastShot = 0
+        OA.heldCF = nil
+        OA.target = nil
+    else
+        OA.heldCF = nil
+        if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
+            pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
+        end
+    end
 end})
-G.RgL:AddButton({Text="Drop Target",Func=function() PR.dropTarget(); Lib:Notify("Target dropped",2) end})
+G.RgL:AddToggle("OAAutoTarget",{Text="Auto Target",Default=true,Callback=function(v) OA.autoTarget = v end})
+G.RgL:AddToggle("OAAutoShoot",{Text="Auto Shoot",Default=true,Callback=function(v) OA.autoShoot = v end})
+G.RgL:AddDropdown("OAAimPart",{Text="Hit Part",Default="Head",Values={"Head","UpperTorso","LowerTorso","HumanoidRootPart"},Callback=function(v) OA.aimPart = v end})
+G.RgL:AddSlider("OAFOV",{Text="Field Of View",Default=360,Min=1,Max=360,Rounding=0,Suffix="°",Callback=function(v) OA.fov = v end})
 
-G.RgR:AddLabel("── HvH Features ──")
-G.RgR:AddToggle("RGAutoPeek",{Text="Auto-Peek",Default=false,Tooltip="Teleport forward, fire, snap back each shot",Callback=function(v) prCfg.autoPeek.on=v end})
-G.RgR:AddSlider("RGPeekDist",{Text="Peek Distance (studs)",Default=5,Min=1,Max=20,Rounding=0,Callback=function(v) prCfg.autoPeek.peekDist=v end})
-G.RgR:AddToggle("RGPeekSnap",{Text="Snap Back After Peek",Default=true,Callback=function(v) prCfg.autoPeek.snapBack=v end})
-G.RgR:AddDivider()
-G.RgR:AddToggle("RGBacktrack",{Text="Backtrack",Default=false,Tooltip="Shoot lagged hitbox position",Callback=function(v) prCfg.backtrack.on=v end})
-G.RgR:AddSlider("RGBTWindow",{Text="Backtrack Window (ms)",Default=200,Min=50,Max=200,Rounding=0,Callback=function(v) prCfg.backtrack.windowMs=v end})
-G.RgR:AddSlider("RGBTSlot",{Text="History Slot (0=oldest)",Default=0,Min=0,Max=10,Rounding=0,Callback=function(v) prCfg.backtrack.targetSlot=v end})
-G.RgR:AddDivider()
-G.RgR:AddToggle("RGMulti",{Text="Multipoint",Default=false,Tooltip="Fire at multiple hitboxes per tick",Callback=function(v) prCfg.multipoint.on=v end})
-local MPOINT_PARTS={"Head","UpperTorso","LowerTorso","HumanoidRootPart"}
-G.RgR:AddDropdown("RGMultiParts",{Text="Multipoint Parts",Default=1,Values=MPOINT_PARTS,Multi=true,Callback=function(v)
-    local selected={}; for part,state in pairs(v) do if state then table.insert(selected,part) end end
-    if #selected>0 then prCfg.multipoint.parts=selected end
-end})
-G.RgR:AddDivider()
-G.RgR:AddToggle("RGDtap",{Text="Doubletap",Default=false,Tooltip="Fire StartShooting N times per tick",Callback=function(v) prCfg.doubletap.on=v end})
-G.RgR:AddSlider("RGDtapCount",{Text="Doubletap Count",Default=2,Min=2,Max=5,Rounding=0,Callback=function(v) prCfg.doubletap.count=v end})
+G.RgR:AddLabel("── Orbit Aura Features ──")
+G.RgR:AddToggle("OAResolver",{Text="Orbit Resolver",Default=true,Callback=function(v) OA.resolver = v end})
+G.RgR:AddToggle("OAAntiRiot",{Text="Anti Riot",Default=true,Callback=function(v) OA.antiRiot = v end})
+G.RgR:AddToggle("OAAntiProj",{Text="Anti Projectile",Default=true,Callback=function(v) OA.antiProjectile = v end})
+G.RgR:AddToggle("OAStrikeMelee",{Text="Strike On Melee",Default=true,Callback=function(v) OA.strikeMelee = v end})
 
-G.RgB:AddLabel("Orbit / Position")
-G.RgB:AddSlider("RGOrbitRPM",{Text="Orbit Speed",Default=9000,Min=0,Max=18000,Rounding=0,Callback=function(v) prCfg.spin.rpm=v end})
-G.RgB:AddSlider("RGOrbitLift",{Text="Orbit Height",Default=100,Min=0,Max=800,Rounding=0,Callback=function(v) prCfg.spin.lift=v/100 end})
-G.RgB:AddSlider("RGOrbitRing",{Text="Orbit Radius",Default=0,Min=0,Max=20,Rounding=0,Callback=function(v) prCfg.spin.ring=v end})
-G.RgB:AddToggle("RGPhase",{Text="Phase Shift (void spam)",Default=false,Callback=function(v) prCfg.phaseShift.on=v end})
-G.RgB:AddSlider("RGPhaseFireMin",{Text="Fire Phase Min (s×10)",Default=10,Min=1,Max=50,Rounding=0,Callback=function(v) prCfg.phaseShift.fireMin=v/10 end})
-G.RgB:AddSlider("RGPhaseFireMax",{Text="Fire Phase Max (s×10)",Default=10,Min=1,Max=50,Rounding=0,Callback=function(v) prCfg.phaseShift.fireMax=v/10 end})
-G.RgB:AddSlider("RGPhaseHideMin",{Text="Hide Phase Min (s×10)",Default=10,Min=1,Max=50,Rounding=0,Callback=function(v) prCfg.phaseShift.hideMin=v/10 end})
-G.RgB:AddSlider("RGPhaseHideMax",{Text="Hide Phase Max (s×10)",Default=10,Min=1,Max=50,Rounding=0,Callback=function(v) prCfg.phaseShift.hideMax=v/10 end})
-
-G.RgS:AddToggle("RGStatusOn",{Text="Status HUD",Default=false,Callback=function(v) prCfg.statusHud.on=v end})
-G.RgS:AddLabel("Color"):AddColorPicker("RGStatusClr",{Default=Color3.fromRGB(235,235,235),Title="HUD Color",Callback=function(v) prCfg.statusHud.clr=v end})
-G.RgS:AddSlider("RGStatusX",{Text="X Offset",Default=0,Min=-500,Max=500,Rounding=0,Callback=function(v) prCfg.statusHud.xOff=v end})
-G.RgS:AddSlider("RGStatusY",{Text="Y Offset",Default=40,Min=-300,Max=300,Rounding=0,Callback=function(v) prCfg.statusHud.yOff=v end})
-G.RgS:AddToggle("RGStatusAmmo",{Text="Show Ammo",Default=true,Callback=function(v) prCfg.statusHud.showBullets=v end})
-G.RgS:AddSlider("RGStatusSpacing",{Text="Row Spacing",Default=15,Min=8,Max=30,Rounding=0,Callback=function(v) prCfg.statusHud.rowSpacing=v end})
+G.RgB:AddLabel("Orbit Timing")
+G.RgB:AddSlider("OATpDelay",{Text="TP Delay (s)",Default=1.3,Min=0.1,Max=5,Rounding=2,Callback=function(v) OA.tpDelay = v end})
+G.RgB:AddSlider("OAShotInt",{Text="Shot Interval (s)",Default=0.4,Min=0.05,Max=2,Rounding=2,Callback=function(v) OA.shotInterval = v end})
+G.RgB:AddSlider("OAVoidRad",{Text="Void Radius",Default=100000,Min=1000,Max=500000,Rounding=0,Suffix=" studs",Callback=function(v) OA.voidRadius = v end})
 
 -- ═══════════════════════════════════════════
 -- UI — MISC TAB
@@ -842,7 +729,12 @@ G.MiR:AddButton({Text="Stop All",Func=function()
     abTgt=nil; abCurveStart=nil; abCurveProgress=0
     aiInBreak=false; aiBreakTimer=0; aiJitterX=0; aiJitterY=0
     AA.enabled=false; stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
-    PR.dropTarget()
+    
+    OA.enabled = false
+    if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
+        pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
+    end
+    
     TCR.enabled=false; tcStop()
     for _,t in ipairs(tracers) do pcall(function() t.line:Remove() end) end; tracers={}
     abCirc.Visible=false; saCirc.Visible=false
@@ -850,7 +742,11 @@ G.MiR:AddButton({Text="Stop All",Func=function()
 end})
 G.MiR:AddButton({Text="Unload",Func=function()
     stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
-    PR.dropTarget(); tcStop()
+    OA.enabled = false
+    if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
+        pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
+    end
+    tcStop()
     Lib:Unload(); openGui:Destroy()
 end})
 
@@ -877,7 +773,14 @@ G.StL:AddDivider()
 G.StL:AddLabel("Menu keybind"):AddKeyPicker("MenuKeybind",{Default="RightShift",NoUI=true,Text="Menu keybind"})
 G.StL:AddToggle("OpenVis",{Text="Show Open Button",Default=true,Callback=function(v) openFrame.Visible=v end})
 G.StL:AddSlider("OpenSz",{Text="Button Size %",Default=100,Min=0,Max=200,Rounding=0,Suffix="%",Callback=function(v) local p=v/100; openFrame.Size=UDim2.fromOffset(math.floor(70*p),math.floor(30*p)); openFrame.Visible=v>0; openBtn.TextSize=math.max(math.floor(13*p),8) end})
-G.StL:AddButton({Text="Unload Script",Func=function() stopAntiAim(); PR.dropTarget(); tcStop(); Lib:Unload(); openGui:Destroy() end})
+G.StL:AddButton({Text="Unload Script",Func=function() 
+    stopAntiAim(); 
+    OA.enabled = false
+    if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
+        pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
+    end
+    tcStop(); Lib:Unload(); openGui:Destroy() 
+end})
 
 Lib.ToggleKeybind = Options.MenuKeybind
 
@@ -937,4 +840,4 @@ rs.RenderStepped:Connect(function()
 end)
 
 Lib:Notify("Rivals v3 loaded | RightShift to toggle",5)
-print("[v3] Full build: AC bypass + phantom_rage + tracers + yenkgg UI")
+print("[v3] Full build: AC bypass + orbit_aura + tracers + yenkgg UI")
