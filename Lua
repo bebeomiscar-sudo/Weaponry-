@@ -3,12 +3,11 @@
     ║  Rivals Tool v3 — Full Build                            ║
     ║  UI: yenkgg UE-Linoria fork                             ║
     ║  AC Bypass: 7-layer stable                              ║
-    ║  Ragebot: orbit_aura (voidspam / peek desync)           ║
+    ║  Ragebot: KiciaHook Arch (Hitscan/Melee/PB/Translocate) ║
     ║  Tracers: standalone tab                                ║
     ╚══════════════════════════════════════════════════════════╝
 ]]
 
--- yield one frame so hooks seat before LC3 initialises
 task.wait(0)
 
 -- ═══════════════════════════════════════════
@@ -125,6 +124,7 @@ local lit = cr(game:GetService("Lighting"))
 local tws = cr(game:GetService("TweenService"))
 local ws  = cr(game:GetService("Workspace"))
 local hts = cr(game:GetService("HttpService"))
+local col = cr(game:GetService("CollectionService"))
 
 local lp  = plr.LocalPlayer
 local cam = ws.CurrentCamera
@@ -223,9 +223,9 @@ local G = {
     HnR = T.Visuals:AddRightGroupbox("Hit Numbers"),
     TcL = T.Tracers:AddLeftGroupbox("Bullet Tracers"),
     TcR = T.Tracers:AddRightGroupbox("Tracer Style"),
-    RgL = T.Rage:AddLeftGroupbox("Target"),
-    RgR = T.Rage:AddRightGroupbox("Orbit Features"),
-    RgB = T.Rage:AddLeftGroupbox("Voidspam Timing"),
+    RgL = T.Rage:AddLeftGroupbox("KiciaHook Target"),
+    RgR = T.Rage:AddRightGroupbox("Strategies & Evasion"),
+    RgB = T.Rage:AddLeftGroupbox("Timing & Anti-Aim"),
     MiL = T.Misc:AddLeftGroupbox("Info"),
     MiR = T.Misc:AddRightGroupbox("Actions"),
     SkL = T.Skins:AddLeftGroupbox("Skin Changer"),
@@ -334,206 +334,276 @@ local gnSaved={}; local SKIP={Sniper=true,Crossbow=true,Bow=true,RPG=true}
 local function patchGuns() if not mItemLib then return end; local ok,items=pcall(function() return mItemLib.Items end); if not ok or not items then return end; for name,data in pairs(items) do if type(data)~="table" or SKIP[name] then continue end; if not gnSaved[name] then gnSaved[name]={ShootSpread=data.ShootSpread,ShootAccuracy=data.ShootAccuracy,ShootRecoil=data.ShootRecoil,ShootCooldown=data.ShootCooldown} end; local s=gnSaved[name]; if data.ShootSpread then data.ShootSpread=GN.noSpread and 0 or s.ShootSpread end; if data.ShootAccuracy then data.ShootAccuracy=GN.noSpread and 0 or s.ShootAccuracy end; if data.ShootRecoil then data.ShootRecoil=GN.noRecoil and 0 or s.ShootRecoil end; if data.ShootCooldown then data.ShootCooldown=GN.fast and 0.05 or s.ShootCooldown end end end
 
 -- ═══════════════════════════════════════════
--- ORBIT AURA RAGEBOT (VOIDSPAM / PEAK DESYNC)
+-- KICIAHOOK RAGEBOT ARCHITECTURE
 -- ═══════════════════════════════════════════
-local OA = {
+local KR = {
     enabled = false,
-    fov = 360,
-    voidRadius = 100000,
-    resolver = true,
-    antiRiot = true,
-    antiProjectile = true,
-    strikeMelee = true,
-    tpDelay = 1.3,
-    shotInterval = 0.4, -- Now acts as "Hide Time" (how long to stay in void)
     autoTarget = true,
-    autoShoot = true,
-    aimPart = "Head",
+    fov = 360,
+    maxDist = 5000,
     
-    offsetX = 0, offsetY = 0, offsetZ = 0,
-    strikeTP = false,
-    strikeTPMode = "Stick",
+    -- Conditions
+    condVulnerable = true,
+    condNotDeflecting = true,
+    condNotShielded = true,
     
-    angle = 0,
-    lastTp = 0,
-    heldCF = nil,
-    dodge = Vector3.zero,
+    -- Strategies
+    hitscan = true,
+    melee = true,
+    
+    -- Evasion
+    evasionMode = "Off", -- "Off", "Translocate", "ProjectileBreaker"
+    
+    -- Anti-Aim
+    antiAim = false,
+    
+    -- Timing
+    shootFrames = 1.0,
+    stability = 0.5,
+    
+    -- Internal State
     target = nil,
+    shootLock = { _lockedUntil = -1 },
+    meleeState = { hitboxWindowUntil = -1, attackCooldownUntil = -1 },
     
-    -- Voidspam State Machine
-    phase = "void",     -- "void" (hiding) or "attack" (peeking/shooting)
-    phaseTimer = 0,
+    -- PB State
+    pbPool = {},
+    pbProcessed = {},
+    pbLastSurface = nil,
+    pbNextCooldown = -1,
 }
 
-local oaPrevCF = nil
-local oaActiveLF = nil
+local function krShouldFire(lockDuration)
+    local now = os.clock()
+    if now < KR.shootLock._lockedUntil then return false end
+    KR.shootLock._lockedUntil = now + lockDuration
+    return true
+end
 
-local function oaFindTarget()
-    local best, bd = nil, math.huge
+local function krFindTarget()
+    local best, bestScore = nil, math.huge
     local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    local myPos = myRoot and myRoot.Position or Vector3.zero
+    if not myRoot then return nil end
+    
     for _, p in ipairs(plr:GetPlayers()) do
         if p == lp then continue end
         if sameTm(p) then continue end
         local chr = p.Character
         if not chr then continue end
-        local hm = chr:FindFirstChildOfClass("Humanoid")
-        if not hm or hm.Health <= 0 then continue end
+        local hum = chr:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
         local root = chr:FindFirstChild("HumanoidRootPart")
         if not root then continue end
-        local d = (root.Position - myPos).Magnitude
-        if d < bd then bd = d; best = chr end
+        
+        -- Target Conditions
+        local isShielded = false
+        local tool = chr:FindFirstChildOfClass("Tool")
+        if tool and tool.Name:lower():find("riot") then isShielded = true end
+        if KR.condNotShielded and isShielded then continue end
+        
+        local dist = (root.Position - myRoot.Position).Magnitude
+        if dist > KR.maxDist then continue end
+        
+        -- Spatial Gate (reject unstable/teleporting targets)
+        local vel = root.AssemblyLinearVelocity
+        if vel and vel.Magnitude > 500 then continue end
+        
+        if dist < bestScore then
+            bestScore = dist
+            best = chr
+        end
     end
     return best
 end
 
-local function oaComputeCFrame(dt, targetChar)
-    if not targetChar then return nil end
-    local root = targetChar:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
-    
-    local resolverOffset = Vector3.zero
-    if OA.resolver then
-        local tvel = root.AssemblyLinearVelocity or Vector3.zero
-        resolverOffset = Vector3.new(tvel.X, 0, tvel.Z) * (OA.shotInterval * 0.6)
-    end
-    
-    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if OA.antiProjectile and myRoot then
-        local dodged = false
-        for _, obj in ipairs(ws:GetChildren()) do
-            if obj:IsA("BasePart") and (obj.Name == "CoreProjectile" or obj.Name == "Part" or (obj.Name and obj.Name:find("Projectile"))) then
-                local pvel = obj.AssemblyLinearVelocity
-                if pvel and pvel.Magnitude > 40 and (myRoot.Position - obj.Position).Magnitude < 150 then
-                    OA.dodge = pvel:Cross(Vector3.new(0, 1, 0)).Unit * 200
-                    dodged = true
-                    break
-                end
-            end
+local function krGetWeaponType()
+    local vms = ws:FindFirstChild("ViewModels")
+    if not vms then return "Gun", "" end
+    local fp = vms:FindFirstChild("FirstPerson")
+    if not fp then return "Gun", "" end
+    for _, ch2 in ipairs(fp:GetChildren()) do
+        local nm = ch2.Name:lower()
+        if nm:find("knife") or nm:find("katana") or nm:find("axe") or nm:find("sword") or nm:find("bat") or nm:find("fists") or nm:find("scythe") or nm:find("chainsaw") or nm:find("daggers") or nm:find("gunblade") or nm:find("trowel") then
+            return "Melee", nm
         end
-        if not dodged then OA.dodge = Vector3.zero end
-    else
-        OA.dodge = Vector3.zero
     end
-    
-    local riotHeight = 0
-    if OA.antiRiot then
-        local tTool = targetChar:FindFirstChildOfClass("Tool")
-        if tTool and tTool.Name:lower():find("riot") then riotHeight = 300 end
-    end
-    
-    local radius = OA.voidRadius
-    if OA.strikeMelee then
-        local vms = ws:FindFirstChild("ViewModels")
-        local isMelee = false
-        if vms then
-            local fp = vms:FindFirstChild("FirstPerson")
-            if fp then
-                for _, ch2 in ipairs(fp:GetChildren()) do
-                    local nm = ch2.Name:lower()
-                    if nm:find("knife") or nm:find("katana") or nm:find("axe") or nm:find("sword") or nm:find("bat") or nm:find("fists") or nm:find("scythe") or nm:find("chainsaw") or nm:find("daggers") or nm:find("gunblade") or nm:find("trowel") then
-                        isMelee = true; break
-                    end
-                end
-            end
-        end
-        if isMelee then radius = 6 end
-    end
-    
-    OA.angle = OA.angle + (dt * 2.5)
-    local center = root.Position + resolverOffset
-    local orbitOffset = Vector3.new(math.cos(OA.angle) * radius, riotHeight, math.sin(OA.angle) * radius) + OA.dodge
-    return CFrame.new(center + orbitOffset, root.Position)
+    return "Gun", ""
 end
 
-local function oaShoot(targetChar)
-    if not mUtil or not mEnum or not rUseItem then return end
-    local lf = mFig and mFig.LocalFighter
-    if not lf or not lf.EquippedItem then return end
-    local oid = lf.EquippedItem:Get("ObjectID")
-    if not oid then return end
-    
-    local hp = targetChar:FindFirstChild(OA.aimPart) or targetChar:FindFirstChild("Head")
-    if not hp then return end
-    
-    local aimPos = hp.Position + Vector3.new(OA.offsetX, OA.offsetY, OA.offsetZ)
-    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    
-    -- Strike TP (Teleport Desync on Shot)
-    if OA.strikeTP and myRoot then
-        local tpPos = aimPos
-        if OA.strikeTPMode == "Above" then tpPos = tpPos + Vector3.new(0, 4, 0) end
-        pcall(function() myRoot.CFrame = CFrame.new(tpPos, aimPos) end)
-    end
-    
-    local shootPos = myRoot and myRoot.Position or aimPos
-    local payload = {
+local function krBuildPayload(myRoot, hitPart, aimPos)
+    return {
         [utf8.char(1)] = {
-            [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(shootPos, aimPos)),
-            [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(shootPos, aimPos)),
-            [utf8.char(2)] = hp,
-            [utf8.char(3)] = mUtil:EncodeCFrame(hp.CFrame:ToObjectSpace(CFrame.new(aimPos)))
+            [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, aimPos)),
+            [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, aimPos)),
+            [utf8.char(2)] = hitPart,
+            [utf8.char(3)] = mUtil:EncodeCFrame(hitPart.CFrame:ToObjectSpace(CFrame.new(aimPos)))
         }
     }
-    pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), payload, nil) end)
 end
 
--- MAIN VOIDSPAM HEARTBEAT LOOP
-rs.Heartbeat:Connect(function(dt)
-    if not OA.enabled then return end
-    
-    if OA.autoTarget and (not OA.target or not OA.target.Parent or not OA.target:FindFirstChild("HumanoidRootPart")) then
-        OA.target = oaFindTarget()
-    end
-    
-    if not OA.target then
-        OA.phase = "void"
-        OA.phaseTimer = 0
-        return
-    end
-    
-    oaActiveLF = mFig and mFig.LocalFighter
-    if not oaActiveLF or not oaActiveLF.Entity or not oaActiveLF.Entity.RootPart then return end
-    
-    if OA.phase == "void" then
-        -- VOID PHASE: Hide in the void orbit
-        local voidCF = oaComputeCFrame(dt, OA.target)
-        if voidCF then
-            local now = tick()
-            if (now - OA.lastTp) >= OA.tpDelay then
-                OA.lastTp = now
-                OA.heldCF = voidCF
-            end
-            local sendCF = OA.heldCF or voidCF
-            oaPrevCF = oaActiveLF.Entity.RootPart.CFrame
-            pcall(function() oaActiveLF.Entity.RootPart.CFrame = sendCF end)
-        end
-        
-        -- Count up timer. shotInterval is now the "Hide Time"
-        OA.phaseTimer = OA.phaseTimer + dt
-        if OA.phaseTimer >= OA.shotInterval then
-            OA.phase = "attack"
-            OA.phaseTimer = 0
-        end
+local function krFireRemote(oid, enumName, payload)
+    pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum(enumName), payload, nil) end)
+end
 
-    elseif OA.phase == "attack" then
-        -- ATTACK PHASE: Teleport back (Strike TP) and Shoot
-        if OA.autoShoot then
-            oaShoot(OA.target)
+local function krHitscanPlan(targetChar, dt)
+    if not KR.hitscan then return nil end
+    local hitPart = targetChar:FindFirstChild("Head") or targetChar:FindFirstChild("UpperTorso")
+    if not hitPart then return nil end
+    
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    
+    if not krShouldFire(dt * KR.shootFrames) then return nil end
+    
+    return function()
+        local lf = mFig and mFig.LocalFighter
+        if lf and lf.EquippedItem then
+            local oid = lf.EquippedItem:Get("ObjectID")
+            if oid then
+                krFireRemote(oid, "StartShooting", krBuildPayload(myRoot, hitPart, hitPart.Position))
+            end
         end
-        -- Immediately return to void phase for the next cycle (snap back)
-        OA.phase = "void"
-        OA.phaseTimer = 0
     end
+end
+
+local function krMeleePlan(targetChar, dt, weaponName)
+    if not KR.melee then return nil end
+    local hitPart = targetChar:FindFirstChild("Head") or targetChar:FindFirstChild("UpperTorso")
+    if not hitPart then return nil end
+    
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    
+    local now = os.clock()
+    local isKnife = weaponName:find("knife")
+    
+    -- Backstab window active
+    if now < KR.meleeState.hitboxWindowUntil then
+        return function()
+            local lf = mFig and mFig.LocalFighter
+            if lf and lf.EquippedItem then
+                local oid = lf.EquippedItem:Get("ObjectID")
+                if oid then
+                    krFireRemote(oid, "StartAiming", krBuildPayload(myRoot, hitPart, hitPart.Position))
+                end
+            end
+        end
+    end
+    
+    if not krShouldFire(dt * KR.shootFrames) then return nil end
+    if now < KR.meleeState.attackCooldownUntil then return nil end
+    
+    if isKnife then
+        KR.meleeState.hitboxWindowUntil = now + 0.625
+        KR.meleeState.attackCooldownUntil = now + 1.25
+    end
+    
+    return function()
+        local lf = mFig and mFig.LocalFighter
+        if lf and lf.EquippedItem then
+            local oid = lf.EquippedItem:Get("ObjectID")
+            if oid then
+                local enumName = isKnife and "StartAiming" or "StartShooting"
+                krFireRemote(oid, enumName, krBuildPayload(myRoot, hitPart, hitPart.Position))
+            end
+        end
+    end
+end
+
+-- Evasion: Translocate
+local function computeTranslocateCF(myRoot)
+    local tagged = col:GetTagged("OutOfBoundsPart")
+    for _, part in ipairs(tagged) do
+        if part:GetAttribute("KillDelay") == 0 then
+            return part.CFrame * CFrame.new(0, -part.Size.Y/2 - 5, 0)
+        end
+    end
+    return CFrame.new(myRoot.Position.X, -500, myRoot.Position.Z)
+end
+
+-- Evasion: ProjectileBreaker
+local function computePBSafeCF(myRoot)
+    local now = os.clock()
+    if now < KR.pbNextCooldown and KR.pbLastSurface then
+        return KR.pbLastSurface
+    end
+    
+    if #KR.pbPool < 10 then
+        for _, part in ipairs(ws:GetDescendants()) do
+            if part:IsA("BasePart") and part.Size.Magnitude > 3 and not KR.pbProcessed[part] then
+                KR.pbProcessed[part] = true
+                local name = part.Name:lower()
+                if not name:find("barrier") and not name:find("kill") and not name:find("spawn") then
+                    table.insert(KR.pbPool, CFrame.new(part.Position + Vector3.new(0, part.Size.Y/2 + 2, 0)))
+                end
+            end
+            if #KR.pbPool >= 50 then break end
+        end
+    end
+    
+    if #KR.pbPool > 0 then
+        KR.pbLastSurface = KR.pbPool[math.random(1, #KR.pbPool)]
+        KR.pbNextCooldown = now + 0.5
+        return KR.pbLastSurface
+    end
+    return nil
+end
+
+local function krApplyEvasion(myRoot)
+    if KR.evasionMode == "Off" then return end
+    
+    if KR.evasionMode == "ProjectileBreaker" then
+        local safeCF = computePBSafeCF(myRoot)
+        if safeCF then pcall(function() myRoot.CFrame = safeCF end) end
+    elseif KR.evasionMode == "Translocate" then
+        local safeCF = computeTranslocateCF(myRoot)
+        if safeCF then pcall(function() myRoot.CFrame = safeCF end) end
+    end
+end
+
+-- Main KiciaHook Heartbeat Loop
+rs.Heartbeat:Connect(function(dt)
+    if not KR.enabled then return end
+    
+    if KR.autoTarget and (not KR.target or not KR.target.Parent or not KR.target:FindFirstChild("HumanoidRootPart")) then
+        KR.target = krFindTarget()
+    end
+    if not KR.target then return end
+    
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    
+    -- Apply Evasion
+    krApplyEvasion(myRoot)
+    
+    -- Strategy Dispatch
+    local wType, wName = krGetWeaponType()
+    local fireAction = nil
+    
+    if wType == "Melee" then
+        fireAction = krMeleePlan(KR.target, dt, wName)
+    else
+        fireAction = krHitscanPlan(KR.target, dt)
+    end
+    
+    if fireAction then fireAction() end
 end)
 
+-- Anti-Aim Hook (Defensive View Angles)
 task.spawn(function()
     while not mCam do task.wait(1) end
     if mCam and mCam.Update then
         local oldCamUpdate = mCam.Update
         mCam.Update = function(...)
-            if OA.enabled and oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
-                pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
+            if KR.enabled and KR.antiAim then
+                -- Send fake angles to desync head
+                pcall(function()
+                    local fakePitch = math.rad(-89)
+                    local fakeYaw = math.rad(180)
+                    if mCam.Rotation then
+                        mCam.Rotation = Vector2.new(fakePitch, fakeYaw)
+                    end
+                end)
             end
             return oldCamUpdate(...)
         end
@@ -677,50 +747,29 @@ G.TcR:AddDropdown("TCStyle",{Text="Style",Default="Line",Values=TC_STYLES,Callba
 G.TcR:AddButton({Text="Clear Tracers",Func=function() for _,t in ipairs(tcTracers) do tcDestroy(t) end; tcTracers={}; Lib:Notify("Cleared",2) end})
 
 -- ═══════════════════════════════════════════
--- UI — RAGEBOT TAB (VOIDSPAM / ORBIT AURA)
+-- UI — RAGEBOT TAB (KICIAHOOK ARCHITECTURE)
 -- ═══════════════════════════════════════════
-G.RgL:AddToggle("OAEnabled",{Text="Orbit Aura (Voidspam)",Default=false,Callback=function(v) 
-    OA.enabled = v
-    if v then
-        OA.angle = math.random() * math.pi * 2
-        OA.lastTp = 0
-        OA.heldCF = nil
-        OA.target = nil
-        OA.phase = "void"
-        OA.phaseTimer = 0
-    else
-        OA.heldCF = nil
-        OA.phase = "void"
-        OA.phaseTimer = 0
-        if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
-            pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
-        end
-    end
-end})
-G.RgL:AddToggle("OAAutoTarget",{Text="Auto Target",Default=true,Callback=function(v) OA.autoTarget = v end})
-G.RgL:AddToggle("OAAutoShoot",{Text="Auto Shoot",Default=true,Callback=function(v) OA.autoShoot = v end})
-G.RgL:AddDropdown("OAAimPart",{Text="Hit Part",Default="Head",Values={"Head","UpperTorso","LowerTorso","HumanoidRootPart"},Callback=function(v) OA.aimPart = v end})
-G.RgL:AddSlider("OAFOV",{Text="Field Of View",Default=360,Min=1,Max=360,Rounding=0,Suffix="°",Callback=function(v) OA.fov = v end})
+G.RgL:AddToggle("KREnabled",{Text="Enable Ragebot",Default=false,Callback=function(v) KR.enabled = v end})
+G.RgL:AddToggle("KRAuto",{Text="Auto Target",Default=true,Callback=function(v) KR.autoTarget = v end})
+G.RgL:AddSlider("KRFOV",{Text="FOV (360 = Full)",Default=360,Min=1,Max=360,Rounding=0,Suffix="°",Callback=function(v) KR.fov = v end})
+G.RgL:AddSlider("KRDist",{Text="Max Distance",Default=5000,Min=10,Max=10000,Rounding=0,Suffix=" studs",Callback=function(v) KR.maxDist = v end})
 
-G.RgR:AddLabel("── Orbit Aura Features ──")
-G.RgR:AddToggle("OAResolver",{Text="Orbit Resolver",Default=true,Callback=function(v) OA.resolver = v end})
-G.RgR:AddToggle("OAAntiRiot",{Text="Anti Riot",Default=true,Callback=function(v) OA.antiRiot = v end})
-G.RgR:AddToggle("OAAntiProj",{Text="Anti Projectile",Default=true,Callback=function(v) OA.antiProjectile = v end})
-G.RgR:AddToggle("OAStrikeMelee",{Text="Strike On Melee",Default=true,Callback=function(v) OA.strikeMelee = v end})
+G.RgL:AddLabel("── Target Conditions ──")
+G.RgL:AddToggle("KRVuln",{Text="Vulnerable",Default=true,Callback=function(v) KR.condVulnerable = v end})
+G.RgL:AddToggle("KRNoDeflect",{Text="Not Deflecting",Default=true,Callback=function(v) KR.condNotDeflecting = v end})
+G.RgL:AddToggle("KRNoShield",{Text="Not Shielded",Default=true,Callback=function(v) KR.condNotShielded = v end})
 
-G.RgR:AddLabel("── Aim Offsets ──")
-G.RgR:AddSlider("OAOffsetX",{Text="Offset X",Default=0,Min=-5,Max=5,Rounding=1,Compact=true,Callback=function(v) OA.offsetX = v end})
-G.RgR:AddSlider("OAOffsetY",{Text="Offset Y",Default=0,Min=-5,Max=5,Rounding=1,Compact=true,Callback=function(v) OA.offsetY = v end})
-G.RgR:AddSlider("OAOffsetZ",{Text="Offset Z",Default=0,Min=-5,Max=5,Rounding=1,Compact=true,Callback=function(v) OA.offsetZ = v end})
+G.RgR:AddLabel("── Strategies ──")
+G.RgR:AddToggle("KRHitscan",{Text="Hitscan (Guns)",Default=true,Callback=function(v) KR.hitscan = v end})
+G.RgR:AddToggle("KRMelee",{Text="Melee (Backstab)",Default=true,Callback=function(v) KR.melee = v end})
 
-G.RgR:AddLabel("── Strike TP (Teleport Desync) ──")
-G.RgR:AddToggle("OAStrikeTP",{Text="Strike TP (Desync)",Default=false,Tooltip="Teleports you to the target exactly when shooting",Callback=function(v) OA.strikeTP = v end})
-G.RgR:AddDropdown("OAStrikeMode",{Text="TP Mode",Default="Stick",Values={"Stick","Above"},Tooltip="Stick = exact head/part | Above = slightly above head",Callback=function(v) OA.strikeTPMode = v end})
+G.RgR:AddLabel("── Evasion ──")
+G.RgR:AddDropdown("KREvasion",{Text="Evasion Mode",Default="Off",Values={"Off","ProjectileBreaker","Translocate"},Callback=function(v) KR.evasionMode = v end})
 
-G.RgB:AddLabel("Voidspam Timing")
-G.RgB:AddSlider("OAShotInt",{Text="Shot Interval (Hide Time)",Default=0.4,Min=0.05,Max=5,Rounding=2,Suffix="s",Tooltip="How long you stay in the void before teleporting back to attack",Callback=function(v) OA.shotInterval = v end})
-G.RgB:AddSlider("OATpDelay",{Text="Void TP Delay (s)",Default=1.3,Min=0.1,Max=5,Rounding=2,Tooltip="How often the void orbit position updates",Callback=function(v) OA.tpDelay = v end})
-G.RgB:AddSlider("OAVoidRad",{Text="Void Radius",Default=100000,Min=1000,Max=500000,Rounding=0,Suffix=" studs",Callback=function(v) OA.voidRadius = v end})
+G.RgB:AddLabel("── Timing & Anti-Aim ──")
+G.RgB:AddSlider("KRFrames",{Text="Shoot Frames",Default=1.0,Min=0.1,Max=5.0,Rounding=1,Callback=function(v) KR.shootFrames = v end})
+G.RgB:AddSlider("KRStab",{Text="Stability Gate",Default=0.5,Min=0.1,Max=2.0,Rounding=1,Callback=function(v) KR.stability = v end})
+G.RgB:AddToggle("KRAntiAim",{Text="Defensive Angles",Default=false,Callback=function(v) KR.antiAim = v end})
 
 -- ═══════════════════════════════════════════
 -- UI — MISC TAB
@@ -738,14 +787,7 @@ G.MiR:AddButton({Text="Stop All",Func=function()
     abTgt=nil; abCurveStart=nil; abCurveProgress=0
     aiInBreak=false; aiBreakTimer=0; aiJitterX=0; aiJitterY=0
     AA.enabled=false; stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
-    
-    OA.enabled = false
-    OA.phase = "void"
-    OA.phaseTimer = 0
-    if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
-        pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
-    end
-    
+    KR.enabled=false; KR.target=nil
     TCR.enabled=false; tcStop()
     for _,t in ipairs(tracers) do pcall(function() t.line:Remove() end) end; tracers={}
     abCirc.Visible=false; saCirc.Visible=false
@@ -753,12 +795,7 @@ G.MiR:AddButton({Text="Stop All",Func=function()
 end})
 G.MiR:AddButton({Text="Unload",Func=function()
     stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
-    OA.enabled = false
-    OA.phase = "void"
-    OA.phaseTimer = 0
-    if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
-        pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
-    end
+    KR.enabled=false
     tcStop()
     Lib:Unload(); openGui:Destroy()
 end})
@@ -788,12 +825,7 @@ G.StL:AddToggle("OpenVis",{Text="Show Open Button",Default=true,Callback=functio
 G.StL:AddSlider("OpenSz",{Text="Button Size %",Default=100,Min=0,Max=200,Rounding=0,Suffix="%",Callback=function(v) local p=v/100; openFrame.Size=UDim2.fromOffset(math.floor(70*p),math.floor(30*p)); openFrame.Visible=v>0; openBtn.TextSize=math.max(math.floor(13*p),8) end})
 G.StL:AddButton({Text="Unload Script",Func=function() 
     stopAntiAim(); 
-    OA.enabled = false
-    OA.phase = "void"
-    OA.phaseTimer = 0
-    if oaActiveLF and oaActiveLF.Entity and oaActiveLF.Entity.RootPart and oaPrevCF then
-        pcall(function() oaActiveLF.Entity.RootPart.CFrame = oaPrevCF end)
-    end
+    KR.enabled=false
     tcStop(); Lib:Unload(); openGui:Destroy() 
 end})
 
@@ -854,5 +886,5 @@ rs.RenderStepped:Connect(function()
     else Lib:SetWatermark(string.format("Rivals v3 | %d fps",math.floor(fps))) end
 end)
 
-Lib:Notify("Rivals v3 loaded | RightShift to toggle",5)
-print("[v3] Full build: AC bypass + voidspam orbit_aura + tracers + yenkgg UI")
+Lib:Notify("Rivals v3 loaded | KiciaHook Arch Active",5)
+print("[v3] Full build: AC bypass + KiciaHook Ragebot (Hitscan/Melee/PB/Translocate) + yenkgg UI")
