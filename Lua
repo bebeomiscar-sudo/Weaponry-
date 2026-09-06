@@ -1,1064 +1,1156 @@
---[[
-    ╔══════════════════════════════════════════════════════════╗
-    ║  Rivals Tool v3 — Full Build                            ║
-    ║  UI: yenkgg UE-Linoria fork                             ║
-    ║  AC Bypass: 7-layer stable                              ║
-    ║  Ragebot: kicia-style (deobfuscated source logic)       ║
-    ║  Tracers: standalone tab                                ║
-    ╚══════════════════════════════════════════════════════════╝
-]]
-
-task.wait(0)
+-- ═══════════════════════════════════════════
+-- LPH STUBS
+-- ═══════════════════════════════════════════
+if not LPH_NO_VIRTUALIZE then function LPH_NO_VIRTUALIZE(f) return f end end
+if not LPH_JIT_MAX then function LPH_JIT_MAX(f) return f end end
 
 -- ═══════════════════════════════════════════
--- AC BYPASS (7 layers)
+-- ANTI-CHEAT BYPASS (Aetherea — challenge-response)
 -- ═══════════════════════════════════════════
-pcall(function()
-    local _cr  = cloneref or function(o) return o end
-    local _plr = _cr(game:GetService("Players"))
-    local _rep = _cr(game:GetService("ReplicatedStorage"))
-    local _rf  = _cr(game:GetService("ReplicatedFirst"))
-    local _lp  = _plr.LocalPlayer
-    local _targets    = {"LocalScript3","MiscellaneousController"}
-    local _ban_consts = {"TakeTheL","ban","kick","Kick","Shutdown","ClientAlert","MiscellaneousController"}
-    local _old_setmt; _old_setmt = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
-        if mt and typeof(mt)=="table" and rawget(mt,"__mode")=="kv" then
-            local tr = debug.traceback()
-            for _, t in ipairs(_targets) do if tr:find(t) then return _old_setmt({1,2,3},{}) end end
+pcall(LPH_NO_VIRTUALIZE(function()
+    local bypassed = false
+    local kKickNames = {"Kick","kick"}
+    local kProtectedProperties = {Enabled=true,Disabled=false}
+    local kSlotMap = {[69]=2,[138]=3,[207]=4,[276]=5,[345]=6,[414]=7}
+    local kFilledSub = {1,2,3,4,5}
+
+    local Players           = cloneref(game:GetService("Players"))
+    local ReplicatedFirst   = cloneref(game:GetService("ReplicatedFirst"))
+    local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+    local ScriptContext     = cloneref(game:GetService("ScriptContext"))
+    local LocalPlayer       = Players.LocalPlayer
+
+    local ac_script = ReplicatedFirst:WaitForChild("LocalScript3")
+    local ac_event  = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RemoteEvent")
+
+    local last=nil; local first_seen=false; local hijack_ready=false; local client_id
+    local expected_interval=0.6; local min_interval=0.25; local ema_alpha=0.5; local samples=0
+    local hidden_fn={}; local max_stack_depth=128
+
+    if not setstackhidden then
+        local function ValidTraceback(s)
+            local d=string.find(s,"%."); local c=string.find(s,":")
+            if not d then return false end; if not c then return true end; return d<c
         end
-        return _old_setmt(tbl, mt)
-    end))
-    local _fakeAlert = Instance.new("RemoteEvent"); _fakeAlert.Name="ClientAlert"; _fakeAlert.Parent=_lp
-    local _lpmt = getrawmetatable(_lp); local _old_lp_nc = _lpmt.__namecall
-    setreadonly(_lpmt, false)
-    _lpmt.__namecall = newcclosure(function(self, ...)
-        local m = getnamecallmethod()
-        if (m=="WaitForChild" or m=="FindFirstChild") and select(1,...)=="ClientAlert" then return _fakeAlert end
-        return _old_lp_nc(self, ...)
-    end)
-    setreadonly(_lpmt, true)
-    local _gmt = getrawmetatable(game); local _old_game_nc = _gmt.__namecall
-    setreadonly(_gmt, false)
-    _gmt.__namecall = newcclosure(function(self, ...)
-        local m=getnamecallmethod(); local ml=m:lower()
-        if (self==_lp or ml=="shutdown") and (ml=="kick" or ml=="shutdown") then return end
-        if m=="FireServer" and self==_fakeAlert then return end
-        return _old_game_nc(self, ...)
-    end)
-    setreadonly(_gmt, true)
-    for _, name in ipairs({"Kick","kick"}) do
-        pcall(function()
-            local fn=_lp[name]; if type(fn)~="function" then return end
-            local _ok; _ok=hookfunction(fn,newcclosure(function(self,...) if self==_lp then return nil end; return _ok(self,...) end))
+        local function TracebackLines(str,lvl)
+            local pos=lvl; return function()
+                if not pos then return nil end
+                local p1,p2=string.find(str,"\r?\n",pos); local line
+                if p1 then line=str:sub(pos,p1-1); pos=p2+1 else line=str:sub(pos); pos=nil end
+                return line
+            end
+        end
+        local old_dbg_traceback; old_dbg_traceback=hookfunction(getrenv().debug.traceback,function(...)
+            if checkcaller() or not(pcall(old_dbg_traceback,...)) then return old_dbg_traceback(...) end
+            local StartingString,StackLevel=...; local Traceback=old_dbg_traceback(...); local NewTraceback={}
+            if typeof(StartingString)=="string" or typeof(StartingString)=="number" then table.insert(NewTraceback,tostring(StartingString)) end
+            if typeof(StackLevel)~="number" or not tonumber(StackLevel) then StackLevel=1 else StackLevel=math.floor(tonumber(StackLevel)) end
+            for Line in TracebackLines(Traceback,StackLevel) do if not ValidTraceback(Line) then continue end; table.insert(NewTraceback,Line) end
+            return table.concat(NewTraceback,"\n").."\n"
+        end)
+        local old_dbg_info; old_dbg_info=hookfunction(getrenv().debug.info,function(...)
+            local ToInspect,LevelOrInfo=...
+            if checkcaller() or typeof(ToInspect)=="function" or typeof(ToInspect)=="thread"
+                or not pcall(function(l) old_dbg_info(function()end,l) end,LevelOrInfo) then return old_dbg_info(...) end
+            ToInspect=math.floor(ToInspect); local Stack={}
+            for Level=2,max_stack_depth do
+                local Function,Source,Line,Name=old_dbg_info(Level,"fslna")
+                if not Function or not Source or not Line or not Name then break end
+                if isexecutorclosure(Function) and not hidden_fn[Function] then continue end
+                table.insert(Stack,{f=Function,s=Source,l=Line,n=Name})
+            end
+            local InfoLevel=Stack[ToInspect+1]; if not InfoLevel then return old_dbg_info(3e4,LevelOrInfo) end
+            local ReturnResult={}
+            for _,info in string.split(LevelOrInfo,"") do
+                local Value=InfoLevel[info]
+                if typeof(Value)=="table" then for _,v in Value do table.insert(ReturnResult,v) end; continue end
+                table.insert(ReturnResult,Value)
+            end
+            return table.unpack(ReturnResult,1,#ReturnResult)
+        end)
+        local old_getfenv; old_getfenv=hookfunction(getrenv().getfenv,function(...)
+            if checkcaller() then return old_getfenv(...) end
+            local ToInspect=...; local Success,ResultingEnv=pcall(function()
+                if typeof(ToInspect)=="number" and ToInspect>=0 then return old_getfenv(ToInspect+3) end
+                return old_getfenv(ToInspect)
+            end)
+            if not Success then
+                if typeof(ToInspect)=="number" and ToInspect>=0 then return old_getfenv(ToInspect+3) end
+                return old_getfenv(ToInspect)
+            end
+            if ToInspect==nil or typeof(ToInspect)=="function" then return ResultingEnv end
+            ToInspect=math.floor(ToInspect); local Stack={}
+            for Level=1,max_stack_depth do
+                local ok,Data=pcall(function() return {Environement=old_getfenv(Level+3),Function=old_dbg_info(Level+3,"f")} end)
+                if not ok or not Data then break end
+                local Env=Data.Environement; local Fn=Data.Function
+                if typeof(Env["getgenv"])=="function" and isexecutorclosure(Env["getgenv"]) then
+                    if shared.Hooking and shared.Hooking.IncludeInStackFunctions and shared.Hooking.IncludeInStackFunctions[Fn] then
+                        Env=setmetatable(ResultingEnv,{__index=getrenv()})
+                    else continue end
+                end
+                table.insert(Stack,Env)
+            end
+            local InfoLevel=Stack[ToInspect+1]; if not InfoLevel then return old_getfenv(3e4) end
+            return InfoLevel
         end)
     end
-    local _old_getgc = getgc
-    getgc = function(...)
-        local gc=_old_getgc(...); local out={}
-        for _,v in ipairs(gc) do
-            if typeof(v)=="function" then
-                local src=debug.info(v,"s"); local hide=false
-                if src then for _,t in ipairs(_targets) do if src:find(t) then hide=true; break end end end
-                if not hide then table.insert(out,v) end
-            else table.insert(out,v) end
-        end
-        return out
+
+    setstackhidden=setstackhidden or function(fn_or_level,hidden)
+        assert(typeof(hidden)=="boolean","hidden must be boolean")
+        local ok,fn=pcall(function() if typeof(fn_or_level)=="number" then return debug.info(fn_or_level+2,"f") end; return fn_or_level end)
+        assert(ok and fn,"invalid argument #1"); hidden_fn[fn]=not hidden
     end
-    local _ac_script=_rf:WaitForChild("LocalScript3",10); local _neutered=0
-    for _,f in ipairs(_old_getgc(false)) do
-        if typeof(f)~="function" then continue end
-        local ok_e,env=pcall(getfenv,f); if not ok_e or type(env)~="table" then continue end
-        local scr=rawget(env,"script"); if not scr or typeof(scr)~="Instance" then continue end
-        local sname=tostring(scr)
-        local is_tgt=(scr==_ac_script) or sname:find("LoadingScreen") or sname:find("MiscellaneousController")
-        if not is_tgt then continue end
-        local ok_c,consts=pcall(debug.getconstants,f); if not ok_c or type(consts)~="table" then continue end
-        for _,k in ipairs(consts) do
-            if typeof(k)=="string" then
-                for _,b in ipairs(_ban_consts) do
-                    if k:find(b) then pcall(function() hookfunction(f,newcclosure(function() return nil end)); _neutered+=1 end); break end
-                end
+
+    local TrustedFunctions=setmetatable({},{__mode="k"})
+    local function TrustFunction(fn) if type(fn)=="function" then TrustedFunctions[fn]=true end; return fn end
+    local function IsTrustedFunction(fn) return TrustedFunctions[fn]==true end
+
+    local SafeHook=function(hookfn,...)
+        local args={...}; local func,inst,metamethod,detour
+        if hookfn==hookmetamethod then inst=args[1]; metamethod=args[2]; detour=args[3]
+        else func=args[1]; detour=args[2] end
+        if hookfn==hookfunction and func and iscclosure(func) then detour=newcclosure(detour) end
+        if not iscclosure(detour) then detour=newcclosure(detour) end
+        setstackhidden(detour,true); local original_func
+        local ok,_=pcall(function()
+            TrustFunction(detour)
+            if hookfn==hookmetamethod then original_func=hookfn(inst,metamethod,detour)
+            else original_func=hookfn(func,detour) end
+        end)
+        if not ok then warn("[bypass] SafeHook failed") end
+        return original_func
+    end
+
+    local SafeCall=function(func,...)
+        if checkcaller() then return func(...) end
+        local old=getthreadidentity(); if old~=2 then setthreadidentity(2) end
+        local result={func(...)}; if old~=2 then setthreadidentity(old) end
+        return table.unpack(result)
+    end
+
+    local monitor_conn=ScriptContext.Error:Connect(TrustFunction(function(message,stack)
+        message=tostring(message); stack=tostring(stack)
+        if stack:find("PlayerScripts.Controllers.MiscellaneousController") and message:find("attempt to index number with number") then
+            warn("[bypass] n2 — MiscCtrl error caught")
+        end
+    end))
+
+    local oldindex; oldindex=SafeHook(hookmetamethod,ac_script,"__index",function(t,k)
+        local is_caller=not bypassed and checkcaller()
+        if t==ac_script and not is_caller and kProtectedProperties[k]~=nil then return kProtectedProperties[k] end
+        if checkcaller() then return oldindex(t,k) end
+        return SafeCall(oldindex,t,k)
+    end)
+
+    local oldnewindex; oldnewindex=SafeHook(hookmetamethod,ac_script,"__newindex",function(t,k,v)
+        local is_caller=not bypassed and checkcaller()
+        if t==ac_script and not is_caller and kProtectedProperties[k]~=nil then
+            kProtectedProperties[k]=v
+            if k=="Enabled" then kProtectedProperties["Disabled"]=not v end
+            if k=="Disabled" then kProtectedProperties["Enabled"]=not v end
+            return
+        end
+        if checkcaller() then return oldnewindex(t,k,v) end
+        return SafeCall(oldnewindex,t,k,v)
+    end)
+
+    client_id=""; last=tick()
+
+    local oldfireserver; oldfireserver=SafeHook(hookfunction,ac_event.FireServer,function(self,...)
+        local now=tick(); local args={...}
+        if not first_seen then
+            first_seen=true
+            local first_arg=args[1]
+            if type(first_arg)=="table" and #first_arg>=1 and (type(first_arg[1])=="string" or type(first_arg[1])=="number") then
+                client_id=tostring(first_arg[1])
+            else client_id=client_id or "" end
+            last=tick(); samples=1; hijack_ready=true
+            return SafeCall(oldfireserver,self,...)
+        end
+        local interval=now-(last or now)
+        if interval>0 then
+            if samples==0 then expected_interval=interval
+            else expected_interval=ema_alpha*interval+(1-ema_alpha)*expected_interval end
+            samples+=1; if expected_interval<min_interval then expected_interval=min_interval end
+        end
+        local res=SafeCall(oldfireserver,self,...); last=tick(); return res
+    end)
+
+    local BuildSubTable=function()
+        local num_empty=math.random(1,5); local empty_map={}; local empty_slots={7}; empty_map[7]=true
+        while #empty_slots<num_empty do
+            local slot=math.random(1,6); if not empty_map[slot] then empty_map[slot]=true; table.insert(empty_slots,slot) end
+        end
+        table.sort(empty_slots); local result={}
+        for i=1,7 do if empty_map[i] then result[i]={} else result[i]=kFilledSub end end
+        return result,empty_slots
+    end
+
+    local ApplyTransforms=function(t,mask,empty_slots)
+        local payload=t[1]; local outer_index=#payload; local inner_index=empty_slots[math.random(1,#empty_slots)]
+        local derived; local outer_val=payload[outer_index]
+        if type(outer_val)=="table" and type(inner_index)=="number" then derived=outer_val[inner_index]
+        else
+            for i=outer_index,1,-1 do
+                if type(payload[i])~="table" then continue end
+                local candidate=payload[i]
+                if type(inner_index)=="number" and candidate[inner_index]~=nil then derived=candidate[inner_index]; break
+                else derived=candidate; break end
             end
+            if derived==nil then derived={} end
         end
-    end
-    for _,v in ipairs(getgc()) do
-        if typeof(v)~="function" then continue end
-        local src=debug.info(v,"s"); if not src then continue end
-        for _,t in ipairs(_targets) do
-            if src:find(t) then pcall(function() hookfunction(v,newcclosure(function() return task.wait(9e9) end)) end) end
+        local written={}
+        for _,value in ipairs(mask) do
+            local slot=kSlotMap[value]; if slot and not written[slot] then t[slot]=derived; written[slot]=true end
         end
+        return t
     end
-    coroutine.wrap(function()
-        local _ac_tags={"anticheat","ac","detection","ban","kick","security","moderation"}
-        local function _proc(o)
-            pcall(function()
-                if o:IsA("LocalScript") or o:IsA("ModuleScript") then
-                    local nm=o.Name:lower()
-                    for _,tag in ipairs(_ac_tags) do if nm:find(tag) then pcall(function() o.Disabled=true end); break end end
-                end
+
+    local BuildPayload=function(challenge,mask)
+        local sub_table,empty_slots=BuildSubTable(); local total_idx=math.random(1,8)
+        local payload={client_id,buffer.tostring(challenge)}; local extra_strings=math.random(0,2)
+        for _=1,extra_strings do payload[#payload+1]="" end
+        while #payload<(total_idx-1) do payload[#payload+1]=math.random(5,100000) end
+        payload[#payload+1]=sub_table
+        local t={payload,{},nil,nil,nil,nil,nil}
+        return ApplyTransforms(t,mask,empty_slots)
+    end
+
+    task.spawn(function()
+        getfenv().script=ac_script
+        while not hijack_ready do task.wait() end
+        ac_script.Enabled=false
+        ac_event.OnClientEvent:Connect(function(...)
+            last=tick(); local t={...}
+            local challenge=t[1]; local index=t[2]; local mask=t[3]
+            if typeof(challenge)~="buffer" or type(index)~="number" or type(mask)~="table" then
+                warn("[bypass] bad challenge format"); return
+            end
+            local payload=BuildPayload(challenge,mask)
+            task.defer(function()
+                local since_last=tick()-(last or 0); local desired_wait=expected_interval-since_last
+                if desired_wait>0 then task.wait(desired_wait) end
+                ac_event:FireServer(table.unpack(payload,1,5)); last=tick()
             end)
-        end
-        pcall(function() for _,v in ipairs(game:GetDescendants()) do _proc(v) end; game.DescendantAdded:Connect(_proc) end)
-    end)()
-    print("[v3] AC Bypass: ".._neutered.." funcs neutered — 7 layers active")
+        end)
+        bypassed=true; monitor_conn:Disconnect()
+        print("[bypass] active")
+    end)
+
+    for _,name in ipairs(kKickNames) do
+        local func=LocalPlayer[name]; if type(func)~="function" then continue end
+        local oldfunc; oldfunc=SafeHook(hookfunction,func,function(self,...)
+            if self==LocalPlayer and not checkcaller() then return nil end
+            return oldfunc(self,...)
+        end)
+    end
+
+    for _,conn in ipairs(getconnections(ScriptContext.Error)) do
+        if not conn.Function then continue end
+        if IsTrustedFunction(conn.Function) then continue end
+        SafeHook(hookfunction,conn.Function,function(...) return nil end)
+    end
+    SafeHook(hookfunction,ScriptContext.Error.Connect,function(...) return nil end)
+
+    while not bypassed do task.wait(0.5) end
+    task.wait(1)
+end))
+
+-- ═══════════════════════════════════════════
+-- SERVICES + REFS
+-- ═══════════════════════════════════════════
+local cr = cloneref or function(o) return o end
+local players       = cr(game:GetService("Players"))
+local run_service   = cr(game:GetService("RunService"))
+local tween_service = cr(game:GetService("TweenService"))
+local workspace_    = cr(game:GetService("Workspace"))
+local rep_storage   = cr(game:GetService("ReplicatedStorage"))
+
+local local_player  = players.LocalPlayer
+local camera        = workspace_.CurrentCamera
+
+-- module refs — loaded lazily after match starts
+local fighter_controller, enum_lib, utility_lib, item_lib
+
+local function tryLoadModules()
+    pcall(function() fighter_controller = require(local_player.PlayerScripts.Controllers.FighterController) end)
+    pcall(function() enum_lib           = require(rep_storage.Modules.EnumLibrary) end)
+    pcall(function() utility_lib        = require(rep_storage.Modules.Utility) end)
+    pcall(function() item_lib           = require(rep_storage.Modules.ItemLibrary) end)
+end
+tryLoadModules()
+task.spawn(function()
+    while not (fighter_controller and enum_lib and utility_lib) do
+        task.wait(3); tryLoadModules()
+    end
 end)
 
 -- ═══════════════════════════════════════════
--- SERVICES
+-- CONFIG STATE
 -- ═══════════════════════════════════════════
-local cr  = cloneref or function(o) return o end
-local plr = cr(game:GetService("Players"))
-local rs  = cr(game:GetService("RunService"))
-local uis = cr(game:GetService("UserInputService"))
-local rep = cr(game:GetService("ReplicatedStorage"))
-local lit = cr(game:GetService("Lighting"))
-local tws = cr(game:GetService("TweenService"))
-local ws  = cr(game:GetService("Workspace"))
-local hts = cr(game:GetService("HttpService"))
-local cs  = cr(game:GetService("CollectionService"))
-local tp  = cr(game:GetService("TeleportService"))
-
-local lp  = plr.LocalPlayer
-local cam = ws.CurrentCamera
-local psc = lp.PlayerScripts
-local pg  = lp:WaitForChild("PlayerGui")
+local CFG = {
+    ragebot = {
+        enable=false, ffa_mode=false,
+        offset_x=0, offset_y=2, offset_z=0,
+        prediction=false, prediction_amt=1.2,
+    },
+    triggerbot = {
+        enable=false, team_check=false,
+        reaction_time=0.05, shoot_delay=0.1, max_distance=500,
+    },
+    bullet_tracers = {
+        enable=false,
+        color_start=Color3.fromRGB(255,255,255), color_end=Color3.fromRGB(255,255,255),
+        texture="lightning", position_lerp_speed=0, life_time=1.5,
+        glow=4, width0=0.35, width1=0.15, speed=3,
+        spring_expand=false, expand_speed=12, expand_damper=0.6,
+        curve_around=false, curve_height=14, through_walls=false,
+    },
+    thrower_esp = {
+        enable=false, name=false, image=false,
+        name_color=Color3.fromRGB(255,255,255), name_size=14,
+        distance=false, distance_color=Color3.fromRGB(255,255,255), distance_size=12,
+        thrower_select="", font="GothamBold",
+    },
+    damage_numbers = {
+        enable=false, remove_ingame=false,
+        color_type="Gradient",
+        color1=Color3.fromRGB(255,80,80), color2=Color3.fromRGB(255,210,90),
+        font="GothamBold", duration=0.8, rise=42, text_size=18,
+    },
+}
+getgenv().RivalsCFG = CFG
 
 -- ═══════════════════════════════════════════
--- MODULE LOADER
+-- TEXTURE MAP
 -- ═══════════════════════════════════════════
-local ctl=nil
-task.spawn(function() pcall(function() ctl=psc:WaitForChild("Controllers",30) end) end)
+local texture_id = {
+    ["beam"]      = "rbxassetid://12781852245",
+    ["lightning"] = "rbxassetid://446111271",
+    ["heartrate"] = "rbxassetid://5830549480",
+    ["chain"]     = "rbxassetid://9632168658",
+    ["glitch"]    = "rbxassetid://8089467613",
+    ["swirl"]     = "rbxassetid://5638168605",
+    ["neon"]      = "rbxassetid://6361963422",
+    ["plasma"]    = "rbxassetid://8993645509",
+    ["laser"]     = "rbxassetid://14549123968",
+}
 
-local mUtil,mEnum,mCosmetic,mItemLib,mEnumLib,mCam,mFig,mData,rUseItem
+-- ═══════════════════════════════════════════
+-- DAMAGE NUMBERS
+-- ═══════════════════════════════════════════
+local dgui = Instance.new("ScreenGui")
+dgui.Name = "dmg_nums"; dgui.ResetOnSpawn = false
+dgui.IgnoreGuiInset = true; dgui.DisplayOrder = 500
+pcall(function() dgui.Parent = gethui() end)
+if not dgui.Parent then pcall(function() dgui.Parent = game:GetService("CoreGui") end) end
+if not dgui.Parent then dgui.Parent = local_player:FindFirstChildOfClass("PlayerGui") end
 
-pcall(function() mUtil    = require(rep.Modules.Utility) end)
-pcall(function() mEnum    = require(rep.Modules.EnumLibrary) end)
-pcall(function() mItemLib = require(rep.Modules:WaitForChild("ItemLibrary",10)) end)
-pcall(function()
-    mEnumLib=require(rep.Modules:WaitForChild("EnumLibrary",10))
-    if mEnumLib then pcall(function() mEnumLib:WaitForEnumBuilder() end) end
+local function fontOf(name)
+    local ok,f = pcall(function() return Enum.Font[name] end)
+    return (ok and f) or Enum.Font.GothamBold
+end
+
+local function fireDamageNumber(worldPos, amount)
+    local cfg = CFG.damage_numbers
+    if not cfg.enable or not worldPos then return end
+    local sp, onscreen = camera:WorldToViewportPoint(worldPos)
+    if not onscreen then return end
+
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.fromOffset(140, 26)
+    lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+    lbl.Position = UDim2.fromOffset(sp.X, sp.Y)
+    lbl.Font = fontOf(cfg.font)
+    lbl.TextSize = cfg.text_size or 18
+    lbl.Text = "-"..tostring(math.floor(amount + 0.5))
+    lbl.TextStrokeTransparency = 1
+    lbl.TextColor3 = cfg.color1
+    lbl.ZIndex = 10
+    lbl.Parent = dgui
+
+    local stroke = Instance.new("UIStroke", lbl)
+    stroke.Thickness = 1.5; stroke.Color = Color3.new(0,0,0)
+    stroke.Transparency = 0.15; stroke.LineJoinMode = Enum.LineJoinMode.Round
+
+    local scale = Instance.new("UIScale", lbl)
+    scale.Scale = 0.5
+
+    if cfg.color_type == "Gradient" then
+        local grad = Instance.new("UIGradient", lbl)
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, cfg.color1),
+            ColorSequenceKeypoint.new(1, cfg.color2),
+        })
+        grad.Rotation = 90
+        lbl.TextColor3 = Color3.new(1,1,1)
+    end
+
+    local startX, startY = sp.X, sp.Y
+    local jitter = math.random(-14, 14)
+    local start = tick()
+    local dur = cfg.duration or 0.8
+    local rise = cfg.rise or 42
+    local conn; conn = run_service.RenderStepped:Connect(function()
+        local t = (tick() - start) / dur
+        if t >= 1 then conn:Disconnect(); pcall(function() lbl:Destroy() end); return end
+        local ease = 1 - (1 - t)^3
+        if cfg.color_type == "Rainbow" then
+            lbl.TextColor3 = Color3.fromHSV((tick() * 0.6) % 1, 0.75, 1)
+        end
+        local s
+        if t < 0.16 then s = 0.5 + (t / 0.16) * 0.62
+        else s = 1.12 - ((t - 0.16) / 0.84) * 0.12 end
+        scale.Scale = s
+        local fade = t < 0.55 and 0 or (t - 0.55) / 0.45
+        lbl.Position = UDim2.fromOffset(startX + jitter * ease, startY - rise * ease)
+        lbl.TextTransparency = fade
+        stroke.Transparency = 0.15 + 0.85 * fade
+    end)
+end
+
+-- hook HealthChanged on all players for damage number events
+local function hookHumForDmg(hum, char)
+    local lastHp = hum.MaxHealth
+    -- wait one frame so MaxHealth is set
+    task.defer(function() lastHp = hum.Health end)
+    hum.HealthChanged:Connect(function(hp)
+        local dmg = lastHp - hp
+        if dmg > 0.05 then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local worldPos = root and (root.Position + Vector3.new(0, 2.5, 0))
+            if CFG.damage_numbers.enable then
+                fireDamageNumber(worldPos, dmg)
+            end
+            -- remove in-game numbers: patch via DamageNumberEffect hook below
+        end
+        lastHp = hp
+    end)
+end
+
+local function hookPlayerChars(p)
+    if p == local_player then return end
+    local function onChar(char)
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hookHumForDmg(hum, char)
+        else char.ChildAdded:Connect(function(c)
+            if c:IsA("Humanoid") then hookHumForDmg(c, char) end
+        end) end
+    end
+    if p.Character then onChar(p.Character) end
+    p.CharacterAdded:Connect(onChar)
+end
+
+for _, p in ipairs(players:GetPlayers()) do hookPlayerChars(p) end
+players.PlayerAdded:Connect(hookPlayerChars)
+
+-- remove in-game damage numbers by hooking ReplicateFromServer
+task.spawn(function()
+    while not fighter_controller do task.wait(1) end
+    local lf = fighter_controller.LocalFighter
+    if not lf then return end
+    local orig = lf.ReplicateFromServer
+    lf.ReplicateFromServer = function(controller, _type, ...)
+        if _type == "DamageNumberEffect" and CFG.damage_numbers.remove_ingame then
+            return -- swallow
+        end
+        return orig(controller, _type, ...)
+    end
 end)
-pcall(function() mCosmetic=require(rep.Modules:WaitForChild("CosmeticLibrary",10)) end)
-
-local function tryCtl()
-    if not ctl then pcall(function() ctl=psc:FindFirstChild("Controllers") end) end
-    if ctl then
-        if not mCam  then pcall(function() mCam =require(ctl:WaitForChild("CameraController",5)) end) end
-        if not mFig  then pcall(function() mFig =require(ctl:WaitForChild("FighterController",5)) end) end
-        if not mData then pcall(function() mData=require(ctl:WaitForChild("PlayerDataController",5)) end) end
-    end
-    if not rUseItem then pcall(function() rUseItem=rep.Remotes.Replication.Fighter.UseItem end) end
-end
-pcall(tryCtl)
-task.spawn(function() while not(mCam and mFig) do task.wait(3); tryCtl() end end)
 
 -- ═══════════════════════════════════════════
--- CHARACTER
+-- BULLET TRACERS
 -- ═══════════════════════════════════════════
-local ch  = lp.Character or lp.CharacterAdded:Wait()
-local hrp = ch:WaitForChild("HumanoidRootPart")
-local hum = ch:WaitForChild("Humanoid")
-lp.CharacterAdded:Connect(function(c) ch=c; hrp=c:WaitForChild("HumanoidRootPart"); hum=c:WaitForChild("Humanoid") end)
+local active_tracers = 0
+local MAX_ACTIVE_TRACERS = 48
 
--- ═══════════════════════════════════════════
--- UI
--- ═══════════════════════════════════════════
-local repo  = "https://raw.githubusercontent.com/yenkgg/UE-Linoria-Lib/main/"
-local Lib   = loadstring(game:HttpGet(repo.."Library.lua"))()
-local Theme = loadstring(game:HttpGet(repo.."addons/ThemeManager.lua"))()
-local Save  = loadstring(game:HttpGet(repo.."addons/SaveManager.lua"))()
-local Options = getgenv().Options
-local Toggles = getgenv().Toggles
+local function create_beam(from, to, lerp_override)
+    if active_tracers >= MAX_ACTIVE_TRACERS then return end
+    active_tracers += 1
 
-Lib.ShowToggleFrameInKeybinds = true
-Lib.ShowCustomCursor           = true
-Lib.NotifySide                 = "Left"
+    local cfg = CFG.bullet_tracers
+    local fade_duration = cfg.life_time
+    local direction = to - from
+    local total_distance = direction.Magnitude
+    local unit = direction.Unit
+    local lerp_speed = lerp_override or cfg.position_lerp_speed
+    if lerp_speed <= 0 then lerp_speed = 0.001 end -- instant
 
-local Win = Lib:CreateWindow({
-    Title = "Rivals Tool v3", Center = true, AutoShow = true,
-    Resizable = true, ShowCustomCursor = true, UnlockMouseWhileOpen = true,
-    NotifySide = "Left", TabPadding = 8, MenuFadeTime = 0.2,
-})
+    local origin_hold = Instance.new("Part")
+    origin_hold.Anchored=true; origin_hold.CanCollide=false
+    origin_hold.CanTouch=false; origin_hold.CanQuery=false
+    origin_hold.Transparency=1; origin_hold.CFrame=CFrame.new(from)
+    origin_hold.Parent=workspace_
 
-local T = {
-    Combat = Win:AddTab("Combat"), Visuals = Win:AddTab("Visuals"),
-    Tracers = Win:AddTab("Tracers"), Rage = Win:AddTab("Ragebot"),
-    Misc = Win:AddTab("Misc"), Skins = Win:AddTab("Skins"), Settings = Win:AddTab("UI Settings"),
-}
+    local hit_hold = Instance.new("Part")
+    hit_hold.Anchored=true; hit_hold.CanCollide=false
+    hit_hold.CanTouch=false; hit_hold.CanQuery=false
+    hit_hold.Transparency=1; hit_hold.CFrame=CFrame.new(from)
+    hit_hold.Parent=workspace_
 
-local G = {
-    EzL=T.Combat:AddLeftGroupbox("Easy Aimbot"), LgR=T.Combat:AddRightGroupbox("Aimbot Settings"),
-    AiL=T.Combat:AddLeftGroupbox("AI Legit"), SaL=T.Combat:AddLeftGroupbox("Silent Aim"),
-    SaR=T.Combat:AddRightGroupbox("SA Settings"), TbL=T.Combat:AddLeftGroupbox("Triggerbot"),
-    TbR=T.Combat:AddRightGroupbox("Triggerbot Settings"), AaL=T.Combat:AddLeftGroupbox("Anti-Aim"),
-    AaR=T.Combat:AddRightGroupbox("Anti-Aim Settings"), GnR=T.Combat:AddRightGroupbox("Gun Mods"),
-    VsL=T.Visuals:AddLeftGroupbox("ESP"), VsR=T.Visuals:AddRightGroupbox("Camera"),
-    TrL=T.Visuals:AddLeftGroupbox("Legacy Tracers"), WdL=T.Visuals:AddLeftGroupbox("World"),
-    HnR=T.Visuals:AddRightGroupbox("Hit Numbers"),
-    TcL=T.Tracers:AddLeftGroupbox("Bullet Tracers"), TcR=T.Tracers:AddRightGroupbox("Tracer Style"),
-    KRgL=T.Rage:AddLeftGroupbox("Kicia Ragebot"), KRgR=T.Rage:AddRightGroupbox("Hitscan / Melee"),
-    KRgE=T.Rage:AddLeftGroupbox("Evasion"), KRgD=T.Rage:AddRightGroupbox("Defensive"),
-    MiL=T.Misc:AddLeftGroupbox("Info"), MiR=T.Misc:AddRightGroupbox("Actions"),
-    SkL=T.Skins:AddLeftGroupbox("Skin Changer"), SkR=T.Skins:AddRightGroupbox("Status"),
-    StL=T.Settings:AddLeftGroupbox("Menu"),
-}
+    local origin_att = Instance.new("Attachment"); origin_att.Parent=origin_hold
+    local hit_att = Instance.new("Attachment"); hit_att.Parent=hit_hold
 
--- ═══════════════════════════════════════════
--- MOBILE OPEN BUTTON
--- ═══════════════════════════════════════════
-local openGui   = Instance.new("ScreenGui",pg); openGui.Name="OpenBtn"; openGui.ResetOnSpawn=false; openGui.IgnoreGuiInset=true
-local openFrame = Instance.new("Frame",openGui)
-openFrame.Size=UDim2.fromOffset(70,30); openFrame.Position=UDim2.fromOffset(10,200)
-openFrame.BackgroundColor3=Color3.fromRGB(25,25,25); openFrame.BorderSizePixel=0
-openFrame.Active=true; openFrame.Draggable=true
-Instance.new("UICorner",openFrame).CornerRadius=UDim.new(0,6)
-local oStr=Instance.new("UIStroke",openFrame); oStr.Color=Color3.fromRGB(0,120,215); oStr.Thickness=1
-local openBtn=Instance.new("TextButton",openFrame)
-openBtn.Size=UDim2.new(1,0,1,0); openBtn.BackgroundTransparency=1
-openBtn.Text="☰ Open"; openBtn.TextColor3=Color3.fromRGB(220,220,220)
-openBtn.TextSize=13; openBtn.Font=Enum.Font.GothamMedium
-openBtn.MouseButton1Click:Connect(function() Lib:ToggleWindowVisibility() end)
+    local tracer = Instance.new("Beam")
+    tracer.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, cfg.color_start),
+        ColorSequenceKeypoint.new(0.5, cfg.color_end),
+        ColorSequenceKeypoint.new(1, cfg.color_start),
+    })
+    tracer.Brightness = cfg.glow
+    tracer.LightEmission = cfg.glow
+    tracer.LightInfluence = 0
+    tracer.TextureSpeed = cfg.speed
+    tracer.TextureLength = 3
+    tracer.FaceCamera = true
+    tracer.Texture = texture_id[cfg.texture] or texture_id["lightning"]
+    tracer.TextureMode = Enum.TextureMode.Wrap
+    tracer.Attachment0 = origin_att
+    tracer.Attachment1 = hit_att
 
--- ═══════════════════════════════════════════
--- UTILS
--- ═══════════════════════════════════════════
-local PARTS={"Head","HumanoidRootPart","UpperTorso","LowerTorso","Body","Head, Body","Body, Head","Random"}
-local PMAP={
-    ["Head"]={"Head"},["HumanoidRootPart"]={"HumanoidRootPart"},
-    ["UpperTorso"]={"UpperTorso","Torso","HumanoidRootPart"},
-    ["LowerTorso"]={"LowerTorso","Torso","HumanoidRootPart"},
-    ["Body"]={"UpperTorso","LowerTorso","Torso","HumanoidRootPart"},
-    ["Head, Body"]={"Head","UpperTorso","LowerTorso","Torso","HumanoidRootPart"},
-    ["Body, Head"]={"UpperTorso","LowerTorso","Torso","HumanoidRootPart","Head"},
-    ["Random"]={"Random"},
-}
-local function bPart(char,s)
-    local pr=PMAP[s] or {"Head"}
-    if pr[1]=="Random" then
-        local av={}; for _,n in ipairs({"Head","UpperTorso","LowerTorso","HumanoidRootPart"}) do local p=char:FindFirstChild(n); if p then table.insert(av,p) end end
-        return #av>0 and av[math.random(1,#av)] or nil
-    end
-    for _,n in ipairs(pr) do local p=char:FindFirstChild(n); if p then return p end end
-end
+    local base_width0 = cfg.width0
+    local base_width1 = cfg.width1
+    local spring_expand = cfg.spring_expand
+    local spring_speed = cfg.expand_speed
+    local spring_damper = cfg.expand_damper
+    local spring_pos = spring_expand and 0 or 1
+    local spring_vel = 0
+    tracer.Width0 = base_width0 * spring_pos
+    tracer.Width1 = base_width1 * spring_pos
+    tracer.Enabled = true
+    tracer.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.1),
+        NumberSequenceKeypoint.new(0.5, 0),
+        NumberSequenceKeypoint.new(1, 0.3),
+    })
 
-local vpRp=RaycastParams.new(); vpRp.FilterType=Enum.RaycastFilterType.Exclude
-local function scr() return Vector2.new(cam.ViewportSize.X/2,cam.ViewportSize.Y/2) end
-local function sameTm(p)
-    local r=false; pcall(function() local a=lp:GetAttribute("TeamID"); local b=p:GetAttribute("TeamID"); if a~=nil and b~=nil then r=(a==b) end end); return r
-end
-local function isVis(orig,part)
-    if not part then return false end
-    local ok,res=pcall(function() vpRp.FilterDescendantsInstances={lp.Character,part.Parent}; local d=part.Position-orig; local h=ws:Raycast(orig,d,vpRp); return h==nil or h.Instance:IsDescendantOf(part.Parent) end)
-    return ok and res or false
-end
-local function inFov(part,fovSz) if not part then return false end; local sp,on=cam:WorldToViewportPoint(part.Position); if not on then return false end; return (Vector2.new(sp.X,sp.Y)-scr()).Magnitude<=fovSz end
-local function w2s(pos) local sp,on=cam:WorldToViewportPoint(pos); if not on or sp.Z<=0 then return nil end; return Vector2.new(sp.X,sp.Y) end
-local function angDiff(f,t) local d=t-f; return ((d+math.pi)%(math.pi*2))-math.pi end
-local function betterRandom(mi,ma,dmi,dma) local v=math.random(mi,ma); repeat v=math.random(mi,ma) until v<dmi or v>dma; return v end
-
--- ═══════════════════════════════════════════
--- AIMBOT
--- ═══════════════════════════════════════════
-local AB={on=false,part="Head",team=false,vis=false,fov=150,drawFov=false,dynFov=false,lockMode="Soft",curvePct=10,speed=1.0,speedAttack=1.0,speedScaleFov=50,maxLock=3.0,reactTime=100,easyMode=false,easyPreset="Normal"}
-local EASY_PRESETS={Casual={speed=0.4,speedAttack=0.6,speedScaleFov=20,maxLock=5,reactTime=220},Normal={speed=1.0,speedAttack=1.5,speedScaleFov=50,maxLock=3,reactTime=110},Tryhard={speed=2.5,speedAttack=4.0,speedScaleFov=80,maxLock=7,reactTime=40}}
-local function applyEasyPreset(name) local p=EASY_PRESETS[name]; if not p then return end; AB.speed=p.speed; AB.speedAttack=p.speedAttack; AB.speedScaleFov=p.speedScaleFov; AB.maxLock=p.maxLock; AB.reactTime=p.reactTime; Lib:Notify("Easy Preset: "..name,3) end
-local abTgt,abLockT,abReactT,abDoReact,abPrevPos,abPrevTick,abCurveProgress,abCurveStart,abCurveEnd=nil,0,0,false,nil,0,0,nil,nil
-local abCirc=Drawing.new("Circle"); abCirc.NumSides=64; abCirc.Filled=false; abCirc.Color=Color3.fromRGB(255,255,255); abCirc.Thickness=1.5; abCirc.Transparency=0.7; abCirc.Visible=false
-local function abEffFov() local f=AB.fov; if AB.dynFov then f=f*(cam.FieldOfView/70) end; return f end
-local function abTgtValid(pt) if not pt or not pt.Parent then return false end; local h=pt.Parent:FindFirstChildOfClass("Humanoid"); if not h or h.Health<=0 then return false end; if not inFov(pt,abEffFov()) then return false end; if AB.vis and not isVis(cam.CFrame.Position,pt) then return false end; if AB.team then local p=plr:GetPlayerFromCharacter(pt.Parent); if p and sameTm(p) then return false end end; return true end
-local function abFind() local c=scr(); local fv=abEffFov(); local best=nil; local bd=fv; for _,p in ipairs(plr:GetPlayers()) do if p==lp then continue end; if AB.team and sameTm(p) then continue end; local chr=p.Character; if not chr then continue end; local hm=chr:FindFirstChildOfClass("Humanoid"); if not hm or hm.Health<=0 then continue end; local pt=bPart(chr,AB.part); if not pt then continue end; local sp,on=cam:WorldToViewportPoint(pt.Position); if not on then continue end; local d=(Vector2.new(sp.X,sp.Y)-c).Magnitude; if d<bd then if AB.vis and not isVis(cam.CFrame.Position,pt) then continue end; bd=d; best=pt end end; return best end
-local function getPredictedPos(pt) local now=tick(); local pos=pt.Position; if abPrevPos and (now-abPrevTick)>0 then local el=now-abPrevTick; local vel=(pos-abPrevPos)/el; pos=pos+vel*(0.08*AB.speedAttack) end; abPrevPos=pt.Position; abPrevTick=now; return pos end
-local function applySmartLock(tRot,cur,dt,screenDist,fovRadius) local distFactor=AB.speed; if fovRadius>0 then local normalized=math.clamp(screenDist/fovRadius,0,1); distFactor=AB.speed+(AB.speedScaleFov/100)*(1-normalized)*math.max(AB.speedAttack-AB.speed,0) end; local eff=math.clamp(distFactor,0.01,5); local factor=math.clamp(eff*dt*6,0,1); if AB.lockMode=="Soft" or AB.lockMode=="Magnet" then return Vector2.new(cur.X+(tRot.X-cur.X)*factor,cur.Y+angDiff(cur.Y,tRot.Y)*factor) else local distP=math.abs(tRot.X-cur.X); local distY=math.abs(angDiff(cur.Y,tRot.Y)); local dist=math.sqrt(distP^2+distY^2); if abCurveStart==nil or dist>0.5 then abCurveStart=cur; abCurveProgress=0 end; abCurveEnd=tRot; local speed2=(AB.curvePct/100)*3*eff; abCurveProgress=math.clamp(abCurveProgress+speed2*dt,0,1); local t2=abCurveProgress; local curved=t2*t2*(3-2*t2); local nP=abCurveStart.X+(abCurveEnd.X-abCurveStart.X)*curved; local nY=abCurveStart.Y+angDiff(abCurveStart.Y,abCurveEnd.Y)*curved; if abCurveProgress>=1 then abCurveStart=nil; abCurveProgress=0 end; return Vector2.new(nP,nY) end end
-
--- AI Legit
-local AI={on=false,jitter=0.002,overshoot=0.12,breakChance=0.008,breakDur=0.25,varySmooth=true}
-local aiBreakTimer,aiInBreak,aiJitterX,aiJitterY=0,false,0,0
-local function aiLegitProcess(newRot,cur,dt) if not AI.on then return newRot end; if aiInBreak then aiBreakTimer=aiBreakTimer-dt; if aiBreakTimer<=0 then aiInBreak=false end; return cur end; if math.random()<AI.breakChance*dt*60 then aiInBreak=true; aiBreakTimer=AI.breakDur+(math.random()-0.5)*0.1; return cur end; local jRaw=AI.jitter*2; aiJitterX=aiJitterX*0.75+(math.random()-0.5)*jRaw*0.25; aiJitterY=aiJitterY*0.75+(math.random()-0.5)*jRaw*0.25; local sm=AI.varySmooth and (0.82+math.random()*0.36) or 1.0; local blended=Vector2.new(cur.X+(newRot.X-cur.X)*sm,cur.Y+angDiff(cur.Y,newRot.Y)*sm); if math.random()<AI.overshoot*0.015 then blended=Vector2.new(blended.X+(math.random()-0.5)*0.035,blended.Y+(math.random()-0.5)*0.035) end; return Vector2.new(blended.X+aiJitterX,blended.Y+aiJitterY) end
-
--- Silent Aim
-local SA={on=false,vis=false,team=true,fov=600,drawFov=true,part="Head",mode="Closest",maxDist=500}
-local saApplied,saTgt=false,nil
-local saCirc=Drawing.new("Circle"); saCirc.NumSides=64; saCirc.Filled=false; saCirc.Color=Color3.fromRGB(0,200,255); saCirc.Thickness=1.5; saCirc.Transparency=0.7; saCirc.Visible=false
-local function saGetTarget(origin) if not SA.on then return nil end; local center=cam.ViewportSize/2; local best=nil; local bd=math.huge; for _,p in ipairs(plr:GetPlayers()) do if p==lp then continue end; if SA.team and sameTm(p) then continue end; local chr=p.Character; if not chr then continue end; local hm=chr:FindFirstChildOfClass("Humanoid"); if not hm or hm.Health<=0 then continue end; local pt=bPart(chr,SA.part); if not pt then continue end; if (origin-pt.Position).Magnitude>SA.maxDist then continue end; local sp,on=cam:WorldToViewportPoint(pt.Position); if not on then continue end; local d=(Vector2.new(sp.X,sp.Y)-center).Magnitude; if d>SA.fov then continue end; if SA.vis and not isVis(origin,pt) then continue end; if SA.mode=="Closest" and d<bd then bd=d; best=pt elseif SA.mode=="Furthest" and d>bd then bd=d; best=pt elseif SA.mode=="Random" then if not best or math.random()<0.3 then best=pt end end end; saTgt=best; return best end
-local function applySA() if saApplied then return end; if not mUtil then Lib:Notify("SA: Utility not loaded",3); return end; local origRC=mUtil.Raycast; mUtil.Raycast=function(self,origin,direction,distance,...) if SA.on then local target=saGetTarget(origin); if target then return origRC(self,origin,target.Position,distance,...) end end; return origRC(self,origin,direction,distance,...) end; saApplied=true; Lib:Notify("SA: hooked",3) end
-
--- Triggerbot
-local TB={on=false,delay=0,grace=0,rand=false,minD=50,maxD=150,vis=false,team=true,fov=250,dist=500}
-local tbConn,tbLastSeen,tbLastFire=nil,0,0
-local function tbGetDelay() if TB.rand then return math.random(math.min(TB.minD,TB.maxD),math.max(TB.minD,TB.maxD)) end; return TB.delay end
-local function fireShot(item,hitPart,origin) if not item or not hitPart then return end; if not mUtil or not mEnum or not rUseItem then return end; local oid=nil; pcall(function() oid=item:Get("ObjectID") end); if not oid then return end; local org=origin or cam.CFrame.Position; local aimCF=CFrame.lookAt(org,hitPart.Position); local sd={}; pcall(function() sd[utf8.char(1)]={[utf8.char(0)]=mUtil:EncodeCFrame(aimCF),[utf8.char(1)]=mUtil:EncodeCFrame(hitPart.CFrame),[utf8.char(2)]=hitPart,[utf8.char(3)]=mUtil:EncodeCFrame(hitPart.CFrame:ToObjectSpace(CFrame.new(hitPart.Position)))} end); pcall(function() rUseItem:FireServer(oid,mEnum:ToEnum("StartShooting"),sd,nil) end); task.delay(0.07,function() pcall(function() rUseItem:FireServer(oid,mEnum:ToEnum("StopShooting"),{},nil) end) end) end
-local function startTB() if tbConn then tbConn:Disconnect() end; tbLastSeen=0; tbLastFire=0; tbConn=rs.Heartbeat:Connect(function() if not TB.on or not lp.Character then return end; local lf=nil; pcall(function() if mFig then lf=mFig.LocalFighter end end); if not lf then return end; local item=lf.EquippedItem; if not item then return end; local ammo=nil; pcall(function() ammo=item:Get("CurrentAmmo") end); if ammo~=nil and ammo<=0 then return end; local now=tick(); local c=scr(); local found=false; local fp=nil; for _,p in ipairs(plr:GetPlayers()) do if p==lp then continue end; if TB.team and sameTm(p) then continue end; local chr=p.Character; if not chr then continue end; local hm=chr:FindFirstChildOfClass("Humanoid"); if not hm or hm.Health<=0 then continue end; for _,n in ipairs({"Head","UpperTorso","LowerTorso","HumanoidRootPart"}) do local pt=chr:FindFirstChild(n); if not pt then continue end; local dist=(cam.CFrame.Position-pt.Position).Magnitude; if dist>TB.dist then continue end; if TB.vis and not isVis(cam.CFrame.Position,pt) then continue end; local sp,on=cam:WorldToViewportPoint(pt.Position); if not on or sp.Z<=0 then continue end; local sd2=(Vector2.new(sp.X,sp.Y)-c).Magnitude; if sd2<=TB.fov then found=true; fp=pt; tbLastSeen=now; break end end; if found then break end end; local grace=(now-tbLastSeen)*1000<=TB.grace; if not found and not grace then return end; if (now-tbLastFire)*1000<tbGetDelay() then return end; tbLastFire=now; if fp then fireShot(item,fp) end end) end
-
--- Anti-Aim
-local AA={enabled=false,pitch="Off",yawBase="Local",yaw="Off",yawAngle=0,underground=false}
-local aaClientCF,aaClientLV,aaClientAV,aaSpinAngle,aaStutterOn=nil,nil,nil,0,false
-local function computeAACFrame(dt) if not ch then return nil end; local myHRP=ch:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end; local base=aaClientCF or myHRP.CFrame; local pos=base.Position; if AA.underground then pos=pos-Vector3.new(0,5,0) end; local pitchRad=0; if AA.pitch=="Up" then pitchRad=math.rad(-89) elseif AA.pitch=="Zero" then pitchRad=0 elseif AA.pitch=="Down" then pitchRad=math.rad(89) elseif AA.pitch=="Glitch" then pitchRad=math.rad(betterRandom(-89,89,-10,10)) elseif AA.pitch=="Random" then pitchRad=math.rad(math.random(-89,89)) end; local baseYaw=0; if AA.yawBase=="Local" then local _,ry,_=base:ToEulerAnglesYXZ(); baseYaw=ry elseif AA.yawBase=="AtTargets" then local myPos=base.Position; local closest,cd=nil,math.huge; for _,p in ipairs(plr:GetPlayers()) do if p==lp then continue end; local ec=p.Character; if not ec then continue end; local eh=ec:FindFirstChild("HumanoidRootPart"); if not eh then continue end; local d=(myPos-eh.Position).Magnitude; if d<cd then cd=d; closest=eh end end; if closest then local dir=(closest.Position-myPos)*Vector3.new(1,0,1); if dir.Magnitude>0.01 then baseYaw=math.atan2(-dir.X,-dir.Z) end else local _,ry,_=base:ToEulerAnglesYXZ(); baseYaw=ry end end; local yawOffset=math.rad(AA.yawAngle); if AA.yaw=="Forward" then yawOffset=yawOffset+0 elseif AA.yaw=="Backward" then yawOffset=yawOffset+math.rad(180) elseif AA.yaw=="Spin" then aaSpinAngle=aaSpinAngle+dt*720; yawOffset=yawOffset+math.rad(aaSpinAngle) elseif AA.yaw=="GlitchSpin" then aaSpinAngle=aaSpinAngle+dt*1440; yawOffset=yawOffset+math.rad(aaSpinAngle)+math.rad(betterRandom(-180,180,-10,10)) elseif AA.yaw=="StutterSpin" then aaStutterOn=not aaStutterOn; if aaStutterOn then aaSpinAngle=aaSpinAngle+dt*720 else aaSpinAngle=aaSpinAngle-dt*360 end; yawOffset=yawOffset+math.rad(aaSpinAngle) end; local finalYaw=baseYaw+yawOffset; return CFrame.new(pos)*CFrame.fromEulerAnglesYXZ(pitchRad,finalYaw,0) end
-local aaHeartConn,aaRenderConn
-local function stopAntiAim() AA.enabled=false; if aaHeartConn then aaHeartConn:Disconnect(); aaHeartConn=nil end; if aaRenderConn then aaRenderConn:Disconnect(); aaRenderConn=nil end; aaClientCF=nil; aaClientLV=nil; aaClientAV=nil; aaSpinAngle=0; aaStutterOn=false end
-local function startAntiAim() stopAntiAim(); AA.enabled=true; aaSpinAngle=0; aaHeartConn=rs.Heartbeat:Connect(function(dt) if not AA.enabled then stopAntiAim(); return end; local myHRP=ch and ch:FindFirstChild("HumanoidRootPart"); if not myHRP then return end; aaClientCF=myHRP.CFrame; aaClientLV=myHRP.AssemblyLinearVelocity; aaClientAV=myHRP.AssemblyAngularVelocity; local desynced=computeAACFrame(dt); if not desynced then return end; pcall(function() myHRP.CFrame=desynced end) end); rs:BindToRenderStep("AA_Sync",Enum.RenderPriority.First.Value,function() if not AA.enabled then return end; local myHRP=ch and ch:FindFirstChild("HumanoidRootPart"); if not myHRP then return end; if aaClientCF then pcall(function() myHRP.CFrame=aaClientCF; myHRP.AssemblyLinearVelocity=aaClientLV or Vector3.zero; myHRP.AssemblyAngularVelocity=aaClientAV or Vector3.zero end) end end) end
-
--- Gun Mods
-local GN={noRecoil=false,noSpread=false,fast=false}
-local gnSaved={}; local SKIP={Sniper=true,Crossbow=true,Bow=true,RPG=true}
-local function patchGuns() if not mItemLib then return end; local ok,items=pcall(function() return mItemLib.Items end); if not ok or not items then return end; for name,data in pairs(items) do if type(data)~="table" or SKIP[name] then continue end; if not gnSaved[name] then gnSaved[name]={ShootSpread=data.ShootSpread,ShootAccuracy=data.ShootAccuracy,ShootRecoil=data.ShootRecoil,ShootCooldown=data.ShootCooldown} end; local s=gnSaved[name]; if data.ShootSpread then data.ShootSpread=GN.noSpread and 0 or s.ShootSpread end; if data.ShootAccuracy then data.ShootAccuracy=GN.noSpread and 0 or s.ShootAccuracy end; if data.ShootRecoil then data.ShootRecoil=GN.noRecoil and 0 or s.ShootRecoil end; if data.ShootCooldown then data.ShootCooldown=GN.fast and 0.05 or s.ShootCooldown end end end
-
--- ═══════════════════════════════════════════
--- KICIAHOOK RAGEBOT (DEOBFUSCATED LOGIC)
--- (SpatialLimitGate / Hitscan / Melee / ProjectileBreaker / Translocate / FallenParts Spoof)
--- ═══════════════════════════════════════════
-local KR = {
-    enabled = false,
-    autoTarget = true,
-    autoShoot = true,
-    target = nil,
-    aimPart = "Head",
-    shootFrames = 1,
-    shootAttempts = 1,
-    evasionMode = "Translocate",
-    translocateOffset = -5,
-    pbRepositionInterval = 0.3,
-    pbDepthUpMin = 0.5, pbDepthUpMax = 3.0, pbDepthUpFreq = 2.0,
-    pbDepthFwdMin = -2.0, pbDepthFwdMax = 2.0, pbDepthFwdFreq = 1.5,
-    pbFallbackRadius = 100, pbFallbackJitter = 0.5,
-    stability = 0.5,
-    hitboxWindow = 0.625,
-    attackCooldown = 1.25,
-    defensiveCFrame = true,
-    forcedCrouch = false,
-    weaponSlot = "primary",
-    _shootLockUntil = nil,
-    _hitboxWindowUntil = -1,
-    _attackCooldownUntil = -1,
-    _lastTargetWorld = nil,
-    _pbCooldown = -1,
-    _pbPool = {},
-    _pbProcessed = {},
-    _pbLastSurface = nil,
-    _prevCF = nil,
-    _lastFire = 0,
-}
-
-local originalFallenHeight = workspace.FallenPartsDestroyHeight
-
-local function krSpoofFallenHeight(enabled)
-    if enabled then
-        workspace.FallenPartsDestroyHeight = 0/0
-    else
-        workspace.FallenPartsDestroyHeight = originalFallenHeight
-    end
-end
-
-local function krShootLockShouldFire(lockDuration)
-    local now = os.clock()
-    if KR._shootLockUntil and now < KR._shootLockUntil then return false end
-    KR._shootLockUntil = now + lockDuration
-    return true
-end
-local function krShootLockReset() KR._shootLockUntil = nil end
-
-local krGluedParts = {}
-local function krPartGlueAcquire(ourPart, targetPart)
-    if krGluedParts[ourPart] then
-        krGluedParts[ourPart].refCount = krGluedParts[ourPart].refCount + 1
-        return ourPart.CFrame
-    end
-    local origAnchored = ourPart.Anchored
-    ourPart.Anchored = true
-    krGluedParts[ourPart] = { refCount = 1, originalPart1 = targetPart, originalAnchored = origAnchored }
-    return ourPart.CFrame
-end
-local function krPartGlueFree(part)
-    local entry = krGluedParts[part]
-    if not entry then return end
-    entry.refCount = entry.refCount - 1
-    if entry.refCount > 0 then return end
-    part.Anchored = entry.originalAnchored
-    krGluedParts[part] = nil
-end
-local function krPartGlueClear()
-    for part, entry in pairs(krGluedParts) do
-        if part and part.Parent then part.Anchored = entry.originalAnchored end
-    end
-    krGluedParts = {}
-end
-
-local function krGetMyRoot()
-    local c = lp.Character
-    return c and c:FindFirstChild("HumanoidRootPart")
-end
-local function krGetEnemyRoot(char)
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-local function krGetHitboxHead(char)
-    if not char then return nil end
-    return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
-end
-local function krIsAlive(char)
-    if not char or not char.Parent then return false end
-    local h = char:FindFirstChildOfClass("Humanoid")
-    return h and h.Health > 0
-end
-local function krGetWeaponType()
-    local vms = ws:FindFirstChild("ViewModels")
-    if not vms then return "Gun", "Unknown" end
-    local fp = vms:FindFirstChild("FirstPerson")
-    if not fp then return "Gun", "Unknown" end
-    for _, ch2 in ipairs(fp:GetChildren()) do
-        local nm = ch2.Name:lower()
-        local meleeNames = {"knife","katana","axe","sword","bat","fists","scythe","chainsaw","daggers","gunblade","trowel"}
-        for _, mn in ipairs(meleeNames) do
-            if nm:find(mn) then return "Melee", ch2.Name end
+    -- curve logic
+    pcall(function()
+        if not cfg.curve_around then return end
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = {local_player.Character, origin_hold, hit_hold}
+        local blocked = workspace_:Raycast(from, to - from, params)
+        if not (blocked and (blocked.Position - from).Magnitude < (total_distance - 2)) then return end
+        local maxH = cfg.curve_height or 14
+        local right = unit:Cross(Vector3.yAxis)
+        right = right.Magnitude > 0.01 and right.Unit or Vector3.xAxis
+        local upv = right:Cross(unit).Unit
+        if upv.Y < 0 then upv = -upv end
+        local mid = (from + to) * 0.5
+        local function pathClear(apex)
+            local a = workspace_:Raycast(from, apex-from, params)
+            if a and (a.Position-from).Magnitude < (apex-from).Magnitude-1 then return false end
+            local b = workspace_:Raycast(apex, to-apex, params)
+            if b and (b.Position-apex).Magnitude < (to-apex).Magnitude-1 then return false end
+            return true
         end
-        return "Gun", ch2.Name
-    end
-    return "Gun", "Unknown"
-end
-
-local function krFindTarget()
-    local best, bd = nil, math.huge
-    local myRoot = krGetMyRoot()
-    local myPos = myRoot and myRoot.Position or Vector3.zero
-    for _, p in ipairs(plr:GetPlayers()) do
-        if p == lp then continue end
-        if sameTm(p) then continue end
-        local chr = p.Character
-        if not krIsAlive(chr) then continue end
-        local root = krGetEnemyRoot(chr)
-        if not root then continue end
-        local d = (root.Position - myPos).Magnitude
-        if d < bd then bd = d; best = chr end
-    end
-    return best
-end
-
-local KR_LIMIT_BOUNDS = 4194304
-local krSpatialMeasurements = {}
-local function krSpatialGateTick(targetChar)
-    local root = krGetEnemyRoot(targetChar)
-    if not root then return false end
-    local pos = root.Position
-    if math.abs(pos.X) > KR_LIMIT_BOUNDS or math.abs(pos.Y) > KR_LIMIT_BOUNDS or math.abs(pos.Z) > KR_LIMIT_BOUNDS then
-        return false
-    end
-    local key = targetChar
-    if not krSpatialMeasurements[key] then
-        krSpatialMeasurements[key] = { entryTime = os.clock(), expectedDuration = nil }
-    end
-    local m = krSpatialMeasurements[key]
-    local now = os.clock()
-    if m.expectedDuration and m.expectedDuration - KR.stability <= now - m.entryTime then
-        return false
-    end
-    return true
-end
-
-local function krSetServerCFrame(cf)
-    local myRoot = krGetMyRoot()
-    if myRoot then pcall(function() myRoot.CFrame = cf end) end
-end
-
-local function krHitscanPlan(dt, targetChar, item)
-    local hitboxHead = krGetHitboxHead(targetChar)
-    if not hitboxHead then return nil, nil end
-    local myRoot = krGetMyRoot()
-    if not myRoot then return nil, nil end
-    local headPos = hitboxHead.Position
-    local myPos = myRoot.Position
-    local isAbove = myPos.Y > headPos.Y + 2
-    local offsets = { Up = -0.25, Down = 1.75 }
-    local offset = isAbove and offsets.Up or offsets.Down
-    local aimCFrame = isAbove and CFrame.new(myPos + Vector3.new(0, offset, 0), headPos) or CFrame.lookAt(myPos + Vector3.new(0, offset, 0), headPos)
-    local lockDuration = dt * KR.shootFrames
-    if not krShootLockShouldFire(lockDuration) then
-        return CFrame.new(math.random(-1e6,1e6), math.random(5000,10000), math.random(-1e6,1e6)), nil
-    end
-    local function fireWeapon()
-        if not mUtil or not mEnum or not rUseItem then return end
-        local lf = mFig and mFig.LocalFighter
-        if not lf or not lf.EquippedItem then return end
-        local oid = lf.EquippedItem:Get("ObjectID")
-        if not oid then return end
-        local payload = {
-            [utf8.char(1)] = {
-                [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                [utf8.char(2)] = hitboxHead,
-                [utf8.char(3)] = mUtil:EncodeCFrame(hitboxHead.CFrame:ToObjectSpace(CFrame.new(headPos)))
-            }
-        }
-        for _ = 1, KR.shootAttempts do
-            pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("StartShooting"), payload, nil) end)
+        local dirs = {upv,(upv+right*0.6).Unit,(upv-right*0.6).Unit,right,-right}
+        local heights = {maxH*0.7, maxH, maxH*1.5}
+        local bestDir, bestH
+        for _,d in ipairs(dirs) do
+            for _,h in ipairs(heights) do
+                if pathClear(mid + d*h) then bestDir,bestH=d,h; break end
+            end
+            if bestDir then break end
         end
-    end
-    return aimCFrame, fireWeapon
-end
+        if not bestDir then bestDir=upv; bestH=math.min(maxH*1.5, total_distance*0.4) end
+        local ref = math.abs(bestDir.Y)<0.99 and Vector3.yAxis or Vector3.xAxis
+        local u0 = bestDir:Cross(ref).Unit
+        local u1 = (-bestDir):Cross(ref).Unit
+        origin_att.CFrame = CFrame.fromMatrix(Vector3.zero, bestDir, u0)
+        hit_att.CFrame = CFrame.fromMatrix(Vector3.zero, -bestDir, u1)
+        tracer.CurveSize0 = bestH
+        tracer.CurveSize1 = bestH
+    end)
 
-local function krMeleePlan(dt, targetChar, item)
-    local hitboxHead = krGetHitboxHead(targetChar)
-    if not hitboxHead then return nil, nil, nil end
-    local myRoot = krGetMyRoot()
-    if not myRoot then return nil, nil, nil end
-    local headPos = hitboxHead.Position
-    local myPos = myRoot.Position
-    local isAbove = myPos.Y > headPos.Y + 2
-    local offsets = { Up = -4, Down = 4 }
-    local offset = isAbove and offsets.Up or offsets.Down
-    local aimCFrame = isAbove and CFrame.new(myPos + Vector3.new(0, offset, 0), headPos) or CFrame.lookAt(myPos + Vector3.new(0, offset, 0), headPos)
-    local now = os.clock()
-    if now < KR._hitboxWindowUntil then
-        local function heavyAttack()
-            if not mUtil or not mEnum or not rUseItem then return end
-            local lf = mFig and mFig.LocalFighter
-            if not lf or not lf.EquippedItem then return end
-            local oid = lf.EquippedItem:Get("ObjectID")
-            if not oid then return end
-            local payload = {
-                [utf8.char(1)] = {
-                    [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                    [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                    [utf8.char(2)] = hitboxHead,
-                    [utf8.char(3)] = mUtil:EncodeCFrame(hitboxHead.CFrame:ToObjectSpace(CFrame.new(headPos)))
-                }
-            }
-            pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("QuickAttack"), payload, nil) end)
+    tracer.Parent = workspace_
+
+    local wallLine
+    if cfg.through_walls then
+        pcall(function()
+            wallLine = Drawing.new("Line")
+            wallLine.Thickness = math.max(base_width0 * 4, 1.5)
+            wallLine.Color = cfg.color_start
+            wallLine.Transparency = 1
+            wallLine.Visible = false
+        end)
+    end
+
+    local total_time = 0
+    local elapsed = 0
+    local tween_conn = run_service.Heartbeat:Connect(function(dt)
+        total_time += dt; elapsed += dt
+        local lerp_alpha = math.clamp(elapsed / lerp_speed, 0, 1)
+        local traveled = total_distance * lerp_alpha
+        hit_hold.CFrame = CFrame.new(from + unit * traveled)
+
+        if wallLine then
+            local a = camera:WorldToViewportPoint(from)
+            local b = camera:WorldToViewportPoint(from + unit * traveled)
+            if a.Z > 0 and b.Z > 0 then
+                wallLine.From = Vector2.new(a.X, a.Y)
+                wallLine.To = Vector2.new(b.X, b.Y)
+                wallLine.Color = cfg.color_start
+                wallLine.Visible = true
+            else wallLine.Visible = false end
         end
-        return aimCFrame, aimCFrame, heavyAttack
-    end
-    local lockDuration = dt * KR.shootFrames
-    if not krShootLockShouldFire(lockDuration) then
-        return CFrame.new(math.random(-1e6,1e6), math.random(5000,10000), math.random(-1e6,1e6)), nil, nil
-    end
-    if now < KR._attackCooldownUntil then
-        return CFrame.new(math.random(-1e6,1e6), math.random(5000,10000), math.random(-1e6,1e6)), nil, nil
-    end
-    local _, weaponName = krGetWeaponType()
-    local isKnife = weaponName and weaponName:lower():find("knife")
-    if not isKnife then
-        local function normalAttack()
-            if not mUtil or not mEnum or not rUseItem then return end
-            local lf = mFig and mFig.LocalFighter
-            if not lf or not lf.EquippedItem then return end
-            local oid = lf.EquippedItem:Get("ObjectID")
-            if not oid then return end
-            local payload = {
-                [utf8.char(1)] = {
-                    [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                    [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                    [utf8.char(2)] = hitboxHead,
-                    [utf8.char(3)] = mUtil:EncodeCFrame(hitboxHead.CFrame:ToObjectSpace(CFrame.new(headPos)))
-                }
-            }
-            pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("QuickAttack"), payload, nil) end)
+
+        if spring_expand then
+            local accel = (1 - spring_pos) * spring_speed * spring_speed - 2 * spring_damper * spring_speed * spring_vel
+            spring_vel += accel * dt
+            spring_pos += spring_vel * dt
+            tracer.Width0 = base_width0 * spring_pos
+            tracer.Width1 = base_width1 * spring_pos
         end
-        return aimCFrame, nil, normalAttack
-    end
-    KR._hitboxWindowUntil = now + KR.hitboxWindow
-    KR._attackCooldownUntil = now + KR.attackCooldown
-    local function backstabAttack()
-        if not mUtil or not mEnum or not rUseItem then return end
-        local lf = mFig and mFig.LocalFighter
-        if not lf or not lf.EquippedItem then return end
-        local oid = lf.EquippedItem:Get("ObjectID")
-        if not oid then return end
-        local payload = {
-            [utf8.char(1)] = {
-                [utf8.char(0)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                [utf8.char(1)] = mUtil:EncodeCFrame(CFrame.new(myRoot.Position, headPos)),
-                [utf8.char(2)] = hitboxHead,
-                [utf8.char(3)] = mUtil:EncodeCFrame(hitboxHead.CFrame:ToObjectSpace(CFrame.new(headPos)))
-            }
-        }
-        pcall(function() rUseItem:FireServer(oid, mEnum:ToEnum("QuickAttack"), payload, nil) end)
-    end
-    return aimCFrame, aimCFrame, backstabAttack
+
+        local alpha = tween_service:GetValue(math.clamp(total_time / fade_duration, 0, 1), Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        tracer.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.1 + alpha * 0.9),
+            NumberSequenceKeypoint.new(0.5, alpha),
+            NumberSequenceKeypoint.new(1, 0.3 + alpha * 0.7),
+        })
+        if wallLine then wallLine.Transparency = math.clamp(1 - alpha, 0, 1) end
+    end)
+
+    task.delay(fade_duration, function()
+        tween_conn:Disconnect()
+        if wallLine then pcall(function() wallLine:Remove() end) end
+        pcall(function() tracer:Destroy() end)
+        pcall(function() origin_hold:Destroy() end)
+        pcall(function() hit_hold:Destroy() end)
+        active_tracers -= 1
+        if active_tracers < 0 then active_tracers = 0 end
+    end)
 end
 
-local PB_ESCAPE = 1073741824
-local PB_MIN_POOL = 30
-local pbOverlap = OverlapParams.new()
-pbOverlap.FilterType = Enum.RaycastFilterType.Exclude
-pbOverlap.BruteForceAllSlow = true
-
-local function pbOscillate(rangeMin, rangeMax, freq)
-    return rangeMin + (rangeMax - rangeMin) * ((math.sin(os.clock() * (2 * math.pi * freq)) + 1) * 0.5)
-end
-local function pbSurfaceCFrame(surface, depthUp, depthFwd)
-    return CFrame.fromMatrix(
-        surface.pos - surface.up * 0.01 - surface.up * depthUp + surface.forward * depthFwd,
-        surface.right, surface.up, -surface.forward
-    )
-end
-local function pbBadPart(part)
-    if part.Name == "Barriers" then return true end
-    if part:HasTag("OutOfBoundsPart") then return true end
-    if part:HasTag("KillBrick") then return true end
-    return false
-end
-local function pbOccluded(pos)
-    local hits = ws:GetPartBoundsInBox(CFrame.new(pos), Vector3.new(64,64,64), pbOverlap)
-    for _, p in ipairs(hits) do
-        if pbBadPart(p) then return true end
-    end
-    return false
-end
-local function pbRaycastSurface(part)
-    local origin = part.Position + Vector3.new(0, part.Size.Y/2 + 5, 0)
-    local dir = Vector3.new(0, -(part.Size.Y + 10), 0)
-    local res = ws:Raycast(origin, dir)
-    if not res or res.Instance ~= part then return nil end
-    local up = res.Normal
-    local right = up:Cross(Vector3.new(0,1,0))
-    if right.Magnitude < 0.001 then right = up:Cross(Vector3.new(1,0,0)) end
-    right = right.Unit
-    local forward = up:Cross(right).Unit
-    return { pos = res.Position, up = up, right = right, forward = forward }
-end
-local function pbFallbackPosition(myPos)
-    local anchor = Vector3.new(0, myPos.Y, 0)
-    local jitter = KR.pbFallbackRadius * KR.pbFallbackJitter
-    local angle = math.random() * 2 * math.pi
-    local radius = KR.pbFallbackRadius + math.random() * jitter
-    local x = anchor.X + math.cos(angle) * radius
-    local y = anchor.Y
-    local z = anchor.Z + math.sin(angle) * radius
-    local axis = math.random(1,3)
-    if axis == 1 then x = PB_ESCAPE
-    elseif axis == 2 then y = PB_ESCAPE
-    else z = PB_ESCAPE end
-    return CFrame.new(x, y, z)
-end
-local function pbScanBatch()
-    local avgUp = (KR.pbDepthUpMin + KR.pbDepthUpMax) * 0.5
-    local avgFwd = (KR.pbDepthFwdMin + KR.pbDepthFwdMax) * 0.5
-    for _, part in ipairs(ws:GetDescendants()) do
-        if part:IsA("BasePart") and not pbBadPart(part) and not KR._pbProcessed[part] and part.Size.Magnitude > 2 then
-            KR._pbProcessed[part] = true
-            local surface = pbRaycastSurface(part)
-            if surface then
-                local test = pbSurfaceCFrame(surface, avgUp, avgFwd)
-                if not pbOccluded(test.Position) then
-                    table.insert(KR._pbPool, surface)
+-- hook TracerEffect.Play to intercept muzzle→hit positions
+task.spawn(function()
+    while not local_player.PlayerScripts:FindFirstChild("Modules") do task.wait(1) end
+    pcall(function()
+        local TracerEffect = require(local_player.PlayerScripts.Modules.TracerEffect)
+        local origPlay = TracerEffect.Play
+        TracerEffect.Play = function(self, tracerData, cfg2, extraData)
+            if CFG.bullet_tracers.enable then
+                if tracerData and tracerData.IsLocal then
+                    local muzzle = extraData and extraData.MuzzlePosition
+                    if muzzle and tracerData.RaycastResults then
+                        for _, v in next, tracerData.RaycastResults do
+                            if v.Position then
+                                create_beam(muzzle, v.Position, nil)
+                            end
+                        end
+                        return -- skip original so only our tracer shows
+                    end
                 end
             end
+            return origPlay(self, tracerData, cfg2, extraData)
         end
-        if #KR._pbPool >= PB_MIN_POOL * 2 then break end
-    end
-end
-local function pbBreakLine()
-    if #KR._pbPool < PB_MIN_POOL then pbScanBatch() end
-    if #KR._pbPool < PB_MIN_POOL then return nil end
-    KR._pbCooldown = os.clock() + KR.pbRepositionInterval
-    return KR._pbPool[math.random(1, #KR._pbPool)]
-end
-local function pbHasProjectileThreat()
-    for _, p in ipairs(plr:GetPlayers()) do
-        if p == lp then continue end
-        if sameTm(p) then continue end
-        local chr = p.Character
-        if not krIsAlive(chr) then continue end
-        local tool = chr:FindFirstChildOfClass("Tool")
-        if tool then
-            local nm = tool.Name:lower()
-            if nm:find("slingshot") or nm:find("grenade") or nm:find("molotov") or nm:find("throwable") or nm:find("tripmine") then
-                return true
-            end
-        end
-    end
-    return false
-end
-local function pbCompute(myPos)
-    if os.clock() < KR._pbCooldown and KR._pbLastSurface then
-        local dUp = pbOscillate(KR.pbDepthUpMin, KR.pbDepthUpMax, KR.pbDepthUpFreq)
-        local dFwd = pbOscillate(KR.pbDepthFwdMin, KR.pbDepthFwdMax, KR.pbDepthFwdFreq)
-        return pbSurfaceCFrame(KR._pbLastSurface, dUp, dFwd)
-    end
-    if not pbHasProjectileThreat() then
-        KR._pbLastSurface = nil
-        return pbFallbackPosition(myPos)
-    end
-    local surface = pbBreakLine()
-    if not surface then return pbFallbackPosition(myPos) end
-    KR._pbLastSurface = surface
-    local dUp = pbOscillate(KR.pbDepthUpMin, KR.pbDepthUpMax, KR.pbDepthUpFreq)
-    local dFwd = pbOscillate(KR.pbDepthFwdMin, KR.pbDepthFwdMax, KR.pbDepthFwdFreq)
-    return pbSurfaceCFrame(surface, dUp, dFwd)
-end
+        print("[tracers] TracerEffect.Play hooked")
+    end)
+end)
 
-local function krTranslocatePosition(myPos, hasTargets)
-    if not hasTargets then
-        return CFrame.new(myPos + Vector3.new(math.random(-10000,10000), math.random(-10000,10000), math.random(-10000,10000)))
-    end
-    local taggedParts = cs:GetTagged("OutOfBoundsPart")
-    local validPart = nil
-    for _, part in ipairs(taggedParts) do
-        if part:GetAttribute("KillDelay") == 0 then
-            validPart = part
-            break
-        end
-    end
-    if validPart == nil then
-        return CFrame.new(myPos + Vector3.new(math.random(-10000,10000), 1000000000, math.random(-10000,10000)))
-    end
-    return validPart.CFrame * CFrame.new(0, -validPart.Size.Y / 2 + KR.translocateOffset, 0)
-end
+-- ═══════════════════════════════════════════
+-- THROWABLE ESP
+-- ═══════════════════════════════════════════
+local espgui = Instance.new("ScreenGui")
+espgui.Name = "thrower_esp"; espgui.ResetOnSpawn = false
+espgui.IgnoreGuiInset = true; espgui.DisplayOrder = 400
+pcall(function() espgui.Parent = gethui() end)
+if not espgui.Parent then pcall(function() espgui.Parent = game:GetService("CoreGui") end) end
+if not espgui.Parent then espgui.Parent = local_player:FindFirstChildOfClass("PlayerGui") end
 
-rs.Heartbeat:Connect(function(dt)
-    if not KR.enabled then return end
-    krSpoofFallenHeight(true)
-    if KR.autoTarget and (not KR.target or not KR.target.Parent or not krIsAlive(KR.target)) then
-        KR.target = krFindTarget()
-    end
-    if not KR.target then
-        KR._lastTargetWorld = nil
-        krShootLockReset()
+-- throwable names to watch for (all known Rivals throwables)
+local THROWABLE_NAMES = {
+    ["Grenade"]="Grenade",["FlashGrenade"]="Flash Grenade",["SmokeGrenade"]="Smoke Grenade",
+    ["Molotov"]="Molotov",["SubspaceTripmineHitbox"]="Subspace Tripmine",
+    ["ImpactGrenade"]="Impact Grenade",["StunGrenade"]="Stun Grenade",
+}
+
+local thrower_cache = {}
+
+workspace_.ChildRemoved:Connect(function(obj)
+    if not thrower_cache[obj] then return end
+    pcall(function() thrower_cache[obj].name:Destroy() end)
+    pcall(function() thrower_cache[obj].dist:Destroy() end)
+    pcall(function() thrower_cache[obj].icon:Destroy() end)
+    thrower_cache[obj] = nil
+end)
+
+run_service.RenderStepped:Connect(function()
+    local active = {}
+    local cfg = CFG.thrower_esp
+
+    if not cfg.enable then
+        for _,v in next, thrower_cache do
+            v.name.Visible = false; v.dist.Visible = false; v.icon.Visible = false
+        end
         return
     end
-    if not krSpatialGateTick(KR.target) then return end
-    local myRoot = krGetMyRoot()
-    if not myRoot then return end
-    local weaponType, weaponName = krGetWeaponType()
-    local evasionCF = nil
-    if KR.evasionMode == "Translocate" then
-        evasionCF = krTranslocatePosition(myRoot.Position, true)
-    elseif KR.evasionMode == "ProjectileBreaker" then
-        evasionCF = pbCompute(myRoot.Position)
-    elseif KR.evasionMode == "Random" then
-        evasionCF = CFrame.new(myRoot.Position + Vector3.new(math.random(-500,500), math.random(-500,500), math.random(-500,500)))
-    end
-    if evasionCF then
-        KR._prevCF = myRoot.CFrame
-        krSetServerCFrame(evasionCF)
-    end
-    if KR.autoShoot then
-        if weaponType == "Gun" then
-            local aimCF, fireAction = krHitscanPlan(dt, KR.target, nil)
-            if fireAction then fireAction() end
-        elseif weaponType == "Melee" then
-            local aimCF, viewAng, weaponAction = krMeleePlan(dt, KR.target, nil)
-            if weaponAction then weaponAction() end
+
+    for _, obj in ipairs(workspace_:GetChildren()) do
+        local display_name = THROWABLE_NAMES[obj.Name]
+        if not display_name then continue end
+
+        local root = obj:FindFirstChildWhichIsA("BasePart")
+        if not root then continue end
+
+        active[obj] = true
+
+        if not thrower_cache[obj] then
+            local icon_label = Instance.new("ImageLabel")
+            icon_label.BackgroundTransparency = 1
+            icon_label.Size = UDim2.fromOffset(36, 36)
+            icon_label.Visible = false
+            icon_label.Parent = espgui
+
+            local name_label = Instance.new("TextLabel")
+            name_label.BackgroundTransparency = 1
+            name_label.TextStrokeTransparency = 0
+            name_label.TextStrokeColor3 = Color3.new(0,0,0)
+            name_label.TextScaled = false
+            name_label.Font = fontOf(cfg.font)
+            name_label.TextXAlignment = Enum.TextXAlignment.Center
+            name_label.Size = UDim2.fromOffset(100, 14)
+            name_label.Visible = false
+            name_label.Parent = espgui
+
+            local dist_label = Instance.new("TextLabel")
+            dist_label.BackgroundTransparency = 1
+            dist_label.TextStrokeTransparency = 0
+            dist_label.TextStrokeColor3 = Color3.new(0,0,0)
+            dist_label.TextScaled = false
+            dist_label.Font = fontOf(cfg.font)
+            dist_label.TextXAlignment = Enum.TextXAlignment.Center
+            dist_label.Size = UDim2.fromOffset(100, 12)
+            dist_label.Visible = false
+            dist_label.Parent = espgui
+
+            thrower_cache[obj] = {name=name_label, dist=dist_label, icon=icon_label}
+        end
+
+        local entry = thrower_cache[obj]
+        entry.name.Font = fontOf(cfg.font)
+        entry.dist.Font = fontOf(cfg.font)
+
+        local pos, on_screen = camera:WorldToViewportPoint(root.Position)
+
+        entry.icon.Visible  = on_screen and cfg.image == true
+        entry.name.Visible  = on_screen and cfg.name == true
+        entry.dist.Visible  = on_screen and cfg.distance == true
+
+        entry.name.TextColor3 = cfg.name_color
+        entry.name.TextSize   = cfg.name_size
+        entry.dist.TextColor3 = cfg.distance_color
+        entry.dist.TextSize   = cfg.distance_size
+
+        if on_screen then
+            entry.icon.Position = UDim2.fromOffset(pos.X - 18, pos.Y - 50)
+            entry.name.Position = UDim2.fromOffset(pos.X - 50, pos.Y - 7)
+            entry.name.Text     = display_name
+            entry.dist.Position = UDim2.fromOffset(pos.X - 50, pos.Y + 7)
+            entry.dist.Text     = string.format("%.0fm", (camera.CFrame.Position - root.Position).Magnitude * 0.28)
         end
     end
-    KR._lastTargetWorld = krGetEnemyRoot(KR.target) and krGetEnemyRoot(KR.target).Position or nil
+
+    -- clean up stale entries
+    for obj, labels in next, thrower_cache do
+        if not active[obj] then
+            pcall(function() labels.name:Destroy() end)
+            pcall(function() labels.dist:Destroy() end)
+            pcall(function() labels.icon:Destroy() end)
+            thrower_cache[obj] = nil
+        end
+    end
 end)
 
+-- ═══════════════════════════════════════════
+-- TRIGGERBOT
+-- ═══════════════════════════════════════════
+local triggerbot_handler = {is_shooting=false}
+
 task.spawn(function()
-    while not mCam do task.wait(1) end
-    if mCam and mCam.Update then
-        local oldCamUpdate = mCam.Update
-        mCam.Update = function(...)
-            if KR.enabled and KR._prevCF then
+    while true do
+        task.wait(0.05)
+        if not CFG.triggerbot.enable then triggerbot_handler.is_shooting=false; continue end
+
+        local hit = workspace_:FindPartOnRayWithIgnoreList(
+            Ray.new(camera.CFrame.Position, camera.CFrame.LookVector * CFG.triggerbot.max_distance),
+            {local_player.Character}
+        )
+
+        if hit and hit.Parent and hit.Parent:FindFirstChildWhichIsA("Humanoid")
+            and hit.Parent:FindFirstChildWhichIsA("Humanoid").Health > 0 then
+
+            local target_player = players:GetPlayerFromCharacter(hit.Parent)
+
+            if CFG.triggerbot.team_check and target_player
+                and target_player:GetAttribute("TeamID") == local_player:GetAttribute("TeamID") then
+                triggerbot_handler.is_shooting = false
+            else
+                if not triggerbot_handler.is_shooting then
+                    task.wait(CFG.triggerbot.reaction_time)
+                    triggerbot_handler.is_shooting = true
+                end
+
+                -- fire via LocalFighter:Input
                 pcall(function()
-                    local lf = mFig and mFig.LocalFighter
-                    if lf and lf.Entity and lf.Entity.RootPart then
-                        lf.Entity.RootPart.CFrame = KR._prevCF
+                    if not fighter_controller then return end
+                    local lf = fighter_controller.LocalFighter; if not lf then return end
+                    setthreadidentity(2)
+                    lf:Input("StartShooting")
+                    setthreadidentity(7)
+                end)
+
+                task.wait(CFG.triggerbot.shoot_delay)
+            end
+        else
+            triggerbot_handler.is_shooting = false
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════
+-- RAGEBOT
+-- ═══════════════════════════════════════════
+local RagebotService = {}
+
+function RagebotService:Init()
+    self.active    = false
+    self.debounce  = false
+    self.lastShot  = os.clock()
+    self.connection= nil
+    self.orbitTheta= 0
+    self.orbitPos  = nil
+    self.orbitConn = nil
+end
+
+function RagebotService:IsValid(player)
+    if not (player and player.Character
+        and player.Character:FindFirstChild("Humanoid")
+        and player.Character.Humanoid.Health > 0
+        and player:GetAttribute("EnvironmentID") == local_player:GetAttribute("EnvironmentID")) then
+        return false
+    end
+    if CFG.ragebot.ffa_mode then return true end
+    return local_player:GetAttribute("TeamID") ~= player:GetAttribute("TeamID")
+end
+
+function RagebotService:GetClosest()
+    local closest, best = nil, math.huge
+    for _, p in next, players:GetPlayers() do
+        if p ~= local_player and self:IsValid(p) then
+            local rootpos = p.Character.HumanoidRootPart.Position
+            local mag = local_player:DistanceFromCharacter(rootpos)
+            if mag < best then closest,best=p,mag end
+        end
+    end
+    return closest
+end
+
+function RagebotService:StartOrbit(target)
+    if self.orbitConn then self.orbitConn:Disconnect(); self.orbitConn=nil end
+    self.orbitTheta = 0
+    self.orbitConn = run_service.Heartbeat:Connect(function(dt)
+        if not CFG.ragebot.enable or not target or not target.Character then
+            self.orbitConn:Disconnect(); self.orbitConn=nil; return
+        end
+        local root = target.Character:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        self.orbitTheta = self.orbitTheta + dt * 6
+        local ox = CFG.ragebot.offset_x
+        local oy = CFG.ragebot.offset_y
+        local oz = CFG.ragebot.offset_z
+        local orbitPos = root.Position
+            + Vector3.new(math.cos(self.orbitTheta) * ox, oy, math.sin(self.orbitTheta) * oz)
+        self.orbitPos = orbitPos
+        -- teleport local HRP to orbit position (server-side position desync)
+        local myChar = local_player.Character
+        local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if myHRP then
+            pcall(function() myHRP.CFrame = CFrame.new(orbitPos) end)
+        end
+    end)
+end
+
+function RagebotService:FireWeapon(target)
+    if not target or not target.Character then return end
+    if not fighter_controller or not enum_lib or not utility_lib then return end
+    local fighter = fighter_controller.LocalFighter; if not fighter then return end
+    local item = fighter.EquippedItem; if not item then return end
+
+    local head = target.Character:FindFirstChild("HitboxHead")
+        or target.Character:FindFirstChild("HitboxTorso")
+        or target.Character:FindFirstChild("HumanoidRootPart")
+    if not head then return end
+
+    local myChar = local_player.Character
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+
+    local shootPos = self.orbitPos or myChar.HumanoidRootPart.Position
+    local aimPos   = head.Position
+
+    if CFG.ragebot.prediction then
+        local troot = target.Character:FindFirstChild("HumanoidRootPart")
+        if troot then
+            local ping = 0.05
+            pcall(function() ping = local_player:GetNetworkPing() end)
+            local lead = math.clamp(ping, 0, 0.4) * (CFG.ragebot.prediction_amt or 1.2)
+            aimPos = aimPos + troot.AssemblyLinearVelocity * lead
+        end
+    end
+
+    local oid = item:Get("ObjectID"); if not oid then return end
+    local data = {
+        [utf8.char(1)] = {
+            [utf8.char(0)] = utility_lib:EncodeCFrame(CFrame.new(shootPos, aimPos)),
+            [utf8.char(1)] = utility_lib:EncodeCFrame(CFrame.new(shootPos, aimPos)),
+            [utf8.char(2)] = head,
+            [utf8.char(3)] = utility_lib:EncodeCFrame(CFrame.new(shootPos, aimPos)),
+        },
+    }
+
+    pcall(function()
+        rep_storage.Remotes.Replication.Fighter.UseItem:FireServer(
+            oid, enum_lib:ToEnum("StartShooting"), data, nil
+        )
+    end)
+end
+
+function RagebotService:Start()
+    if self.connection then return end
+    self.active = true
+
+    -- slingshot projectile handler
+    workspace_.DescendantAdded:Connect(function(child)
+        if not CFG.ragebot.enable then return end
+        if child:IsA("BasePart") or child:IsA("Model") then
+            if child.Name=="Slingshot" or child.Name=="CoreProjectile" or child.Name=="OuterProjectile" then
+                task.spawn(function()
+                    task.wait(0.03)
+                    local proj = child:IsA("BasePart") and child or child:FindFirstChildWhichIsA("BasePart")
+                    if not proj then return end
+                    proj.CanTouch = true
+                    for i=1,45 do
+                        if not CFG.ragebot.enable then break end
+                        local t = self:GetClosest()
+                        if t and t.Character then
+                            local hp = t.Character:FindFirstChild("HitboxHead") or t.Character:FindFirstChild("HumanoidRootPart")
+                            if hp and hp:IsA("BasePart") and hp.Parent and proj.Parent
+                                and hp:IsDescendantOf(workspace_) and proj:IsDescendantOf(workspace_) then
+                                pcall(firetouchinterest, hp, proj, 0)
+                                pcall(firetouchinterest, hp, proj, 1)
+                            end
+                        end
+                        task.wait()
                     end
                 end)
             end
-            return oldCamUpdate(...)
         end
-    end
-end)
+    end)
 
--- ═══════════════════════════════════════════
--- VISUALS
--- ═══════════════════════════════════════════
-local VIS={esp=false,tracers=false,tracerThick=1.5,tracerDur=0.4,hitNum=true,sat=0,con=0,blur=0,bright=1}
-local espBoxes={}
-local function updateESP() for _,p in ipairs(plr:GetPlayers()) do if p==lp then continue end; local chr=p.Character; local hm=chr and chr:FindFirstChildOfClass("Humanoid"); if not chr or not hm or hm.Health<=0 then if espBoxes[p] then espBoxes[p]:Destroy(); espBoxes[p]=nil end; continue end; if VIS.esp then if not espBoxes[p] then local b=Instance.new("SelectionBox"); b.Color3=Color3.fromRGB(255,50,50); b.LineThickness=0.05; b.SurfaceTransparency=1; b.Adornee=chr; b.Parent=ws; espBoxes[p]=b end else if espBoxes[p] then espBoxes[p]:Destroy(); espBoxes[p]=nil end end end end
-local tracers={}
-local function spawnTracer(o3,t3) if not VIS.tracers then return end; local l=Drawing.new("Line"); l.Thickness=VIS.tracerThick; l.Color=Color3.fromRGB(255,50,50); l.Transparency=0; l.Visible=false; table.insert(tracers,{line=l,born=tick(),o=o3,t=t3}) end
-local function updateTracers() local now=tick(); local alive={}; for _,t in ipairs(tracers) do local age=now-t.born; local life=math.max(VIS.tracerDur,0.05); if age>=life then pcall(function() t.line:Remove() end) else local a=1-(age/life); local from=Vector2.new(cam.ViewportSize.X/2,cam.ViewportSize.Y); local to=w2s(t.t); if to then t.line.From=from; t.line.To=to; t.line.Transparency=1-a; t.line.Visible=true else t.line.Visible=false end; table.insert(alive,t) end end; tracers=alive end
-local hitGui=Instance.new("ScreenGui",pg); hitGui.Name="HitNums"; hitGui.ResetOnSpawn=false; hitGui.IgnoreGuiInset=true
-local function showHit(amt) if not VIS.hitNum then return end; local l=Instance.new("TextLabel",hitGui); l.BackgroundTransparency=1; l.AutomaticSize=Enum.AutomaticSize.XY; l.Text=tostring(math.floor(amt+0.5)); l.Font=Enum.Font.GothamBold; l.TextColor3=Color3.fromRGB(255,20,147); l.TextSize=48; l.TextStrokeTransparency=0; l.TextTransparency=1; l.Position=UDim2.new(0.5,math.random(-150,150),0.45,math.random(-80,80)); l.AnchorPoint=Vector2.new(0.5,0.5); tws:Create(l,TweenInfo.new(0.2),{TextTransparency=0}):Play(); task.delay(3,function() tws:Create(l,TweenInfo.new(0.6),{TextTransparency=1}):Play(); task.wait(0.6); l:Destroy() end) end
-local function hookHum(h) local last=h.Health; h.HealthChanged:Connect(function(hp) local d=last-hp; if d>0.1 then showHit(d) end; last=hp end) end
-for _,p in ipairs(plr:GetPlayers()) do if p.Character then local h=p.Character:FindFirstChild("Humanoid"); if h then hookHum(h) end end end
-plr.PlayerAdded:Connect(function(p) p.CharacterAdded:Connect(function(c) local h=c:WaitForChild("Humanoid",5); if h then hookHum(h) end end) end)
-local ccfx=Instance.new("ColorCorrectionEffect",lit); ccfx.Saturation=0; ccfx.Contrast=0
-local blfx=Instance.new("BlurEffect",lit); blfx.Size=0
+    self.connection = run_service.Heartbeat:Connect(function()
+        if not CFG.ragebot.enable then self:Stop(); return end
+        if not fighter_controller or not enum_lib or not utility_lib then return end
 
--- ═══════════════════════════════════════════
--- SKIN CHANGER
--- ═══════════════════════════════════════════
-local equipped={};local favorites={};local skinEnabled=false;local saveFile="unlockall/config.json"
-local function cloneCosmetic(name,cosmeticType,options) if not mCosmetic then return nil end; local base=mCosmetic.Cosmetics[name]; if not base then return nil end; local data={}; for k,v in pairs(base) do data[k]=v end; data.Name=name; data.Type=data.Type or cosmeticType; data.Seed=data.Seed or math.random(1,1000000); if mEnumLib then local ok,eid=pcall(mEnumLib.ToEnum,mEnumLib,name); if ok and eid then data.Enum=eid; data.ObjectID=data.ObjectID or eid end end; if options then if options.inverted~=nil then data.Inverted=options.inverted end end; return data end
-local function saveConfig() if not writefile then return end; pcall(function() local cfg={equipped={},favorites=favorites}; for weapon,cosmetics in pairs(equipped) do cfg.equipped[weapon]={}; for ct,cd in pairs(cosmetics) do if cd and cd.Name then cfg.equipped[weapon][ct]={name=cd.Name,seed=cd.Seed,inverted=cd.Inverted} end end end; makefolder("unlockall"); writefile(saveFile,hts:JSONEncode(cfg)) end) end
-local function loadConfig() if not readfile or not isfile or not isfile(saveFile) then return end; pcall(function() local cfg=hts:JSONDecode(readfile(saveFile)); if cfg.equipped then for weapon,cosmetics in pairs(cfg.equipped) do equipped[weapon]={}; for ct,cd in pairs(cosmetics) do local cl=cloneCosmetic(cd.name,ct,{inverted=cd.inverted}); if cl then cl.Seed=cd.seed; equipped[weapon][ct]=cl end end end end; favorites=cfg.favorites or {} end) end
-local function isAllowed(name,cosmetic) if not cosmetic then return false end; local t=cosmetic.Type or ""; if t=="Finisher" or name:lower():find("finisher") then return false end; return t=="Skin" or t=="Charm" or t=="Dance" or t=="Emote" or t=="Wrap" or t=="Wrapping" or name:lower():find("charm") or name:lower():find("dance") or name:lower():find("emote") or name:lower():find("wrap") end
-local function enableSkins() if not mCosmetic or not mData then Lib:Notify("Enter a match first, then enable Skin Changer",4); return end; mCosmetic.OwnsCosmetic=function(self,inventory,name,weapon) if name:find("MISSING_") then return false end; local cosmetic=mCosmetic.Cosmetics[name]; if cosmetic and isAllowed(name,cosmetic) then return true end; return false end; mCosmetic.OwnsCosmeticNormally=mCosmetic.OwnsCosmetic; mCosmetic.OwnsCosmeticUniversally=mCosmetic.OwnsCosmetic; mCosmetic.OwnsCosmeticForWeapon=mCosmetic.OwnsCosmetic; local origGet=mData.Get; mData.Get=function(self,key) local data=origGet(self,key); if key=="CosmeticInventory" then local proxy={}; if data then for k,v in pairs(data) do local c=mCosmetic.Cosmetics[k]; if c and isAllowed(k,c) then proxy[k]=v end end end; return setmetatable(proxy,{__index=function(t,k) local c=mCosmetic.Cosmetics[k]; if c and isAllowed(k,c) then return true end; return nil end}) end; if key=="FavoritedCosmetics" then local result=data and table.clone(data) or {}; for weapon,favs in pairs(favorites) do result[weapon]=result[weapon] or {}; for name,isFav in pairs(favs) do local c=mCosmetic.Cosmetics[name]; if c and isAllowed(name,c) then result[weapon][name]=isFav end end end; return result end; return data end; loadConfig(); skinEnabled=true; Lib:Notify("Skin Changer ON",4) end
-
--- ═══════════════════════════════════════════
--- BULLET TRACER MODULE
--- ═══════════════════════════════════════════
-local TCR={enabled=false,color=Color3.fromRGB(255,255,255),duration=3,thickness=1,fadeTime=0.5,lerpSpeed=0,style="Line"}
-local tcTracers={};local tcConn=nil;local tcEffectHooked=false;local tcLastCreations={};local TC_DEDUPE_INT=0.1;local TC_DEDUPE_EXPIRY=1.0
-local TC_TEXTURES={Line="",Beam="rbxassetid://12781852245",Lightning="rbxassetid://446111271",Heartrate="rbxassetid://5830549480",Chain="rbxassetid://9632168658",Glitch="rbxassetid://8089467613",Swirl="rbxassetid://5638168605",Neon="rbxassetid://6361963422",Plasma="rbxassetid://8993645509",Laser="rbxassetid://14549123968"}
-local TC_STYLES={"Line","Beam","Lightning","Heartrate","Chain","Glitch","Swirl","Neon","Plasma","Laser"}
-local function tcMuzzlePos() local vms=ws:FindFirstChild("ViewModels"); if not vms then return nil end; local fp=vms:FindFirstChild("FirstPerson"); if not fp then return nil end; for _,mdl in ipairs(fp:GetChildren()) do if mdl:IsA("Model") then local iv=mdl:FindFirstChild("ItemVisual"); if not iv then continue end; local body=iv:FindFirstChild("Body"); if not body then continue end; local bp=body:FindFirstChild("BodyPrimary"); if not bp then continue end; local mz=bp:FindFirstChild("_muzzle"); if mz and mz:IsA("Attachment") then return mz.WorldPosition end end end; return nil end
-local function tcDrawEnd(tr,age) if TCR.lerpSpeed<=0 then return tr.endPos end; local dt2=math.max(TCR.lerpSpeed*0.25,0.001); local prog=math.clamp(age/dt2,0,1); return tr.startPos:Lerp(tr.endPos,prog) end
-local function tcMakeLine(s,e) local ol=Drawing.new("Line"); ol.Thickness=4*TCR.thickness; ol.Color=Color3.new(0,0,0); ol.Transparency=1; ol.Visible=false; local ln=Drawing.new("Line"); ln.Thickness=2*TCR.thickness; ln.Color=TCR.color; ln.Transparency=1; ln.Visible=false; table.insert(tcTracers,{isLine=true,outline=ol,line=ln,startPos=s,endPos=e,lifetime=TCR.duration,fadeTime=TCR.fadeTime,born=tick()}) end
-local function tcMakeBeam(s,e) local a0=Instance.new("Attachment"); a0.Parent=ws.Terrain; local a1=Instance.new("Attachment"); a1.Parent=ws.Terrain; local beam=Instance.new("Beam"); beam.Attachment0=a0; beam.Attachment1=a1; beam.Color=ColorSequence.new(TCR.color); local bw=TCR.style=="Laser" and 0.02 or 0.15; beam.Width0=bw*TCR.thickness; beam.Width1=bw*TCR.thickness; beam.Transparency=NumberSequence.new(0); beam.FaceCamera=true; beam.LightEmission=0.8; beam.LightInfluence=0.2; local tex=TC_TEXTURES[TCR.style]; if tex and tex~="" then beam.Texture=tex; beam.TextureLength=4; beam.TextureSpeed=1 else beam.Texture=""; beam.TextureLength=1; beam.TextureSpeed=0 end; beam.Parent=ws.Terrain; a0.WorldPosition=s; a1.WorldPosition=e; table.insert(tcTracers,{isLine=false,beam=beam,a0=a0,a1=a1,startPos=s,endPos=e,lifetime=TCR.duration,fadeTime=TCR.fadeTime,born=tick()}) end
-local function tcSpawn(s,e) if not TCR.enabled or not s or not e then return end; local kx=math.floor(s.X*5+0.5);local ky=math.floor(s.Y*5+0.5);local kz=math.floor(s.Z*5+0.5);local ex=math.floor(e.X*5+0.5);local ey=math.floor(e.Y*5+0.5);local ez=math.floor(e.Z*5+0.5);local key=kx*1e9+ky*1e6+kz*1e3+ex+ey*1e-3+ez*1e-6;local now=tick();local last=tcLastCreations[key];if last and(now-last)<TC_DEDUPE_INT then return end;tcLastCreations[key]=now;if TCR.style=="Line" then tcMakeLine(s,e) else tcMakeBeam(s,e) end end
-local function tcDestroy(t) if t.isLine then if t.outline then t.outline:Remove() end; if t.line then t.line:Remove() end else if t.beam then t.beam:Destroy() end; if t.a0 then t.a0:Destroy() end; if t.a1 then t.a1:Destroy() end end end
-local tcFrame=0
-local function tcUpdate() if #tcTracers==0 then return end; tcFrame+=1; local now=tick(); if tcFrame%120==0 then for k,t in next,tcLastCreations do if(now-t)>TC_DEDUPE_EXPIRY then tcLastCreations[k]=nil end end end; local i=#tcTracers; while i>=1 do local tr=tcTracers[i];local age=now-tr.born;if age>=tr.lifetime then tcDestroy(tr);tcTracers[i]=tcTracers[#tcTracers];tcTracers[#tcTracers]=nil else local fadeAlpha;local fs=tr.lifetime-tr.fadeTime;if age>=fs then fadeAlpha=1-math.clamp((age-fs)/tr.fadeTime,0,1) else fadeAlpha=1 end;local de=tcDrawEnd(tr,age);if tr.isLine then local s2,onS=cam:WorldToViewportPoint(tr.startPos);local e2,onE=cam:WorldToViewportPoint(de);if onS and onE then local dx=e2.X-s2.X;local dy=e2.Y-s2.Y;local len=math.sqrt(dx*dx+dy*dy);if len>0.1 and len<3000 then local fs2=Vector2.new(s2.X,s2.Y);local fe2=Vector2.new(e2.X,e2.Y);tr.outline.From=fs2;tr.outline.To=fe2;tr.outline.Transparency=fadeAlpha;tr.outline.Visible=true;tr.line.From=fs2;tr.line.To=fe2;tr.line.Transparency=fadeAlpha;tr.line.Visible=true else tr.outline.Visible=false;tr.line.Visible=false end else tr.outline.Visible=false;tr.line.Visible=false end else if tr.a0 then tr.a0.WorldPosition=tr.startPos end;if tr.a1 then tr.a1.WorldPosition=de end;tr.beam.Transparency=NumberSequence.new(1-fadeAlpha) end end;i-=1 end end
-local function tcHookEffect() if tcEffectHooked then return end; pcall(function() local TE=require(lp.PlayerScripts.Modules.TracerEffect);local origPlay=TE.Play;TE.Play=function(self,tracerData,config2,extraData) if TCR.enabled and tracerData and tracerData.IsLocal and tracerData.RaycastResults then local mPos=tcMuzzlePos();if mPos then for _,hit in ipairs(tracerData.RaycastResults) do if hit.Position then tcSpawn(mPos,hit.Position) end end end end;return origPlay(self,tracerData,config2,extraData) end;tcEffectHooked=true end) end
-local function tcStart() tcHookEffect(); if not tcConn then tcConn=rs.RenderStepped:Connect(tcUpdate) end end
-local function tcStop() if tcConn then tcConn:Disconnect();tcConn=nil end;for _,t in ipairs(tcTracers) do tcDestroy(t) end;tcTracers={} end
-task.defer(function() tcStart();for _=1,30 do if tcEffectHooked then break end;tcHookEffect();task.wait(0.5) end end)
-
--- ═══════════════════════════════════════════
--- UI — COMBAT TAB
--- ═══════════════════════════════════════════
-G.EzL:AddToggle("EZMode",{Text="Easy Mode",Default=false,Callback=function(v) AB.easyMode=v; if v then applyEasyPreset(AB.easyPreset) else Lib:Notify("Manual sliders active",3) end end})
-G.EzL:AddToggle("EZOn",{Text="Aimbot Enabled",Default=false,Callback=function(v) AB.on=v; if not v then abTgt=nil;abLockT=0;abDoReact=false;abPrevPos=nil;abCurveStart=nil;abCurveProgress=0 end end})
-G.EzL:AddDropdown("EZPreset",{Text="Style",Default="Normal",Values={"Casual","Normal","Tryhard"},Callback=function(v) AB.easyPreset=v; if AB.easyMode then applyEasyPreset(v) end end})
-G.EzL:AddToggle("EZTeam",{Text="Team Check",Default=false,Callback=function(v) AB.team=v end})
-G.EzL:AddToggle("EZVis",{Text="Visible Check",Default=false,Callback=function(v) AB.vis=v end})
-G.EzL:AddDropdown("EZPart",{Text="Aim At",Default="Head",Values=PARTS,Callback=function(v) AB.part=v end})
-G.LgR:AddSlider("ABSpeed",{Text="Speed",Default=100,Min=1,Max=500,Rounding=0,Callback=function(v) AB.speed=v/100 end})
-G.LgR:AddSlider("ABSpeedAtk",{Text="Attack Speed",Default=100,Min=1,Max=500,Rounding=0,Callback=function(v) AB.speedAttack=v/100 end})
-G.LgR:AddSlider("ABFov",{Text="FOV",Default=150,Min=0,Max=600,Rounding=0,Callback=function(v) AB.fov=v; abCirc.Radius=v end})
-G.LgR:AddToggle("ABDrawFov",{Text="Draw FOV",Default=false,Callback=function(v) AB.drawFov=v end})
-G.LgR:AddSlider("ABMaxLock",{Text="Max Lock (s×100)",Default=300,Min=1,Max=1000,Rounding=0,Callback=function(v) AB.maxLock=v/100 end})
-G.LgR:AddSlider("ABReact",{Text="Reaction (ms)",Default=100,Min=0,Max=500,Rounding=0,Callback=function(v) AB.reactTime=v end})
-G.LgR:AddDropdown("ABMode",{Text="Lock Mode",Default="Soft",Values={"Soft","Magnet","Curve"},Callback=function(v) AB.lockMode=v; abCurveStart=nil; abCurveProgress=0 end})
-G.AiL:AddToggle("AIOn",{Text="AI Legit",Default=false,Callback=function(v) AI.on=v; aiBreakTimer=0; aiInBreak=false; aiJitterX=0; aiJitterY=0 end})
-G.AiL:AddSlider("AIJitter",{Text="Hand Tremor",Default=2,Min=0,Max=20,Rounding=0,Callback=function(v) AI.jitter=v/1000 end})
-G.AiL:AddSlider("AIOvershoot",{Text="Overshoot %",Default=12,Min=0,Max=100,Rounding=0,Callback=function(v) AI.overshoot=v/100 end})
-G.AiL:AddSlider("AIBreak",{Text="Break Chance",Default=8,Min=0,Max=50,Rounding=0,Callback=function(v) AI.breakChance=v/1000 end})
-G.AiL:AddSlider("AIBreakDur",{Text="Break Duration (ms)",Default=250,Min=50,Max=800,Rounding=0,Callback=function(v) AI.breakDur=v/1000 end})
-G.AiL:AddToggle("AIVary",{Text="Vary Smoothness",Default=true,Callback=function(v) AI.varySmooth=v end})
-G.SaL:AddToggle("SAOn",{Text="Silent Aim",Default=false,Callback=function(v) SA.on=v; if v then applySA() end; saCirc.Visible=v and SA.drawFov end})
-G.SaL:AddDropdown("SAPart",{Text="Target Part",Default="Head",Values=PARTS,Callback=function(v) SA.part=v end})
-G.SaL:AddDropdown("SAMode",{Text="Mode",Default="Closest",Values={"Closest","Furthest","Random"},Callback=function(v) SA.mode=v end})
-G.SaL:AddToggle("SATeam",{Text="Team Check",Default=true,Callback=function(v) SA.team=v end})
-G.SaL:AddToggle("SAVis",{Text="Visible Check",Default=false,Callback=function(v) SA.vis=v end})
-G.SaR:AddSlider("SAFov",{Text="FOV",Default=600,Min=10,Max=600,Rounding=0,Callback=function(v) SA.fov=v; saCirc.Radius=v end})
-G.SaR:AddSlider("SADist",{Text="Max Distance",Default=500,Min=10,Max=2000,Rounding=0,Callback=function(v) SA.maxDist=v end})
-G.SaR:AddToggle("SADrawFov",{Text="Draw FOV",Default=true,Callback=function(v) SA.drawFov=v; saCirc.Visible=v and SA.on end})
-G.TbL:AddToggle("TBOn",{Text="Triggerbot",Default=false,Callback=function(v) TB.on=v; if v then startTB() end end})
-G.TbL:AddSlider("TBDelay",{Text="Delay (ms)",Default=0,Min=0,Max=500,Rounding=0,Callback=function(v) TB.delay=v end})
-G.TbL:AddSlider("TBGrace",{Text="Grace (ms)",Default=0,Min=0,Max=500,Rounding=0,Callback=function(v) TB.grace=v end})
-G.TbL:AddToggle("TBRand",{Text="Random Delay",Default=false,Callback=function(v) TB.rand=v end})
-G.TbR:AddToggle("TBTeam",{Text="Team Check",Default=true,Callback=function(v) TB.team=v end})
-G.TbR:AddToggle("TBVis",{Text="Visible Check",Default=false,Callback=function(v) TB.vis=v end})
-G.TbR:AddSlider("TBFov",{Text="Trigger FOV",Default=250,Min=5,Max=600,Rounding=0,Callback=function(v) TB.fov=v end})
-G.TbR:AddSlider("TBDist",{Text="Max Dist",Default=500,Min=10,Max=2000,Rounding=0,Callback=function(v) TB.dist=v end})
-G.AaL:AddToggle("AAOn",{Text="Anti-Aim",Default=false,Callback=function(v) AA.enabled=v; if v then startAntiAim() else stopAntiAim(); rs:UnbindFromRenderStep("AA_Sync") end end})
-G.AaL:AddDropdown("AAPitch",{Text="Pitch",Default="Off",Values={"Off","Up","Zero","Down","Glitch","Random"},Callback=function(v) AA.pitch=v; if AA.enabled then startAntiAim() end end})
-G.AaL:AddDropdown("AAYawBase",{Text="Yaw Base",Default="Local",Values={"Local","AtTargets"},Callback=function(v) AA.yawBase=v; if AA.enabled then startAntiAim() end end})
-G.AaR:AddDropdown("AAYaw",{Text="Yaw Mode",Default="Off",Values={"Off","Forward","Backward","Spin","GlitchSpin","StutterSpin"},Callback=function(v) AA.yaw=v; aaSpinAngle=0; aaStutterOn=false; if AA.enabled then startAntiAim() end end})
-G.AaR:AddSlider("AAYawAngle",{Text="Yaw Angle",Default=0,Min=-180,Max=180,Rounding=0,Callback=function(v) AA.yawAngle=v end})
-G.AaR:AddToggle("AAUnderground",{Text="Underground",Default=false,Callback=function(v) AA.underground=v end})
-G.GnR:AddToggle("GNRec",{Text="No Recoil",Default=false,Callback=function(v) GN.noRecoil=v; patchGuns() end})
-G.GnR:AddToggle("GNSpr",{Text="No Spread",Default=false,Callback=function(v) GN.noSpread=v; patchGuns() end})
-G.GnR:AddToggle("GNFst",{Text="Fast Shoot",Default=false,Callback=function(v) GN.fast=v; patchGuns() end})
-G.GnR:AddButton({Text="Apply Gun Mods",Func=function() patchGuns(); Lib:Notify("Applied",2) end})
-
--- ═══════════════════════════════════════════
--- UI — VISUALS TAB
--- ═══════════════════════════════════════════
-G.VsL:AddToggle("ESPOn",{Text="ESP Boxes",Default=false,Callback=function(v) VIS.esp=v end})
-G.HnR:AddToggle("HNOn",{Text="Hit Numbers",Default=true,Callback=function(v) VIS.hitNum=v end})
-G.TrL:AddToggle("TROn",{Text="Legacy Tracers",Default=false,Callback=function(v) VIS.tracers=v; if not v then for _,t in ipairs(tracers) do pcall(function() t.line:Remove() end) end; tracers={} end end})
-G.TrL:AddSlider("TRThick",{Text="Thickness",Default=2,Min=1,Max=5,Rounding=1,Callback=function(v) VIS.tracerThick=v end})
-G.TrL:AddSlider("TRDur",{Text="Duration (s)",Default=0,Min=0,Max=3,Rounding=1,Callback=function(v) VIS.tracerDur=math.max(v,0.05) end})
-G.WdL:AddSlider("WDSat",{Text="Saturation",Default=0,Min=-1,Max=1,Rounding=2,Callback=function(v) ccfx.Saturation=v end})
-G.WdL:AddSlider("WDCon",{Text="Contrast",Default=0,Min=-1,Max=1,Rounding=2,Callback=function(v) ccfx.Contrast=v end})
-G.WdL:AddSlider("WDBlur",{Text="Blur",Default=0,Min=0,Max=56,Rounding=0,Callback=function(v) blfx.Size=v end})
-G.WdL:AddSlider("WDBright",{Text="Brightness",Default=1,Min=0,Max=5,Rounding=1,Callback=function(v) lit.Brightness=v end})
-G.VsR:AddToggle("CVNoShake",{Text="No Camera Shake",Default=false,Callback=function(v) pcall(function() if mCam then mCam._shake_enabled=not v end end) end})
-G.VsR:AddToggle("CVThird",{Text="Force Third Person",Default=false,Callback=function(v) pcall(function() if mCam then mCam:SetThirdPersonOverride(v or nil) end end) end})
-G.VsR:AddSlider("CVFov",{Text="FOV Override",Default=80,Min=40,Max=120,Rounding=0,Callback=function(v) pcall(function() if mCam then mCam._base_fov=v end end) end})
-G.VsR:AddSlider("CVSens",{Text="Sensitivity %",Default=100,Min=10,Max=300,Rounding=0,Callback=function(v) pcall(function() if mCam then mCam._camera_sensitivity=v/100 end end) end})
-
--- ═══════════════════════════════════════════
--- UI — TRACERS TAB
--- ═══════════════════════════════════════════
-G.TcL:AddToggle("TCOn",{Text="Enable Tracers",Default=false,Callback=function(v) TCR.enabled=v; if v then tcStart() else tcStop() end end})
-G.TcL:AddLabel("Color"):AddColorPicker("TCColor",{Default=Color3.fromRGB(255,255,255),Title="Tracer Color",Callback=function(v) TCR.color=v end})
-G.TcL:AddSlider("TCThick",{Text="Thickness",Default=1,Min=1,Max=6,Rounding=1,Callback=function(v) TCR.thickness=v end})
-G.TcL:AddSlider("TCDur",{Text="Duration (s)",Default=3,Min=1,Max=10,Rounding=1,Callback=function(v) TCR.duration=v end})
-G.TcL:AddSlider("TCFade",{Text="Fade Time (s)",Default=1,Min=0,Max=3,Rounding=1,Callback=function(v) TCR.fadeTime=v end})
-G.TcL:AddSlider("TCLerp",{Text="Draw Speed (0=instant)",Default=0,Min=0,Max=2,Rounding=1,Callback=function(v) TCR.lerpSpeed=v end})
-G.TcR:AddLabel("Line = Drawing API (fast)")
-G.TcR:AddLabel("Others = Beam (world-space, textured)")
-G.TcR:AddDropdown("TCStyle",{Text="Style",Default="Line",Values=TC_STYLES,Callback=function(v) TCR.style=v; tcStop(); if TCR.enabled then tcStart() end end})
-G.TcR:AddButton({Text="Clear Tracers",Func=function() for _,t in ipairs(tcTracers) do tcDestroy(t) end; tcTracers={}; Lib:Notify("Cleared",2) end})
-
--- ═══════════════════════════════════════════
--- UI — RAGEBOT TAB (KICIAHOOK DEOBF)
--- ═══════════════════════════════════════════
-G.KRgL:AddToggle("KRMain",{Text="Kicia Ragebot",Default=false,Callback=function(v)
-    KR.enabled = v
-    if v then
-        KR._shootLockUntil = nil
-        KR._hitboxWindowUntil = -1
-        KR._attackCooldownUntil = -1
-        KR._lastTargetWorld = nil
-        KR._pbCooldown = -1
-        KR._pbPool = {}
-        KR._pbProcessed = {}
-        KR._pbLastSurface = nil
-        KR._prevCF = nil
-        KR.target = nil
-    else
-        krShootLockReset()
-        krPartGlueClear()
-        KR.target = nil
-        KR._prevCF = nil
-        krSpoofFallenHeight(false)
-    end
-end})
-G.KRgL:AddToggle("KRAutoTarget",{Text="Auto Target",Default=true,Callback=function(v) KR.autoTarget=v end})
-G.KRgL:AddToggle("KRAutoShoot",{Text="Auto Shoot",Default=true,Callback=function(v) KR.autoShoot=v end})
-G.KRgL:AddDropdown("KRAimPart",{Text="Hit Part",Default="Head",Values={"Head","UpperTorso","LowerTorso","HumanoidRootPart"},Callback=function(v) KR.aimPart=v end})
-G.KRgL:AddSlider("KRShootFrames",{Text="Shoot Frames",Default=1,Min=1,Max=10,Rounding=0,Tooltip="Fire rate gating multiplier",Callback=function(v) KR.shootFrames=v end})
-G.KRgL:AddSlider("KRShootAttempts",{Text="Shoot Attempts",Default=1,Min=1,Max=20,Rounding=0,Suffix="x",Callback=function(v) KR.shootAttempts=v end})
-
-G.KRgR:AddLabel("── Hitscan / Melee ──")
-G.KRgR:AddSlider("KRHitboxWindow",{Text="Hitbox Window (s)",Default=0.625,Min=0.1,Max=2.0,Rounding=3,Tooltip="Backstab hitbox window for melee",Callback=function(v) KR.hitboxWindow=v end})
-G.KRgR:AddSlider("KRAttackCooldown",{Text="Attack Cooldown (s)",Default=1.25,Min=0.1,Max=3.0,Rounding=3,Tooltip="Melee attack cooldown",Callback=function(v) KR.attackCooldown=v end})
-G.KRgR:AddSlider("KRStability",{Text="Stability Gate",Default=0.5,Min=0.1,Max=2.0,Rounding=2,Tooltip="SpatialLimitGate threshold",Callback=function(v) KR.stability=v end})
-
-G.KRgE:AddLabel("── Evasion ──")
-G.KRgE:AddDropdown("KREvasionMode",{Text="Evasion Mode",Default="Translocate",Values={"None","Translocate","ProjectileBreaker","Random"},Tooltip="Translocate = void TP | ProjectileBreaker = cover scan | Random = chaos",Callback=function(v) KR.evasionMode=v end})
-G.KRgE:AddSlider("KRTranslocateOff",{Text="Translocate Offset",Default=-5,Min=-20,Max=20,Rounding=1,Tooltip="Vertical offset below cover part",Callback=function(v) KR.translocateOffset=v end})
-G.KRgE:AddLabel("── ProjectileBreaker ──")
-G.KRgE:AddSlider("KRPBInterval",{Text="Reposition Interval",Default=0.3,Min=0.1,Max=2.0,Rounding=2,Suffix="s",Callback=function(v) KR.pbRepositionInterval=v end})
-G.KRgE:AddSlider("KRPBDepthUpMax",{Text="Depth Up Max",Default=3.0,Min=0.5,Max=8.0,Rounding=1,Callback=function(v) KR.pbDepthUpMax=v end})
-G.KRgE:AddSlider("KRPBDepthFwdMax",{Text="Depth Fwd Max",Default=2.0,Min=0.5,Max=8.0,Rounding=1,Callback=function(v) KR.pbDepthFwdMax=v end})
-G.KRgE:AddSlider("KRPBFallbackRad",{Text="Fallback Radius",Default=100,Min=10,Max=500,Rounding=0,Suffix=" studs",Callback=function(v) KR.pbFallbackRadius=v end})
-
-G.KRgD:AddLabel("── Defensive ──")
-G.KRgD:AddToggle("KRDefCF",{Text="Defensive CFrame",Default=true,Tooltip="Sends defensive view angles to desync head",Callback=function(v) KR.defensiveCFrame=v end})
-G.KRgD:AddToggle("KRForcedCrouch",{Text="Forced Crouch",Default=false,Tooltip="Shrinks hitbox during attacks",Callback=function(v) KR.forcedCrouch=v end})
-G.KRgD:AddDivider()
-G.KRgD:AddButton({Text="Reset State",Func=function()
-    krShootLockReset()
-    krPartGlueClear()
-    KR._hitboxWindowUntil = -1
-    KR._attackCooldownUntil = -1
-    KR._pbPool = {}
-    KR._pbProcessed = {}
-    KR._pbLastSurface = nil
-    KR.target = nil
-    Lib:Notify("Ragebot state reset",2)
-end})
-
--- ═══════════════════════════════════════════
--- UI — MISC TAB
--- ═══════════════════════════════════════════
-G.MiL:AddLabel("CamCtrl:  " ..(mCam  and "✓" or "⏳"))
-G.MiL:AddLabel("FightCtrl: "..(mFig  and "✓" or "⏳"))
-G.MiL:AddLabel("Utility:   "..(mUtil and "✓" or "✗"))
-G.MiL:AddLabel("EnumLib:   "..(mEnum and "✓" or "✗"))
-G.MiL:AddLabel("AC Bypass: 7-layer ✓")
-G.MiL:AddLabel("Insert / RightShift = toggle menu")
-G.MiR:AddButton({Text="Stop All",Func=function()
-    AB.on=false; SA.on=false; TB.on=false; AI.on=false
-    VIS.esp=false; VIS.tracers=false
-    GN.noRecoil=false; GN.noSpread=false; GN.fast=false
-    abTgt=nil; abCurveStart=nil; abCurveProgress=0
-    aiInBreak=false; aiBreakTimer=0; aiJitterX=0; aiJitterY=0
-    AA.enabled=false; stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
-    KR.enabled=false; krShootLockReset(); krPartGlueClear(); KR.target=nil; krSpoofFallenHeight(false)
-    TCR.enabled=false; tcStop()
-    for _,t in ipairs(tracers) do pcall(function() t.line:Remove() end) end; tracers={}
-    abCirc.Visible=false; saCirc.Visible=false
-    patchGuns(); Lib:Notify("All stopped",3)
-end})
-G.MiR:AddButton({Text="Unload",Func=function()
-    stopAntiAim(); pcall(function() rs:UnbindFromRenderStep("AA_Sync") end)
-    KR.enabled=false; krShootLockReset(); krPartGlueClear(); krSpoofFallenHeight(false)
-    tcStop()
-    Lib:Unload(); openGui:Destroy()
-end})
-
--- ═══════════════════════════════════════════
--- UI — SKINS TAB
--- ═══════════════════════════════════════════
-G.SkL:AddLabel("Skin + Charm + Dance + Wrap")
-G.SkL:AddLabel("Enable after match starts")
-G.SkL:AddToggle("SKOn",{Text="Skin Changer",Default=false,Callback=function(v) if v then enableSkins() else skinEnabled=false; Lib:Notify("Disabled — rejoin to revert",4) end end})
-G.SkL:AddButton({Text="Save Config",Func=function() saveConfig(); Lib:Notify("Saved",2) end})
-G.SkL:AddButton({Text="Load Config",Func=function() loadConfig(); Lib:Notify("Loaded",2) end})
-G.SkL:AddButton({Text="Clear All",Func=function() equipped={}; favorites={}; saveConfig(); Lib:Notify("Cleared",2) end})
-G.SkR:AddLabel("EnumLib:  "..(mEnumLib  and "✓" or "✗"))
-G.SkR:AddLabel("Cosmetic: "..(mCosmetic and "✓" or "✗"))
-G.SkR:AddLabel("ItemLib:  "..(mItemLib  and "✓" or "✗"))
-G.SkR:AddLabel("DataCtrl: "..(mData     and "✓" or "⏳"))
-
--- ═══════════════════════════════════════════
--- UI — SETTINGS TAB
--- ═══════════════════════════════════════════
-G.StL:AddToggle("KeybindMenuOpen",{Default=false,Text="Open Keybind Menu",Callback=function(v) Lib.KeybindFrame.Visible=v end})
-G.StL:AddToggle("ShowCursor",{Text="Custom Cursor",Default=true,Callback=function(v) Lib.ShowCustomCursor=v end})
-G.StL:AddDivider()
-G.StL:AddLabel("Menu keybind"):AddKeyPicker("MenuKeybind",{Default="RightShift",NoUI=true,Text="Menu keybind"})
-G.StL:AddToggle("OpenVis",{Text="Show Open Button",Default=true,Callback=function(v) openFrame.Visible=v end})
-G.StL:AddSlider("OpenSz",{Text="Button Size %",Default=100,Min=0,Max=200,Rounding=0,Suffix="%",Callback=function(v) local p=v/100; openFrame.Size=UDim2.fromOffset(math.floor(70*p),math.floor(30*p)); openFrame.Visible=v>0; openBtn.TextSize=math.max(math.floor(13*p),8) end})
-G.StL:AddButton({Text="Unload Script",Func=function()
-    stopAntiAim(); KR.enabled=false; krShootLockReset(); krPartGlueClear(); krSpoofFallenHeight(false)
-    tcStop(); Lib:Unload(); openGui:Destroy()
-end})
-
-Lib.ToggleKeybind = Options.MenuKeybind
-
-Theme:SetLibrary(Lib)
-Save:SetLibrary(Lib)
-Save:IgnoreThemeSettings()
-Save:SetIgnoreIndexes({"MenuKeybind"})
-Theme:SetFolder("RivalsToolV3")
-Save:SetFolder("RivalsToolV3/rivals")
-Save:BuildConfigSection(T.Settings)
-Theme:ApplyToTab(T.Settings)
-Save:LoadAutoloadConfig()
-
--- ═══════════════════════════════════════════
--- MAIN RENDER LOOP
--- ═══════════════════════════════════════════
-rs.RenderStepped:Connect(function(dt)
-    cam = ws.CurrentCamera
-    local c = scr()
-    abCirc.Position=c; abCirc.Radius=abEffFov(); abCirc.Visible=AB.drawFov and AB.on
-    saCirc.Position=c; saCirc.Radius=SA.fov; saCirc.Visible=SA.drawFov and SA.on
-    updateTracers(); updateESP()
-
-    if AB.on and mCam then
-        if abDoReact then abReactT=abReactT-dt; if abReactT<=0 then abDoReact=false end end
-        if not abDoReact then
-            if abTgt and not abTgtValid(abTgt) then abTgt=nil; abLockT=0; abPrevPos=nil; abCurveStart=nil; abCurveProgress=0 end
-            if not abTgt then abTgt=abFind(); if abTgt then abLockT=0; abDoReact=true; abReactT=AB.reactTime/1000; abPrevPos=nil; abCurveStart=nil; abCurveProgress=0 end end
-            if abTgt then
-                abLockT=abLockT+dt
-                if abLockT>AB.maxLock then abTgt=nil; abLockT=0; abPrevPos=nil; abCurveStart=nil; abCurveProgress=0
-                elseif inFov(abTgt,abEffFov()) then
-                    pcall(function()
-                        local aimPos=getPredictedPos(abTgt); local cp=cam.CFrame.Position
-                        local du=(aimPos-cp).Unit; local tp2=math.asin(math.clamp(du.Y,-1,1)); local ty=math.atan2(-du.X,-du.Z)
-                        local tRot=Vector2.new(tp2,ty); local cur=mCam.Rotation
-                        local sp,_=cam:WorldToViewportPoint(aimPos); local screenDist=(Vector2.new(sp.X,sp.Y)-scr()).Magnitude
-                        local newRot=applySmartLock(tRot,cur,dt,screenDist,abEffFov())
-                        newRot=aiLegitProcess(newRot,cur,dt)
-                        mCam:ApplyRotationDelta(Vector2.new(newRot.X-cur.X,angDiff(cur.Y,newRot.Y)))
-                    end)
-                else abTgt=nil; abLockT=0; abPrevPos=nil; abCurveStart=nil; abCurveProgress=0 end
-            end
+        local target = self:GetClosest()
+        if not target then
+            if self.orbitConn then self.orbitConn:Disconnect(); self.orbitConn=nil end
+            return
         end
-    end
+
+        local fighter = fighter_controller.LocalFighter; if not fighter then return end
+        local item = fighter.EquippedItem; if not item then return end
+
+        -- check ammo
+        local ammo = nil
+        pcall(function() ammo = item:Get("CurrentAmmo") or item:Get("Ammo") end)
+        local outOfAmmo = ammo ~= nil and ammo <= 0
+
+        if outOfAmmo then
+            -- trigger reload
+            pcall(function()
+                setthreadidentity(2)
+                item:Input("StartReloading")
+                setthreadidentity(7)
+            end)
+            if self.orbitConn then self.orbitConn:Disconnect(); self.orbitConn=nil end
+            return
+        end
+
+        -- start orbit if not running
+        if not self.orbitConn then
+            self:StartOrbit(target)
+        end
+
+        -- debounce: wait 0.5s on first lock before shooting
+        if self.debounce == false then
+            self.debounce = os.clock() + 0.5; return
+        end
+        if typeof(self.debounce)=="number" and os.clock() < self.debounce then return end
+        if typeof(self.debounce)=="number" then self.debounce = true end
+
+        if self.orbitPos then
+            self.lastShot = os.clock()
+            self:FireWeapon(target)
+        end
+    end)
+end
+
+function RagebotService:Stop()
+    if self.connection then self.connection:Disconnect(); self.connection=nil end
+    if self.orbitConn  then self.orbitConn:Disconnect();  self.orbitConn=nil  end
+    self.active   = false
+    self.debounce = false
+    self.orbitPos = nil
+    -- restore HRP position
+    pcall(function()
+        local myChar = local_player.Character
+        local myHRP  = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if myHRP and myChar:FindFirstChild("SpawnLocation") == nil then
+            -- let physics restore naturally — don't force a bad position
+        end
+    end)
+end
+
+RagebotService:Init()
+
+-- ═══════════════════════════════════════════
+-- UI SETUP
+-- ═══════════════════════════════════════════
+local stored_fonts = {}
+for _, v in Enum.Font:GetEnumItems() do table.insert(stored_fonts, v.Name) end
+
+gui_config = {
+    Color=Color3.fromRGB(255,255,255), Keybind=Enum.KeyCode.Insert,
+    Assets=false, MinHeight=100, MaxHeight=700, InitialHeight=500,
+    MinWidth=300, MaxWidth=850, InitialWidth=560,
+}
+
+local library = loadstring(game:HttpGet("https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/Module.lua"))()
+local window  = library:CreateWindow(gui_config, gethui())
+library:SetWindowName("Rivals — Combat")
+
+local tabs = {
+    rage    = window:CreateTab("Ragebot"),
+    trigger = window:CreateTab("Triggerbot"),
+    tracers = window:CreateTab("Tracers"),
+    esp     = window:CreateTab("ESP"),
+    damage  = window:CreateTab("Damage Numbers"),
+    settings= window:CreateTab("Settings"),
+}
+
+-- ═══════════════════════════════════════════
+-- UI — RAGEBOT
+-- ═══════════════════════════════════════════
+local rage_main = tabs.rage:CreateSection("Target")
+local rage_pos  = tabs.rage:CreateSection("Position Offset", "right")
+local rage_pred = tabs.rage:CreateSection("Prediction", "right")
+
+rage_main:CreateLabel("Warning: ragebot is detectable. Use at own risk.", true)
+rage_main:CreateToggle("Ragebot Enable", false, function(v)
+    CFG.ragebot.enable = v
+    if v then RagebotService:Start() else RagebotService:Stop() end
+end)
+rage_main:CreateToggle("FFA Mode", false, function(v)
+    CFG.ragebot.ffa_mode = v
 end)
 
--- watermark
-local fTimer=tick(); local fCount=0; local fps=60
-local function getPing() local ok,v=pcall(function() return math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()) end); return ok and v or 0 end
-local canPing=pcall(getPing)
-rs.RenderStepped:Connect(function()
-    fCount+=1
-    if tick()-fTimer>=1 then fps=fCount; fTimer=tick(); fCount=0 end
-    if canPing then Lib:SetWatermark(string.format("Rivals v3 | %d fps | %d ms",math.floor(fps),getPing()))
-    else Lib:SetWatermark(string.format("Rivals v3 | %d fps",math.floor(fps))) end
-end)
+rage_pos:CreateSlider("Offset X", -20, 20, 0, false, function(v) CFG.ragebot.offset_x = v end)
+rage_pos:CreateSlider("Offset Y", -20, 20, 2, false, function(v) CFG.ragebot.offset_y = v end)
+rage_pos:CreateSlider("Offset Z", -20, 20, 0, false, function(v) CFG.ragebot.offset_z = v end)
 
-Lib:Notify("Rivals v3 loaded | Kicia Deobf Ragebot active | RightShift to toggle",5)
-print("[v3] Full build: AC bypass + kicia_deobf_ragebot + tracers + yenkgg UI")
+rage_pred:CreateToggle("Prediction", false, function(v) CFG.ragebot.prediction = v end)
+rage_pred:CreateSlider("Prediction Amount", 0.5, 3.0, 1.2, false, function(v) CFG.ragebot.prediction_amt = v end)
+
+-- ═══════════════════════════════════════════
+-- UI — TRIGGERBOT
+-- ═══════════════════════════════════════════
+local tb_main   = tabs.trigger:CreateSection("Triggerbot")
+local tb_timing = tabs.trigger:CreateSection("Timing", "right")
+
+local tb_toggle = tb_main:CreateToggle("Triggerbot Enable", false, function(v) CFG.triggerbot.enable = v end)
+tb_toggle:CreateKeybind("F", function() end)
+tb_main:CreateToggle("Team Check", false, function(v) CFG.triggerbot.team_check = v end)
+tb_main:CreateSlider("Max Distance", 50, 2000, 500, true, function(v) CFG.triggerbot.max_distance = v end)
+
+tb_timing:CreateSlider("Reaction Time (ms)", 0, 500, 50, true, function(v) CFG.triggerbot.reaction_time = v/1000 end)
+tb_timing:CreateSlider("Shoot Delay (ms)", 0, 500, 100, true, function(v) CFG.triggerbot.shoot_delay = v/1000 end)
+
+-- ═══════════════════════════════════════════
+-- UI — BULLET TRACERS
+-- ═══════════════════════════════════════════
+local TRACER_TEXTURES = {"lightning","beam","heartrate","chain","glitch","swirl","neon","plasma","laser"}
+
+local tc_main   = tabs.tracers:CreateSection("Tracers")
+local tc_style  = tabs.tracers:CreateSection("Style", "right")
+local tc_spring = tabs.tracers:CreateSection("Spring", "right")
+
+tc_main:CreateToggle("Enable Tracers", false, function(v) CFG.bullet_tracers.enable = v end)
+tc_main:CreateColorpicker("Color Start", function(c) CFG.bullet_tracers.color_start = c end, false, false)
+tc_main:CreateColorpicker("Color End", function(c) CFG.bullet_tracers.color_end = c end, false, false)
+tc_main:CreateToggle("Through Walls", false, function(v) CFG.bullet_tracers.through_walls = v end)
+tc_main:CreateToggle("Curve", false, function(v) CFG.bullet_tracers.curve_around = v end)
+tc_main:CreateSlider("Curve Height", 0, 50, 14, true, function(v) CFG.bullet_tracers.curve_height = v end)
+
+tc_style:CreateDropdown("Texture", TRACER_TEXTURES, function(v) CFG.bullet_tracers.texture = v end, "lightning", false)
+tc_style:CreateSlider("Speed", 0, 10, 3, false, function(v) CFG.bullet_tracers.speed = v end)
+tc_style:CreateSlider("Lifetime (s)", 0.1, 5, 1.5, false, function(v) CFG.bullet_tracers.life_time = v end)
+tc_style:CreateSlider("Glow", 0, 10, 4, false, function(v) CFG.bullet_tracers.glow = v end)
+tc_style:CreateSlider("Width Start", 0.05, 2, 0.35, false, function(v) CFG.bullet_tracers.width0 = v end)
+tc_style:CreateSlider("Width End", 0.05, 2, 0.15, false, function(v) CFG.bullet_tracers.width1 = v end)
+tc_style:CreateSlider("Lerp Speed (0=instant)", 0, 1, 0, false, function(v) CFG.bullet_tracers.position_lerp_speed = v end)
+
+tc_spring:CreateToggle("Spring Expand", false, function(v) CFG.bullet_tracers.spring_expand = v end)
+tc_spring:CreateSlider("Expand Speed", 1, 30, 12, false, function(v) CFG.bullet_tracers.expand_speed = v end)
+tc_spring:CreateSlider("Expand Damper", 0.1, 1, 0.6, false, function(v) CFG.bullet_tracers.expand_damper = v end)
+
+-- ═══════════════════════════════════════════
+-- UI — ESP (throwable)
+-- ═══════════════════════════════════════════
+local esp_main = tabs.esp:CreateSection("Throwable ESP")
+local esp_text = tabs.esp:CreateSection("Text Settings", "right")
+local esp_dist = tabs.esp:CreateSection("Distance Settings", "right")
+
+esp_main:CreateToggle("Enable ESP", false, function(v) CFG.thrower_esp.enable = v end)
+esp_main:CreateToggle("Show Image", false, function(v) CFG.thrower_esp.image = v end)
+esp_main:CreateDropdown("Font", stored_fonts, function(v) CFG.thrower_esp.font = v end, "GothamBold", false)
+
+esp_text:CreateToggle("Show Name", false, function(v) CFG.thrower_esp.name = v end)
+esp_text:CreateColorpicker("Name Color", function(c) CFG.thrower_esp.name_color = c end, false, false)
+esp_text:CreateSlider("Name Size", 8, 36, 14, true, function(v) CFG.thrower_esp.name_size = v end)
+
+esp_dist:CreateToggle("Show Distance", false, function(v) CFG.thrower_esp.distance = v end)
+esp_dist:CreateColorpicker("Distance Color", function(c) CFG.thrower_esp.distance_color = c end, false, false)
+esp_dist:CreateSlider("Distance Size", 8, 36, 12, true, function(v) CFG.thrower_esp.distance_size = v end)
+
+-- ═══════════════════════════════════════════
+-- UI — DAMAGE NUMBERS
+-- ═══════════════════════════════════════════
+local dmg_main  = tabs.damage:CreateSection("Damage Numbers")
+local dmg_style = tabs.damage:CreateSection("Style", "right")
+
+dmg_main:CreateToggle("Enable Damage Numbers", false, function(v) CFG.damage_numbers.enable = v end)
+dmg_main:CreateToggle("Remove In-Game Numbers", false, function(v) CFG.damage_numbers.remove_ingame = v end)
+dmg_main:CreateColorpicker("Color 1", function(c) CFG.damage_numbers.color1 = c end, false, false)
+dmg_main:CreateColorpicker("Color 2", function(c) CFG.damage_numbers.color2 = c end, false, false)
+dmg_main:CreateDropdown("Color Type", {"Gradient","Flat","Rainbow"}, function(v) CFG.damage_numbers.color_type = v end, "Gradient", false)
+
+dmg_style:CreateDropdown("Font", stored_fonts, function(v) CFG.damage_numbers.font = v end, "GothamBold", false)
+dmg_style:CreateSlider("Text Size", 8, 48, 18, true, function(v) CFG.damage_numbers.text_size = v end)
+dmg_style:CreateSlider("Rise Speed", 10, 120, 42, true, function(v) CFG.damage_numbers.rise = v end)
+dmg_style:CreateSlider("Duration (s×10)", 1, 30, 8, true, function(v) CFG.damage_numbers.duration = v/10 end)
+
+-- ═══════════════════════════════════════════
+-- UI — SETTINGS
+-- ═══════════════════════════════════════════
+local config_manager = loadstring(game:HttpGet("https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/ConfigManager.lua"))()
+config_manager:SetLibrary(library)
+config_manager:SetWindow(window)
+config_manager:SetFolder("RivalsNFPW")
+config_manager:BuildConfigSection(tabs.settings)
+config_manager:LoadAutoloadConfig()
+
+print("[rivals_nfpw] loaded")
